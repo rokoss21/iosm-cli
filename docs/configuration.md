@@ -248,8 +248,8 @@ iosm --model sonnet:high          # With thinking
 ```bash
 export OPENAI_API_KEY="sk-..."
 
-iosm --model gpt-4o
-iosm --model openai/gpt-4o-mini
+iosm --model gpt-5.3
+iosm --model openai/gpt-5.3-mini
 ```
 
 ### Google Gemini
@@ -278,7 +278,7 @@ iosm --provider bedrock --model anthropic.claude-v2
 export AZURE_OPENAI_API_KEY="..."
 export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com"
 
-iosm --provider azure --model gpt-4o
+iosm --provider azure --model gpt-5.3
 ```
 
 ### OAuth-Based Providers

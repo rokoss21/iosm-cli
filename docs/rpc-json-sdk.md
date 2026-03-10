@@ -156,7 +156,7 @@ iosm -p "Generate API documentation for src/core/sdk.ts" > api-docs.md
 iosm --tools read,grep,find,ls -p "List all external dependencies and their versions"
 
 # With specific model
-iosm --model gpt-4o -p "Explain the authentication flow"
+iosm --model gpt-5.3 -p "Explain the authentication flow"
 
 # With file attachments
 iosm @src/auth.ts -p "Find vulnerabilities in this file"

@@ -166,7 +166,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const choice = await ctx.ui.select("Select Model", [
         { label: "Claude Sonnet", value: "sonnet" },
-        { label: "GPT-4o", value: "gpt-4o" },
+        { label: "GPT-5.3", value: "gpt-5.3" },
         { label: "Gemini Pro", value: "gemini-pro" },
       ]);
       if (choice) {

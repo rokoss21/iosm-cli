@@ -157,16 +157,16 @@ iosm --tools read,bash,grep
 
 | Provider | Environment Variable | Example Model |
 |----------|---------------------|---------------|
-| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-20250514` |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4o` |
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6-20260217` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-5.3` |
 | Google Gemini | `GEMINI_API_KEY` | `gemini-2.5-pro` |
 | Groq | `GROQ_API_KEY` | `llama-3.3-70b` |
 | Cerebras | `CEREBRAS_API_KEY` | `llama-3.3-70b` |
-| xAI | `XAI_API_KEY` | `grok-3` |
-| OpenRouter | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4` |
-| Mistral | `MISTRAL_API_KEY` | `mistral-large` |
-| AWS Bedrock | `AWS_ACCESS_KEY_ID` | `anthropic.claude-v2` |
-| Azure OpenAI | `AZURE_OPENAI_API_KEY` | `gpt-4o` |
+| xAI | `XAI_API_KEY` | `grok-5` |
+| OpenRouter | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
+| Mistral | `MISTRAL_API_KEY` | `mistral-large-latest` |
+| AWS Bedrock | `AWS_ACCESS_KEY_ID` | `anthropic.claude-sonnet-4.6` |
+| Azure OpenAI | `AZURE_OPENAI_API_KEY` | `gpt-5.3` |
 | MiniMax | `MINIMAX_API_KEY` | — |
 | Kimi | `KIMI_API_KEY` | — |
 | AI Gateway | `AI_GATEWAY_API_KEY` | — |
@@ -175,16 +175,16 @@ iosm --tools read,bash,grep
 
 ```bash
 # Full provider/model specification
-iosm --provider openai --model gpt-4o
+iosm --provider openai --model gpt-5.3
 
 # Shorthand with provider prefix
-iosm --model openai/gpt-4o
+iosm --model openai/gpt-5.3
 
 # Model with thinking level
 iosm --model sonnet:high
 
 # Cycle through models during session
-iosm --models "sonnet,gpt-4o,gemini-2.5-pro"
+iosm --models "sonnet,gpt-5.3,gemini-2.5-pro"
 
 # List available models
 iosm --list-models

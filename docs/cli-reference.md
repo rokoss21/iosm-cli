@@ -168,7 +168,7 @@ iosm --no-session                            # Ephemeral run
 
 | Format | Example | Description |
 |--------|---------|-------------|
-| `provider/model-id` | `openai/gpt-4o` | Explicit provider and model |
+| `provider/model-id` | `openai/gpt-5.3` | Explicit provider and model |
 | `model-id` | `sonnet` | Model with auto-detected provider |
 | `model-id:thinking` | `sonnet:high` | Model with thinking level |
 
@@ -186,11 +186,11 @@ iosm --no-session                            # Ephemeral run
 **Examples:**
 
 ```bash
-iosm --provider openai --model gpt-4o
+iosm --provider openai --model gpt-5.3
 iosm --model anthropic/claude-sonnet-4-20250514
 iosm --model sonnet:high
 iosm --thinking medium
-iosm --models "sonnet,gpt-4o,gemini-2.5-pro"
+iosm --models "sonnet,gpt-5.3,gemini-2.5-pro"
 iosm --list-models                   # All models
 iosm --list-models gemini            # Filter by name
 iosm --api-key sk-test-123           # Override for this run

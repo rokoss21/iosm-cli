@@ -123,7 +123,7 @@ iosm -p "Review src/ and list the top 5 refactoring opportunities"
 iosm --tools read,grep,find,ls -p "Audit src/ for dead code"
 
 # With a specific model
-iosm --model openai/gpt-4o -p "Explain the auth module"
+iosm --model openai/gpt-5.3 -p "Explain the auth module"
 
 # With file attachments
 iosm @README.md @src/main.ts -p "How does the CLI entry point work?"
@@ -184,12 +184,12 @@ Select a model at startup or switch during a session:
 ```bash
 # At startup
 iosm --model sonnet                    # Claude Sonnet
-iosm --model openai/gpt-4o            # GPT-4o
+iosm --model openai/gpt-5.3            # GPT-5.3
 iosm --model gemini-2.5-pro           # Gemini Pro
 iosm --model sonnet:high              # With high thinking level
 
 # Model rotation (cycles through models)
-iosm --models "sonnet,gpt-4o,gemini-2.5-pro"
+iosm --models "sonnet,gpt-5.3,gemini-2.5-pro"
 
 # During interactive session
 /model                                 # Opens model selector
