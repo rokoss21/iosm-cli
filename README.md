@@ -26,6 +26,7 @@
 It is a runtime for production codebases:
 - a terminal-native coding agent with direct filesystem and shell tooling
 - dual operating modes: **standard** (default) and **iosm** (advanced, methodology-driven engineering cycles)
+- smart orchestration for complex tasks: parallel/sequential agents, dependency ordering, lock coordination, and worktree isolation
 - repeatable codebase improvement workflows via **IOSM** (Improve -> Optimize -> Shrink -> Modularize)
 - auditable artifact history for cycles, decisions, and metric evolution across runs
 - operational controls for safe iteration (`/checkpoint`, `/rollback`, `/doctor`, `/memory`)
@@ -113,6 +114,48 @@ iosm> Baseline captured, hypotheses created
 iosm> Metrics snapshot recorded (semantic, logic, performance, simplicity, modularity, flow)
 iosm> Artifacts: .iosm/cycles/2026-03-10-001/
 ```
+
+## Operating Modes
+
+`IOSM CLI` has a layered operating model:
+
+| Mode | Best For | What `/init` Does | Advanced Command |
+|------|----------|-------------------|------------------|
+| **standard** (default) | Daily coding for any level | Generates/updates `AGENTS.md` from real repo scan and prepares `.iosm/agents/` | Use `/orchestrate` and built-in tools directly |
+| **iosm** (advanced) | High-risk refactors and system-level engineering loops | Bootstraps full IOSM workspace (`iosm.yaml`, `IOSM.md`, `.iosm/cycles/...`) with optional agent verification | `/iosm [target-index] [--max-iterations N] [--force-init]` |
+
+Typical advanced flow:
+
+```bash
+iosm --profile iosm
+/init
+/iosm 0.95 --max-iterations 5
+```
+
+## Smart Orchestration
+
+For complex work, use explicit multi-agent orchestration instead of one long monolithic prompt.
+
+`/orchestrate` supports:
+- parallel or sequential execution (`--parallel` / `--sequential`)
+- controlled concurrency (`--max-parallel`)
+- per-agent profiles and working directories (`--profiles`, `--cwd`)
+- dependency DAGs (`--depends 2>1,3>2`)
+- write safety (`--locks`) and optional git worktree isolation (`--worktree`)
+
+Example:
+
+```bash
+/orchestrate --parallel --agents 4 \
+  --profiles iosm_analyst,explore,iosm_verifier,full \
+  --max-parallel 2 \
+  --depends 3>1,4>2 \
+  --locks schema,config \
+  --worktree \
+  Improve auth reliability and performance with verification gates
+```
+
+Track and resume delegated execution with `/subagent-runs`, `/subagent-resume`, `/team-runs`, and `/team-status`.
 
 ## Core Commands
 
