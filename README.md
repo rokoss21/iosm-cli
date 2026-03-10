@@ -25,14 +25,14 @@
 
 It is a runtime for production codebases:
 - a terminal-native coding agent with direct filesystem and shell tooling
-- dual operating modes: **standard** (default) and **iosm** (advanced, methodology-driven engineering cycles)
+- primary operating profiles: **full** (default) and **iosm** (advanced, methodology-driven engineering cycles)
 - smart orchestration for complex tasks: parallel/sequential agents, dependency ordering, lock coordination, and worktree isolation
 - repeatable codebase improvement workflows via **IOSM** (Improve -> Optimize -> Shrink -> Modularize)
 - auditable artifact history for cycles, decisions, and metric evolution across runs
 - operational controls for safe iteration (`/checkpoint`, `/rollback`, `/doctor`, `/memory`)
 - extensibility for teams (MCP + extensions) and embedding (SDK + JSON/RPC modes)
 
-Adoption path is layered: start in **standard** mode for low-friction daily usage, then switch to **iosm** mode when you need advanced IOSM cycles, metrics, and governance.
+Adoption path is layered: start in **full** profile for low-friction daily usage, then switch to **iosm** profile when you need advanced IOSM cycles, metrics, and governance.
 
 ## Why It Exists
 
@@ -61,7 +61,7 @@ This is not a “better/worse” claim. It is a positioning map so teams can cho
 
 ## Who It Is For
 
-- developers at any level: start in **standard** mode and be productive quickly
+- developers at any level: start in **full** profile and be productive quickly
 - advanced engineers and tech leads using **iosm** mode for high-risk refactors and system-level change
 - teams that need auditability, rollback, and repeatable improvement history
 - platform/backend teams that operationalize AI coding into reliable workflows
@@ -81,31 +81,37 @@ Requirements:
 ## 60-Second Start
 
 ```bash
-# 1) Open your project
+# 1) Open project and start CLI
 cd /path/to/repo
-
-# 2) Start interactive mode
 iosm
 ```
 
-Inside the session:
-1. `/login` (or `/auth`) to configure provider credentials.
-2. `/model` to select the active model.
-3. Ask your task.
-4. Use `Shift+Tab` (or launch with `iosm --profile iosm`) when you need advanced IOSM cycle workflow.
+Inside the session (full profile):
+```text
+/login            # or /auth: configure credentials
+/model            # select active model
+<your task>       # start working immediately
+```
 
-High-value first commands:
-- `/doctor` - verify model/auth/MCP/resources state
-- `/mcp` - inspect/add/enable MCP servers in interactive UI
-- `/memory` - store persistent project facts and constraints
-- `/checkpoint` then `/rollback` - safe experimentation loop
+When you need advanced IOSM workflow:
+```text
+Shift+Tab         # switch profile to iosm
+/init             # bootstrap IOSM workspace
+/iosm 0.95 --max-iterations 5
+```
+
+First commands to keep runtime healthy and safe:
+- `/doctor` — verify model/auth/MCP/resources state
+- `/mcp` — inspect/add/enable MCP servers in interactive UI
+- `/memory` — persist project facts and constraints
+- `/checkpoint` + `/rollback` — safe experimentation loop
 
 ### Example Session
 
 ```console
 $ iosm
 IOSM CLI v0.1.0 [full]
-status  [mode standard] [model github-copilot/grok-code-fast-1] [mcp 1/1] [memory p:0 u:0]
+status  [profile full] [model github-copilot/grok-code-fast-1] [mcp 1/1] [memory p:0 u:0]
 next    task  /checkpoint  /mcp  /memory
 
 you> Analyze this repository and propose an IOSM cycle to reduce auth complexity
@@ -115,13 +121,13 @@ iosm> Metrics snapshot recorded (semantic, logic, performance, simplicity, modul
 iosm> Artifacts: .iosm/cycles/2026-03-10-001/
 ```
 
-## Operating Modes
+## Operating Profiles
 
 `IOSM CLI` has a layered operating model:
 
-| Mode | Best For | What `/init` Does | Advanced Command |
+| Profile | Best For | What `/init` Does | Advanced Command |
 |------|----------|-------------------|------------------|
-| **standard** (default) | Daily coding for any level | Generates/updates `AGENTS.md` from real repo scan and prepares `.iosm/agents/` | Use `/orchestrate` and built-in tools directly |
+| **full** (default) | Daily coding for any level | Generates/updates `AGENTS.md` from real repo scan and prepares `.iosm/agents/` | Use `/orchestrate` and built-in tools directly |
 | **iosm** (advanced) | High-risk refactors and system-level engineering loops | Bootstraps full IOSM workspace (`iosm.yaml`, `IOSM.md`, `.iosm/cycles/...`) with optional agent verification | `/iosm [target-index] [--max-iterations N] [--force-init]` |
 
 Typical advanced flow:
