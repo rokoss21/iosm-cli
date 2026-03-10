@@ -1,11 +1,10 @@
+<h1 align="left">IOSM CLI v0.1.0</h1>
+
 <p align="center">
-  <h1 align="center">iosm-cli</h1>
-  <p align="center">
-    <strong>AI Engineering Runtime for Professional Developers</strong>
-  </p>
-  <p align="center">
-    Interactive coding agent · IOSM methodology · MCP · Checkpoints · Subagent orchestration · Extensions
-  </p>
+  <strong>AI Engineering Runtime for Professional Developers</strong>
+</p>
+<p align="center">
+  Interactive coding agent · IOSM methodology · MCP · Checkpoints · Subagent orchestration · Extensions
 </p>
 
 <p align="center">
@@ -17,25 +16,26 @@
 </p>
 
 <p align="center">
-  <img src="./docs/assets/preview.jpg" alt="iosm-cli terminal preview">
+  <img src="./docs/assets/preview.jpg" alt="IOSM CLI terminal preview">
 </p>
 
 ---
 
-`iosm-cli` is not a chat wrapper around an LLM.
+**IOSM CLI** (`iosm-cli`) is not a chat wrapper around an LLM.
 
 It is an engineering runtime designed for production work:
-- a terminal-native coding agent with real file/shell tools
-- repeatable improvement workflows via **IOSM** (Improve -> Optimize -> Shrink -> Modularize)
+- a terminal-native coding agent with direct filesystem and shell tooling
+- repeatable codebase improvement workflows via **IOSM** (Improve -> Optimize -> Shrink -> Modularize)
+- auditable artifact history for cycles, decisions, and metric evolution across runs
 - operational controls for safe iteration (`/checkpoint`, `/rollback`, `/doctor`, `/memory`)
-- extensibility for teams (MCP, extensions, SDK, JSON/RPC modes)
+- extensibility for teams (MCP + extensions) and embedding (SDK + JSON/RPC modes)
 
 ## Why It Exists
 
 Most AI CLIs optimize for conversation.
-`iosm-cli` optimizes for engineering execution quality.
+**IOSM CLI** optimizes for engineering execution quality.
 
-| Area | Typical AI CLI | `iosm-cli` |
+| Area | Typical AI CLI | IOSM CLI |
 |------|----------------|------------|
 | Workflow | Prompt-by-prompt | Structured session + IOSM cycles |
 | Safety | Basic confirmations | Checkpoints, rollback, diagnostics, permission policies |
@@ -43,10 +43,23 @@ Most AI CLIs optimize for conversation.
 | Tooling | Built-ins only | Built-ins + MCP + extension tools |
 | Integrations | Mostly interactive only | Interactive + print + JSON + JSON-RPC + SDK |
 
+## Compared to Other Tools
+
+This is not a “better/worse” claim. It is a positioning map so teams can choose the right tool for the job.
+
+| Tool | Typical Strength | Typical Mode | IOSM CLI Difference |
+|------|------------------|--------------|------------------------|
+| **Claude Code** | Strong conversational coding flow | Terminal conversation | Adds structured IOSM cycles + explicit checkpoint/rollback/doctor workflow |
+| **OpenCode** | Lightweight open-source coding assistant | Terminal-first iteration | Emphasizes repeatable engineering process and quality-gated cycles |
+| **Cursor** | Excellent IDE-native editing and inline assistance | IDE-first | Keeps workflow in terminal with agent tooling, MCP, and scriptable runtime modes |
+| **Gemini CLI** | Fast Gemini-centric command-line assistance | CLI prompts and tasks | Provider-agnostic runtime + IOSM methodology + deeper operational controls |
+| **IOSM CLI** | Structured engineering execution | Terminal runtime + methodology | Designed for reproducible refactors, diagnostics, memory, and cycle artifacts |
+
 ## Who It Is For
 
-- senior engineers and tech leads running non-trivial refactors
-- platform/backend teams that need reproducible improvement loops
+- engineers handling refactors with non-trivial blast radius
+- teams that need auditability, rollback, and repeatable improvement history
+- platform/backend teams that operationalize AI coding into reliable workflows
 - teams building internal coding automation on top of a CLI runtime
 
 ## Install
@@ -80,6 +93,21 @@ High-value first commands:
 - `/mcp` - inspect/add/enable MCP servers in interactive UI
 - `/memory` - store persistent project facts and constraints
 - `/checkpoint` then `/rollback` - safe experimentation loop
+
+### Example Session
+
+```console
+$ iosm
+IOSM CLI v0.1.0 [full]
+status  [mode standard] [model github-copilot/grok-code-fast-1] [mcp 1/1] [memory p:0 u:0]
+next    task  /checkpoint  /mcp  /memory
+
+you> Analyze this repository and propose an IOSM cycle to reduce auth complexity
+iosm> Proposed cycle: "simplify auth module"
+iosm> Baseline captured, hypotheses created
+iosm> Metrics snapshot recorded (semantic, logic, performance, simplicity, modularity, flow)
+iosm> Artifacts: .iosm/cycles/2026-03-10-001/
+```
 
 ## Core Commands
 
@@ -141,5 +169,5 @@ Contributing guide: [CONTRIBUTING.md](./CONTRIBUTING.md)
 [MIT](./LICENSE) © 2026 Emil Rokossovskiy
 
 <p align="center">
-  <sub>Built for engineering teams who want controllable AI-assisted development.</sub>
+  <sub>Built for teams that treat AI coding as an engineering system, not a chat.</sub>
 </p>
