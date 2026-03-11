@@ -127,4 +127,17 @@ describe("FooterComponent width handling", () => {
 		const statsLine = stripAnsi(lines[1] ?? "");
 		expect(statsLine).toContain("anthropic/claude-sonnet-4-6");
 	});
+
+	it("renders plan profile badge once and in lowercase", () => {
+		const session = createSession({ sessionName: "", modelId: "gpt-5", provider: "openai" });
+		const footer = new FooterComponent(session, createFooterData(1));
+		footer.setPlanMode(true);
+		footer.setActiveProfile("plan");
+
+		const lines = footer.render(160);
+		const statsLine = stripAnsi(lines[1] ?? "");
+		const planBadgeMatches = statsLine.match(/\[plan\]/g) ?? [];
+		expect(planBadgeMatches.length).toBe(1);
+		expect(statsLine).not.toContain("[PLAN]");
+	});
 });

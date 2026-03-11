@@ -107,7 +107,7 @@ export interface CreateAgentSessionOptions {
 
 	/**
 	 * Agent profile name. Overrides tools and thinkingLevel with profile defaults.
-	 * Profiles: explore, plan, iosm_analyst, iosm_verifier, cycle_planner, full (default).
+	 * Profiles: explore, plan, iosm_analyst, iosm_verifier, cycle_planner, meta, full (default).
 	 */
 	profile?: AgentProfileName | string;
 

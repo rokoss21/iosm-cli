@@ -289,7 +289,7 @@ Runtime artifacts:
 
 | Key | Action |
 |-----|--------|
-| `Shift+Tab` | Cycle profile (full → plan → iosm) |
+| `Shift+Tab` | Cycle profile (full → plan → iosm → meta) |
 | `Shift+Ctrl+T` | Cycle thinking level |
 | `Ctrl+P` | Next model in rotation |
 | `Shift+Ctrl+P` | Previous model in rotation |
@@ -337,6 +337,7 @@ Profiles change the agent's behavior, available tools, and system prompt:
 | `full` | All built-ins (read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search) | Default development work |
 | `plan` | Read-only (read, grep, find, ls) | Architecture planning, code review |
 | `iosm` | All + IOSM context | IOSM cycle execution with artifact sync |
+| `meta` | Full toolset + orchestration-first contract | Adaptive multi-agent/delegate execution with verification closure |
 
 ### Advanced Profiles (via `--profile` or orchestration)
 

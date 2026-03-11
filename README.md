@@ -25,7 +25,7 @@
 
 It is a runtime for production codebases:
 - a terminal-native coding agent with direct filesystem and shell tooling
-- primary operating profiles: **full** (default) and **iosm** (advanced, methodology-driven engineering cycles)
+- primary operating profiles: **full** (default), **meta** (orchestration-first), and **iosm** (advanced, methodology-driven engineering cycles)
 - swarm-first orchestration for complex tasks: `Scopes -> Touches -> Locks -> Gates -> Done`, continuous dispatch, retries, checkpoints
 - built-in semantic embeddings search (`semantic_search` tool + `/semantic` + `iosm semantic`)
 - repeatable codebase improvement workflows via **IOSM** (Improve -> Optimize -> Shrink -> Modularize)
@@ -33,7 +33,7 @@ It is a runtime for production codebases:
 - operational controls for safe iteration (`/checkpoint`, `/rollback`, `/doctor`, `/memory`)
 - extensibility for teams (MCP + extensions) and embedding (SDK + JSON/RPC modes)
 
-Adoption path is layered: start in **full** profile for low-friction daily usage, then switch to **iosm** profile when you need advanced IOSM cycles, metrics, and governance.
+Adoption path is layered: start in **full** profile for low-friction daily usage, switch to **meta** when tasks benefit from adaptive multi-agent orchestration, then use **iosm** profile when you need advanced IOSM cycles, metrics, and governance.
 
 ## Why It Exists
 
@@ -63,6 +63,7 @@ This is not a “better/worse” claim. It is a positioning map so teams can cho
 ## Who It Is For
 
 - developers at any level: start in **full** profile and be productive quickly
+- teams that need adaptive multi-agent execution with strict verification closure via **meta** profile
 - advanced engineers and tech leads using **iosm** mode for high-risk refactors and system-level change
 - teams that need auditability, rollback, and repeatable improvement history
 - platform/backend teams that operationalize AI coding into reliable workflows
@@ -199,7 +200,7 @@ Artifacts + Memory (.iosm/cycles/*, checkpoints, /memory state)
 - **Complex work needs controlled execution.** Swarm applies `Scopes -> Touches -> Locks -> Gates -> Done` with continuous dispatch and bounded retries.
 - **Refactoring must be measurable.** IOSM cycles capture baseline, hypotheses, and metric deltas instead of untracked edits.
 - **Every important run must be auditable.** Artifacts and memory preserve decisions and outcomes across sessions.
-- **Adoption should be progressive.** Start in `full` profile for speed; move to `iosm` profile for advanced cycles and governance when needed.
+- **Adoption should be progressive.** Start in `full` profile for speed, use `meta` for orchestration-first execution, and move to `iosm` for advanced cycles and governance when needed.
 
 ## Operating Profiles
 
@@ -208,6 +209,7 @@ Artifacts + Memory (.iosm/cycles/*, checkpoints, /memory state)
 | Profile | Best For | What `/init` Does | Advanced Command |
 |------|----------|-------------------|------------------|
 | **full** (default) | Daily coding for any level | Generates/updates `AGENTS.md` from real repo scan and prepares `.iosm/agents/` | Use `/swarm` (canonical) and built-in tools directly |
+| **meta** (orchestration-first) | Adaptive agent/delegate execution with verification gates | Same initialization behavior as full profile | `iosm --profile meta` |
 | **iosm** (advanced) | High-risk refactors and system-level engineering loops | Bootstraps full IOSM workspace (`iosm.yaml`, `IOSM.md`, `.iosm/cycles/...`) with optional agent verification | `/iosm [target-index] [--max-iterations N] [--force-init]` |
 
 Typical advanced flow:

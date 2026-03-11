@@ -248,6 +248,7 @@ Profiles control the agent's behavior, available tools, and system prompt.
 | `full` | All built-ins (read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search) | Default full development capabilities |
 | `plan` | Read-only (read, grep, find, ls) | Architecture planning and code review |
 | `iosm` | All + IOSM context | IOSM cycle execution with artifact synchronization |
+| `meta` | Full tools + orchestration-first contract | Adaptive multi-agent/delegate execution with verification closure |
 
 ### Advanced Profiles
 
@@ -264,9 +265,10 @@ Profiles control the agent's behavior, available tools, and system prompt.
 # CLI flag
 iosm --profile plan
 iosm --profile iosm
+iosm --profile meta
 
 # Interactive: cycle with Shift+Tab
-# full → plan → iosm → full → ...
+# full → plan → iosm → meta → full → ...
 
 # In orchestration
 /orchestrate --profiles explore,full,iosm_verifier

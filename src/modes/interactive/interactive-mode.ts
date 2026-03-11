@@ -12430,7 +12430,7 @@ export class InteractiveMode {
 			"You are generating a custom IOSM subagent specification.",
 			"Return ONLY a single JSON object and no additional text.",
 			'Allowed JSON keys: name, description, profile, tools, disallowed_tools, system_prompt, cwd, background, instructions.',
-			'profile must be one of: full, plan, iosm, explore, iosm_analyst, iosm_verifier, cycle_planner.',
+			'profile must be one of: full, plan, iosm, meta, explore, iosm_analyst, iosm_verifier, cycle_planner.',
 			"name must be short snake/kebab case, suitable for @mention.",
 			"tools/disallowed_tools must be arrays of tool names when present.",
 			"instructions must be a concise markdown body for the agent file.",

@@ -79,7 +79,7 @@ export class FooterComponent implements Component {
 
 	/**
 	 * Toggle plan-mode badge in the status line.
-	 * When enabled, a [PLAN] badge is prepended before the session state badge.
+	 * When enabled, a [plan] badge is prepended before the session state badge.
 	 */
 	setPlanMode(enabled: boolean): void {
 		this.planMode = enabled;
@@ -162,16 +162,17 @@ export class FooterComponent implements Component {
 
 		const statusParts = [];
 
-		// Plan-mode badge: prepended first so it is always the leftmost status indicator.
-		// This placement mirrors how editors surface mode indicators (e.g. INSERT, VISUAL)
-		// before the file-status indicator, giving the operator immediate mode awareness.
-		if (this.planMode) {
-			statusParts.push(badge("PLAN", "accent"));
+		const normalizedProfile = this.activeProfile.trim().toLowerCase();
+
+		// Plan-mode badge stays leftmost for quick mode awareness, but avoid duplicate
+		// [plan] when active profile already renders as [plan].
+		if (this.planMode && normalizedProfile !== "plan") {
+			statusParts.push(badge("plan", "accent"));
 		}
 
 		// Profile badge is always shown when a profile is set, including "full".
-		if (this.activeProfile) {
-			statusParts.push(badge(this.activeProfile, "muted"));
+		if (normalizedProfile) {
+			statusParts.push(badge(normalizedProfile, "muted"));
 		}
 
 		if (this.session.isCompacting) {

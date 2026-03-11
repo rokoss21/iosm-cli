@@ -97,6 +97,7 @@ describe("loadCustomSubagents", () => {
 		expect(names.has("qa_test_engineer")).toBe(true);
 		expect(names.has("test_failure_triager")).toBe(true);
 		expect(names.has("meta_orchestrator")).toBe(true);
+		expect(loaded.agents.find((agent) => agent.name === "meta_orchestrator")?.profile).toBe("meta");
 	});
 
 	it("allows project agents to override built-in system agents by name", () => {

@@ -7,6 +7,7 @@ export type AgentProfileName =
 	| "iosm_analyst"
 	| "iosm_verifier"
 	| "cycle_planner"
+	| "meta"
 	| "full";
 
 export interface AgentProfile {
@@ -106,6 +107,16 @@ export const AGENT_PROFILES: Record<AgentProfileName, AgentProfile> = {
 		systemPromptAppend:
 			"You are an IOSM Cycle Planner. Analyze the current codebase state, review the IOSM cycle report, and produce actionable improvement hypotheses. Write results to .iosm/ files. Be specific about expected metric improvements.",
 		mainMode: false,
+	},
+	meta: {
+		name: "meta",
+		label: "Meta",
+		description: "Orchestration-first mode. Full tools with adaptive agent/delegate execution.",
+		tools: [...WRITE_ENGINEERING_TOOLS],
+		thinkingLevel: "medium",
+		systemPromptAppend:
+			"You are in META mode. Use full tool access, but run an orchestration-first execution contract for actionable engineering work: (1) analyze repository/context first when a codebase exists, (2) decompose work into explicit tasks/delegates with dependencies, (3) execute adaptively (simple requests may stay single-agent; medium/complex work should maximize safe parallelism), (4) enforce verification gates for code/test changes by adding or updating relevant tests and running targeted test commands, and (5) finalize only after all launched agents/delegates have completed and outputs are synthesized. If no code changed and tests were skipped, explicitly justify why skipping tests is safe.",
+		mainMode: true,
 	},
 	full: {
 		name: "full",

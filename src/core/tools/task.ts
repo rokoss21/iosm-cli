@@ -80,7 +80,7 @@ const taskSchema = Type.Object({
 	),
 	profile: Type.String({
 		description:
-			"Subagent capability profile. Recommended values: explore, plan, iosm, iosm_analyst, iosm_verifier, cycle_planner, full. For custom agents, pass the agent name via `agent`, not `profile`.",
+			"Subagent capability profile. Recommended values: explore, plan, iosm, meta, iosm_analyst, iosm_verifier, cycle_planner, full. For custom agents, pass the agent name via `agent`, not `profile`.",
 	}),
 	cwd: Type.Optional(
 		Type.String({
@@ -178,6 +178,7 @@ const toolsByProfile: Record<string, string[]> = {
 	explore: ["read", "grep", "find", "ls"],
 	plan: ["read", "bash", "grep", "find", "ls"],
 	iosm: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+	meta: ["read", "bash", "edit", "write", "grep", "find", "ls"],
 	iosm_analyst: ["read", "bash", "grep", "find", "ls"],
 	iosm_verifier: ["read", "bash", "write"],
 	cycle_planner: ["read", "bash", "write"],
@@ -190,6 +191,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are a fast read-only codebase explorer. Answer concisely. Never write or edit files.",
 	plan: "You are a technical architect. Analyze the codebase and produce a clear implementation plan. Do not write or edit files.",
 	iosm: "You are an IOSM execution agent. Use IOSM methodology and keep IOSM artifacts synchronized with implementation.",
+	meta: "You are a meta orchestration agent. Analyze repository context first, decompose work into explicit subtask/delegate streams, maximize safe parallelism for medium/complex work, enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
 	iosm_analyst:
 		"You are an IOSM metrics analyst. Analyze .iosm/ artifacts and codebase metrics. Be precise and evidence-based.",
 	iosm_verifier:
@@ -199,7 +201,7 @@ const systemPromptByProfile: Record<string, string> = {
 	full: "You are a software engineering agent. Execute the task end-to-end.",
 };
 
-const writeCapableProfiles = new Set(["full", "iosm_verifier", "cycle_planner"]);
+const writeCapableProfiles = new Set(["full", "meta", "iosm_verifier", "cycle_planner"]);
 const delegationTagName = "delegate_task";
 
 type DelegationRequest = {
@@ -444,7 +446,7 @@ function buildDelegationProtocolPrompt(depthRemaining: number, maxDelegations: n
 	}
 	return [
 		`Delegation protocol (optional): if you discover concrete independent follow-ups, emit up to ${maxDelegations} XML block(s):`,
-		`<${delegationTagName} profile="explore|plan|iosm|iosm_analyst|iosm_verifier|cycle_planner|full" agent="optional custom subagent name" description="short title" cwd="optional relative path" lock_key="optional lock key" model="optional model override" isolation="none|worktree" depends_on="optional indices like 1|3">`,
+		`<${delegationTagName} profile="explore|plan|iosm|meta|iosm_analyst|iosm_verifier|cycle_planner|full" agent="optional custom subagent name" description="short title" cwd="optional relative path" lock_key="optional lock key" model="optional model override" isolation="none|worktree" depends_on="optional indices like 1|3">`,
 		"Detailed delegated task prompt",
 		`</${delegationTagName}>`,
 		`Only emit blocks when necessary. Keep normal analysis/answer text outside those blocks.`,
@@ -841,7 +843,7 @@ export function createTaskTool(
 		description:
 			"Launch a specialized subagent to handle a subtask in isolation. " +
 			"Use for: codebase exploration (profile=explore), architectural planning (profile=plan), " +
-			"IOSM artifact analysis (profile=iosm_analyst/iosm_verifier/cycle_planner), or end-to-end implementation (profile=full). " +
+			"IOSM artifact analysis (profile=iosm_analyst/iosm_verifier/cycle_planner), orchestration-first execution (profile=meta), or end-to-end implementation (profile=full). " +
 			"Set cwd to isolate subagents into different project areas when orchestrating parallel work. " +
 			"The subagent runs to completion and returns its full text output. " +
 			"It may request bounded follow-up delegation via <delegate_task> blocks that are executed by the parent task tool." +

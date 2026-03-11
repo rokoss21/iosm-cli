@@ -18,8 +18,9 @@ describe("semantic integration regressions", () => {
 		expect(slashNames).not.toContain("shadow");
 	});
 
-	it("enables semantic_search in full/explore/iosm profiles", () => {
+	it("enables semantic_search in full/meta/explore/iosm profiles", () => {
 		expect(AGENT_PROFILES.full.tools).toContain("semantic_search");
+		expect(AGENT_PROFILES.meta.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.explore.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.iosm.tools).toContain("semantic_search");
 	});

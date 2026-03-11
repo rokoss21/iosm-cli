@@ -54,7 +54,7 @@ export interface Args {
 	verbose?: boolean;
 	/** Enable plan mode: agent explores read-only then presents plan for approval before executing */
 	plan?: boolean;
-	/** Agent profile to use: full | plan | iosm (main) plus advanced/internal profiles */
+	/** Agent profile to use: full | plan | iosm | meta (main) plus advanced/internal profiles */
 	profile?: string;
 	messages: string[];
 	fileArgs: string[];
@@ -249,7 +249,7 @@ ${chalk.bold("Options:")}
   --list-models [search]         List available models (with optional fuzzy search)
   --verbose                      Force verbose startup (overrides quietStartup setting)
   --plan                         Plan mode: explore read-only, show plan, wait for approval before executing
-  --profile <name>               Agent profile: full, plan, iosm (main modes) + explore, iosm_analyst, iosm_verifier, cycle_planner
+  --profile <name>               Agent profile: full, plan, iosm, meta (main modes) + explore, iosm_analyst, iosm_verifier, cycle_planner
   --offline                      Disable startup network operations (same as ${ENV_OFFLINE}=1)
   --session-trace                Enable full session trace JSONL logging
   --session-trace-dir <dir>      Directory for session trace logs (default: ~/${CONFIG_DIR_NAME}/agent/session-traces)

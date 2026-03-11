@@ -329,6 +329,7 @@ iosm --no-extensions --no-skills --no-prompt-templates
 | `full` | Default — all tools, full capabilities |
 | `plan` | Read-only architecture/planning |
 | `iosm` | IOSM artifact context and synchronization |
+| `meta` | Full tools + orchestration-first execution contract |
 | `explore` | Exploratory analysis |
 | `iosm_analyst` | IOSM metric deep-dive |
 | `iosm_verifier` | IOSM verification specialist |
@@ -339,6 +340,7 @@ iosm --no-extensions --no-skills --no-prompt-templates
 ```bash
 iosm --profile plan                  # Planning mode
 iosm --profile iosm                  # IOSM mode
+iosm --profile meta                  # Orchestration-first mode
 iosm --offline                       # No network
 iosm --session-trace                 # Enable tracing
 iosm --verbose                       # Verbose startup

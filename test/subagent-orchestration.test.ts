@@ -187,6 +187,28 @@ describe("subagent orchestration", () => {
 		expect(result.details?.profile).toBe("full");
 	});
 
+	it("uses full-capability tools for meta profile", async () => {
+		const cwd = makeTempDir();
+		let observedTools: string[] = [];
+		const tool = createTaskTool(cwd, async (options) => {
+			observedTools = options.tools.slice();
+			return { output: "ok" };
+		});
+
+		const result = await tool.execute("call_meta_profile", {
+			description: "meta profile run",
+			prompt: "run with meta profile",
+			profile: "meta",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
+		expect(result.details?.profile).toBe("meta");
+		expect(observedTools).toContain("read");
+		expect(observedTools).toContain("bash");
+		expect(observedTools).toContain("edit");
+		expect(observedTools).toContain("write");
+	});
+
 	it("honors maxParallel from orchestration run metadata", async () => {
 		const cwd = makeTempDir();
 
@@ -1094,7 +1116,7 @@ describe("subagent orchestration", () => {
 								name: "meta_orchestrator",
 								description: "Meta orchestrator",
 								sourcePath: "fixture",
-								profile: "full",
+								profile: "meta",
 								instructions: "Coordinate complex work.",
 							}
 						: undefined,
@@ -1112,7 +1134,7 @@ describe("subagent orchestration", () => {
 					"- split implementation, verification, and risk report into independent workstreams",
 					"- produce rollback notes and integration checklist",
 				].join("\n"),
-				profile: "full",
+				profile: "meta",
 				agent: "meta_orchestrator",
 			});
 		const text = (result.content[0] as { type: "text"; text: string }).text;
@@ -1144,7 +1166,7 @@ describe("subagent orchestration", () => {
 								name: "meta_orchestrator",
 								description: "Meta orchestrator",
 								sourcePath: "fixture",
-								profile: "full",
+								profile: "meta",
 								instructions: "Coordinate tasks.",
 							}
 						: undefined,
@@ -1155,7 +1177,7 @@ describe("subagent orchestration", () => {
 		const result = await tool.execute("call_auto_delegate_orchestrator_simple", {
 			description: "update one README line",
 			prompt: "Fix one typo in README.",
-			profile: "full",
+			profile: "meta",
 			agent: "meta_orchestrator",
 		});
 
@@ -1205,6 +1227,41 @@ describe("subagent orchestration", () => {
 		expect(secondStartedBeforeFirstDone).toBe(false);
 	});
 
+	it("executes delegated subtasks emitted with profile=meta", async () => {
+		const cwd = makeTempDir();
+		let delegateCalls = 0;
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("root-meta-delegate")) {
+				return {
+					output: 'Root analysis.\n<delegate_task profile="meta" description="Meta child">meta-child-task</delegate_task>',
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("meta-child-task")) {
+				delegateCalls += 1;
+				return {
+					output: "Meta delegate complete.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_meta_delegate_profile", {
+			description: "meta delegate",
+			prompt: "root-meta-delegate",
+			profile: "meta",
+		});
+
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		expect(text).toContain("### Delegated Subtasks");
+		expect(delegateCalls).toBe(1);
+		expect(result.details?.profile).toBe("meta");
+		expect(result.details?.delegatedTasks).toBe(1);
+		expect(result.details?.delegatedSucceeded).toBe(1);
+		expect(result.details?.delegatedFailed).toBe(0);
+	});
+
 	it("rejects write-capable background policy", async () => {
 		const cwd = makeTempDir();
 		const tool = createTaskTool(cwd, async () => ({ output: "ok" }), {
@@ -1227,6 +1284,20 @@ describe("subagent orchestration", () => {
 				prompt: "write files",
 				profile: "full",
 				agent: "bg_writer",
+			}),
+		).rejects.toThrow(/Background policy violation/);
+	});
+
+	it("rejects write-capable background policy for meta profile", async () => {
+		const cwd = makeTempDir();
+		const tool = createTaskTool(cwd, async () => ({ output: "ok" }));
+
+		await expect(
+			tool.execute("call_bg_policy_meta", {
+				description: "meta background policy check",
+				prompt: "write files",
+				profile: "meta",
+				background: true,
 			}),
 		).rejects.toThrow(/Background policy violation/);
 	});
