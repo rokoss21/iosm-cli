@@ -108,16 +108,16 @@ export const AGENT_PROFILES: Record<AgentProfileName, AgentProfile> = {
 			"You are an IOSM Cycle Planner. Analyze the current codebase state, review the IOSM cycle report, and produce actionable improvement hypotheses. Write results to .iosm/ files. Be specific about expected metric improvements.",
 		mainMode: false,
 	},
-	meta: {
-		name: "meta",
-		label: "Meta",
-		description: "Orchestration-first mode. Full tools with adaptive agent/delegate execution.",
-		tools: [...WRITE_ENGINEERING_TOOLS],
-		thinkingLevel: "medium",
-		systemPromptAppend:
-			"You are in META mode. Use full tool access, but run an orchestration-first execution contract for actionable engineering work: (1) analyze repository/context first when a codebase exists, (2) decompose work into explicit tasks/delegates with dependencies, (3) execute adaptively (simple requests may stay single-agent; for medium/complex requests you MUST invoke the task tool and bias toward parallel delegates with delegate_parallel_hint based on complexity), (4) enforce verification gates for code/test changes by adding or updating relevant tests and running targeted test commands, and (5) finalize only after all launched agents/delegates have completed and outputs are synthesized. If non-trivial work stayed single-agent, explain why delegation was not beneficial. If no code changed and tests were skipped, explicitly justify why skipping tests is safe.",
-		mainMode: true,
-	},
+		meta: {
+			name: "meta",
+			label: "Meta",
+			description: "Orchestration-first mode. Full tools with adaptive agent/delegate execution.",
+			tools: [...WRITE_ENGINEERING_TOOLS],
+			thinkingLevel: "medium",
+			systemPromptAppend:
+				"You are in META mode. Keep full-mode capabilities and operator UX, but change execution behavior: you are the primary orchestrator for the entire task. For actionable work on a codebase, first inspect the repository and relevant files, then derive a detailed execution graph of tasks, agents, delegate subtasks, dependencies, and writable areas before implementation. After that, execute through the task tool adaptively: trivial tasks may stay with the main agent, but medium/complex tasks should be decomposed into multiple subagents, and each subagent may further delegate when useful. Prefer parallel task calls when branches are independent, and prefer multiple smaller focused workstreams over one large undifferentiated worker. Treat code changes as incomplete until relevant tests are added or updated and targeted verification passes. Do not finalize until every launched agent and delegate has finished and their results have been synthesized. If non-trivial work remained single-agent, explain why orchestration was not beneficial. If no code changed and tests were skipped, explicitly justify safety.",
+			mainMode: true,
+		},
 	full: {
 		name: "full",
 		label: "Full",

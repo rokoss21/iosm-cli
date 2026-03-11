@@ -10333,13 +10333,6 @@ export class InteractiveMode {
 			});
 			return;
 		}
-		if (this.activeProfileName === "meta") {
-			await this.session.prompt(userInput, {
-				forceMetaOrchestrationDirective: true,
-				source: "interactive",
-			});
-			return;
-		}
 		await this.session.prompt(userInput);
 	}
 

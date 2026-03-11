@@ -1754,7 +1754,7 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		expect(generatedPrompt).toContain("DELEGATION_IMPOSSIBLE: <reason>");
 	});
 
-	test("keeps user text intact and enables hidden meta orchestration directive in meta profile", async () => {
+	test("passes through non-@agent requests unchanged in meta profile", async () => {
 		const prompt = vi.fn(async () => { });
 		const fakeThis: any = {
 			sessionManager: { getCwd: () => "/tmp/workspace" },
@@ -1771,10 +1771,7 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		expect(prompt).toHaveBeenCalledTimes(1);
 		const [generatedPrompt, options] = prompt.mock.calls[0] as [string, Record<string, unknown>];
 		expect(generatedPrompt).toBe("добавь интересную фичу в протокол");
-		expect(options).toEqual({
-			forceMetaOrchestrationDirective: true,
-			source: "interactive",
-		});
+		expect(options).toBeUndefined();
 	});
 
 	test("passes through natural-language parallel request without rewriting user text", async () => {

@@ -171,8 +171,6 @@ export interface TaskToolOptions {
 	availableCustomSubagentHints?: Array<{ name: string; description: string }>;
 	/** Returns pending live meta updates entered during an active run. */
 	getMetaMessages?: () => readonly string[];
-	/** Parent session profile name (for policy-aware task defaults). */
-	hostProfileName?: string;
 }
 
 /** Tool names available per profile */
@@ -193,7 +191,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are a fast read-only codebase explorer. Answer concisely. Never write or edit files.",
 	plan: "You are a technical architect. Analyze the codebase and produce a clear implementation plan. Do not write or edit files.",
 	iosm: "You are an IOSM execution agent. Use IOSM methodology and keep IOSM artifacts synchronized with implementation.",
-	meta: "You are a meta orchestration agent. Analyze repository context first, then build explicit subtask/delegate streams with dependencies. For medium/complex tasks, default to aggressive safe parallelism (prefer many small independent delegates) and avoid single-agent execution unless clearly simpler or safer. When delegation is not used for non-trivial work, explain why in one line. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
+	meta: "You are a meta orchestration agent. Start by inspecting repository context and forming a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work clearly instead of collapsing complex work into one worker. For medium/complex tasks, default to aggressive safe parallelism with multiple focused delegates when branches are independent. When delegation is not used for non-trivial work, explain why in one line. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
 	iosm_analyst:
 		"You are an IOSM metrics analyst. Analyze .iosm/ artifacts and codebase metrics. Be precise and evidence-based.",
 	iosm_verifier:
@@ -924,18 +922,6 @@ export function createTaskTool(
 						}
 					}
 
-					const hostProfile = options?.hostProfileName?.trim().toLowerCase();
-					const shouldCoerceRootTaskToMeta =
-						hostProfile === "meta" &&
-						!normalizedAgentName &&
-						!customSubagent &&
-						!orchestrationRunId &&
-						!orchestrationTaskId &&
-						normalizedProfile !== "meta";
-					if (shouldCoerceRootTaskToMeta) {
-						normalizedProfile = "meta";
-					}
-
 					if (!toolsByProfile[normalizedProfile]) {
 						normalizedProfile = "full";
 					}
@@ -957,11 +943,7 @@ export function createTaskTool(
 					requestedDelegateParallelHint === undefined
 						? deriveAutoDelegateParallelHint(effectiveProfile, normalizedAgentName, description, prompt)
 						: undefined;
-				const enforcedMetaParallelFloor = shouldCoerceRootTaskToMeta ? 3 : 0;
 				let effectiveDelegateParallelHint = requestedDelegateParallelHint ?? autoDelegateParallelHint;
-				if (enforcedMetaParallelFloor > 0 && (effectiveDelegateParallelHint ?? 0) < enforcedMetaParallelFloor) {
-					effectiveDelegateParallelHint = enforcedMetaParallelFloor;
-				}
 				const effectiveMaxDelegations = Math.max(
 					0,
 					Math.min(maxDelegationsPerTaskFromEnv, effectiveDelegateParallelHint ?? maxDelegationsPerTaskFromEnv),

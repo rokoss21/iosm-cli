@@ -704,7 +704,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						description: agent.description,
 					})),
 					getMetaMessages: () => sessionRef?.getMetaMessages() ?? [],
-					hostProfileName: profile?.name,
 				})
 			: undefined;
 

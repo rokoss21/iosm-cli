@@ -1191,48 +1191,6 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedTasks).toBe(2);
 	});
 
-	it("coerces root task profile to meta in meta host sessions", async () => {
-		const cwd = makeTempDir();
-		let sawEnforcementPrompt = false;
-		let firstRootSystemPrompt: string | undefined;
-
-		const tool = createTaskTool(
-			cwd,
-			async (options) => {
-				if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
-					sawEnforcementPrompt = true;
-					return {
-						output: "DELEGATION_IMPOSSIBLE: single focused change in one file.",
-						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
-					};
-				}
-				if (options.prompt.includes("root-task")) {
-					firstRootSystemPrompt = options.systemPrompt;
-					return {
-						output: "Root analysis without delegation on first pass.",
-						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
-					};
-				}
-				return { output: "unexpected" };
-			},
-			{
-				hostProfileName: "meta",
-			},
-		);
-
-		const result = await tool.execute("call_meta_coercion", {
-			description: "implement endpoint slice",
-			prompt: "root-task",
-			profile: "explore",
-		});
-		const text = (result.content[0] as { type: "text"; text: string }).text;
-
-		expect(firstRootSystemPrompt).toContain("meta orchestration agent");
-		expect(sawEnforcementPrompt).toBe(true);
-		expect(result.details?.profile).toBe("meta");
-		expect(text).toContain("DELEGATION_IMPOSSIBLE");
-	});
-
 	it("keeps single-agent path for simple orchestrator tasks without explicit hint", async () => {
 		const cwd = makeTempDir();
 		let sawEnforcementPrompt = false;
