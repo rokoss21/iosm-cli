@@ -181,7 +181,10 @@ function deriveOrchestrationDisplayText(promptTextWithoutDirective: string): str
 	return task;
 }
 
-function buildSubagentOrchestrationDirective(text: string): string | undefined {
+function buildSubagentOrchestrationDirective(
+	text: string,
+	options?: { forceMetaOrchestration?: boolean },
+): string | undefined {
 	const block = parseOrchestrateBlock(text);
 	if (block) {
 		return [
@@ -203,6 +206,21 @@ function buildSubagentOrchestrationDirective(text: string): string | undefined {
 			"When assignments can conflict on writable files, serialize those conflicting writes.",
 			"Contract body:",
 			block.body || "(empty)",
+		].join("\n");
+	}
+
+	if (options?.forceMetaOrchestration === true) {
+		return [
+			"[ORCHESTRATION_DIRECTIVE]",
+			"Active profile policy requires orchestration-first execution.",
+			"You MUST execute this user request via the `task` tool before final prose.",
+			'Root task call requirements: profile="meta", include a concise description, and set delegate_parallel_hint adaptively.',
+			"delegate_parallel_hint guidance: simple=1, medium=3-6, complex/risky=7-10.",
+			"For non-trivial tasks, prefer delegate_parallel_hint >= 2 and split into independent <delegate_task> workstreams.",
+			"If non-trivial work remains single-agent, include one line: DELEGATION_IMPOSSIBLE: <reason>.",
+			"For code/test changes, add/update relevant tests and run targeted tests before closure.",
+			"Finalize only after all launched delegates are resolved and outputs synthesized.",
+			"If no code changed and tests were skipped, explicitly justify safety.",
 		].join("\n");
 	}
 
@@ -282,6 +300,8 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Skip auto-injected orchestration directive for prompts that intentionally mention agents/subagents as data. */
 	skipOrchestrationDirective?: boolean;
+	/** Force meta orchestration directive injection even without explicit <orchestrate> block. */
+	forceMetaOrchestrationDirective?: boolean;
 }
 
 /** Result from cycleModel() */
@@ -1303,7 +1323,9 @@ export class AgentSession {
 		}
 		const orchestrationDirective = options?.skipOrchestrationDirective
 			? undefined
-			: buildSubagentOrchestrationDirective(expandedText);
+			: buildSubagentOrchestrationDirective(expandedText, {
+					forceMetaOrchestration: options?.forceMetaOrchestrationDirective === true,
+				});
 		const promptText = orchestrationDirective ? `${expandedText}\n\n${orchestrationDirective}` : expandedText;
 		this._appendSessionTrace({
 			type: "prompt_expanded",

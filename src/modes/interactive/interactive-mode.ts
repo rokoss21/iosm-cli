@@ -10334,23 +10334,8 @@ export class InteractiveMode {
 			return;
 		}
 		if (this.activeProfileName === "meta") {
-			const metaPrompt = [
-				'<orchestrate mode="parallel" agents="1" max_parallel="20">',
-				`- agent 1: profile=meta cwd=${this.sessionManager.getCwd()} agent=meta_orchestrator`,
-				`task: ${userInput}`,
-				"constraints:",
-				"- active profile is meta orchestration mode",
-				'- MUST call task tool with agent="meta_orchestrator" and profile="meta"',
-				"- Include delegate_parallel_hint in the task call.",
-				"- Set delegate_parallel_hint adaptively: simple=1, medium=3-6, complex/risky=7-10.",
-				"- For non-trivial tasks, prefer delegate_parallel_hint >= 2 and split into independent <delegate_task> workstreams.",
-				"- If single-agent execution is still chosen for non-trivial work, include one line: DELEGATION_IMPOSSIBLE: <reason>.",
-				"- For code/test changes, add/update tests and run targeted tests before final answer.",
-				"- If no code changed and tests are skipped, include explicit safety justification.",
-				"</orchestrate>",
-			].join("\n");
-			await this.session.prompt(metaPrompt, {
-				expandPromptTemplates: false,
+			await this.session.prompt(userInput, {
+				forceMetaOrchestrationDirective: true,
 				source: "interactive",
 			});
 			return;
