@@ -1144,6 +1144,53 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedTasks).toBe(2);
 	});
 
+	it("auto-enables delegation pressure for complex meta profile tasks without explicit hint", async () => {
+		const cwd = makeTempDir();
+		let sawEnforcementPrompt = false;
+
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
+				sawEnforcementPrompt = true;
+				return {
+					output:
+						'Root refined.\n<delegate_task profile="explore" description="A">child-one</delegate_task>\n<delegate_task profile="plan" description="B">child-two</delegate_task>',
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("Scope:")) {
+				return {
+					output: "Root analysis without delegation on first pass.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("child-one") || options.prompt.includes("child-two")) {
+				return {
+					output: `${options.prompt} done`,
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_auto_delegate_meta_profile", {
+			description:
+				"Coordinate a multi-part hardening and refactor plan across auth, sessions, API boundary, and regression coverage.",
+			prompt: [
+				"Scope:",
+				"- review src/auth/token.ts and src/auth/session.ts",
+				"- review src/api/middleware/auth.ts and tests/auth/session.spec.ts",
+				"- split implementation, verification, and risk report into independent workstreams",
+				"- produce rollback notes and integration checklist",
+			].join("\n"),
+			profile: "meta",
+		});
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+
+		expect(sawEnforcementPrompt).toBe(true);
+		expect(text).toContain("### Delegated Subtasks");
+		expect(result.details?.delegatedTasks).toBe(2);
+	});
+
 	it("keeps single-agent path for simple orchestrator tasks without explicit hint", async () => {
 		const cwd = makeTempDir();
 		let sawEnforcementPrompt = false;

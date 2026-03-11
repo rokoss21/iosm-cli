@@ -191,7 +191,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are a fast read-only codebase explorer. Answer concisely. Never write or edit files.",
 	plan: "You are a technical architect. Analyze the codebase and produce a clear implementation plan. Do not write or edit files.",
 	iosm: "You are an IOSM execution agent. Use IOSM methodology and keep IOSM artifacts synchronized with implementation.",
-	meta: "You are a meta orchestration agent. Analyze repository context first, decompose work into explicit subtask/delegate streams, maximize safe parallelism for medium/complex work, enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
+	meta: "You are a meta orchestration agent. Analyze repository context first, then build explicit subtask/delegate streams with dependencies. For medium/complex tasks, default to aggressive safe parallelism (prefer many small independent delegates) and avoid single-agent execution unless clearly simpler or safer. When delegation is not used for non-trivial work, explain why in one line. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
 	iosm_analyst:
 		"You are an IOSM metrics analyst. Analyze .iosm/ artifacts and codebase metrics. Be precise and evidence-based.",
 	iosm_verifier:
@@ -321,18 +321,22 @@ function parseBoundedInt(raw: string | undefined, fallback: number, min: number,
 	return Math.max(min, Math.min(max, parsed));
 }
 
-function shouldAutoDelegateByAgent(agentName: string | undefined): boolean {
-	if (!agentName) return false;
-	const normalized = agentName.trim().toLowerCase();
-	return normalized.includes("orchestrator");
+function shouldAutoDelegate(input: { profile?: string; agentName?: string }): boolean {
+	const profile = input.profile?.trim().toLowerCase();
+	if (profile === "meta") return true;
+	const agentName = input.agentName?.trim().toLowerCase();
+	return !!agentName && agentName.includes("orchestrator");
 }
 
 function deriveAutoDelegateParallelHint(
+	profile: string | undefined,
 	agentName: string | undefined,
 	description: string,
 	prompt: string,
 ): number | undefined {
-	if (!shouldAutoDelegateByAgent(agentName)) return undefined;
+	const normalizedProfile = profile?.trim().toLowerCase();
+	const isMetaProfile = normalizedProfile === "meta";
+	if (!shouldAutoDelegate({ profile: normalizedProfile, agentName })) return undefined;
 	const text = `${description}\n${prompt}`.trim();
 	if (!text) return 1;
 	const normalized = text.replace(/\s+/g, " ").trim();
@@ -365,6 +369,10 @@ function deriveAutoDelegateParallelHint(
 		score += 1;
 	}
 	if (hasCodeBlock) {
+		score += 1;
+	}
+	if (isMetaProfile && score > 0) {
+		// Meta profile is intentionally parallel-biased for non-trivial work.
 		score += 1;
 	}
 
@@ -933,7 +941,7 @@ export function createTaskTool(
 					: undefined;
 				const autoDelegateParallelHint =
 					requestedDelegateParallelHint === undefined
-						? deriveAutoDelegateParallelHint(normalizedAgentName, description, prompt)
+						? deriveAutoDelegateParallelHint(effectiveProfile, normalizedAgentName, description, prompt)
 						: undefined;
 			const effectiveDelegateParallelHint = requestedDelegateParallelHint ?? autoDelegateParallelHint;
 			const effectiveMaxDelegations = Math.max(
