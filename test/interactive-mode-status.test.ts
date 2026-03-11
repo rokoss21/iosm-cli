@@ -8,6 +8,10 @@ import { ENV_AGENT_DIR } from "../src/config.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { createTeamRun } from "../src/core/agent-teams.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
+import {
+	MAX_ORCHESTRATION_AGENTS,
+	MAX_ORCHESTRATION_PARALLEL,
+} from "../src/core/orchestration-limits.js";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
 import { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
@@ -1746,12 +1750,34 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 
 		expect(prompt).toHaveBeenCalledTimes(1);
 		const [generatedPrompt] = prompt.mock.calls[0] as [string];
-		expect(generatedPrompt).toContain('<orchestrate mode="parallel" agents="1" max_parallel="20">');
+		expect(generatedPrompt).toContain(
+			`<orchestrate mode="parallel" agents="1" max_parallel="${MAX_ORCHESTRATION_PARALLEL}">`,
+		);
 		expect(generatedPrompt).toContain('agent="meta_orchestrator"');
 		expect(generatedPrompt).toContain("Include delegate_parallel_hint in the task call.");
 		expect(generatedPrompt).toContain("If user explicitly requested an agent count");
 		expect(generatedPrompt).toContain("Prefer existing custom agents for delegated work when suitable");
 		expect(generatedPrompt).toContain("DELEGATION_IMPOSSIBLE: <reason>");
+	});
+
+	test("accepts orchestrate slash command at max agent and parallel limits", () => {
+		const fakeThis: any = {
+			parseSlashArgs: (InteractiveMode as any).prototype.parseSlashArgs,
+			showWarning: vi.fn(),
+		};
+
+		const parsed = (InteractiveMode as any).prototype.parseOrchestrateSlashCommand.call(
+			fakeThis,
+			`/orchestrate --parallel --agents ${MAX_ORCHESTRATION_AGENTS} --max-parallel ${MAX_ORCHESTRATION_PARALLEL} fan out task`,
+		);
+
+		expect(parsed).toMatchObject({
+			mode: "parallel",
+			agents: MAX_ORCHESTRATION_AGENTS,
+			maxParallel: MAX_ORCHESTRATION_PARALLEL,
+			task: "fan out task",
+		});
+		expect(fakeThis.showWarning).not.toHaveBeenCalled();
 	});
 
 	test("passes through non-@agent requests unchanged in meta profile", async () => {

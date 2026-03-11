@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createTeamRun, getTeamRun, updateTeamTaskStatus } from "../src/core/agent-teams.js";
+import { MAX_SUBAGENT_DELEGATE_PARALLEL } from "../src/core/orchestration-limits.js";
 import { createTaskTool } from "../src/core/tools/task.js";
 
 describe("subagent orchestration", () => {
@@ -1078,6 +1079,46 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedTasks ?? 0).toBe(0);
 		expect(result.details?.delegatedSucceeded ?? 0).toBe(0);
 		expect(result.details?.delegatedFailed ?? 0).toBe(0);
+	});
+
+	it("supports delegated fan-out up to the 10-child ceiling", async () => {
+		const cwd = makeTempDir();
+		let active = 0;
+		let maxActive = 0;
+		const delegateBodies = Array.from(
+			{ length: MAX_SUBAGENT_DELEGATE_PARALLEL },
+			(_value, index) =>
+				`<delegate_task profile="explore" description="child-${index + 1}">child-${index + 1}</delegate_task>`,
+		).join("\n");
+
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("root-fanout")) {
+				return {
+					output: `Root analysis.\n${delegateBodies}`,
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.startsWith("child-")) {
+				active += 1;
+				maxActive = Math.max(maxActive, active);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				active -= 1;
+				return {
+					output: `${options.prompt} done`,
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		await tool.execute("call_delegate_10way", {
+			description: "delegate 10-way",
+			prompt: "root-fanout",
+			profile: "full",
+			delegate_parallel_hint: MAX_SUBAGENT_DELEGATE_PARALLEL,
+		});
+
+		expect(maxActive).toBe(MAX_SUBAGENT_DELEGATE_PARALLEL);
 	});
 
 	it("auto-enables delegation pressure for complex orchestrator tasks without explicit hint", async () => {

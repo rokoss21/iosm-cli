@@ -11,6 +11,13 @@ import {
 	isRetrospectiveRetryable,
 	type FailureCause,
 } from "../failure-retrospective.js";
+import {
+	MAX_ORCHESTRATION_AGENTS,
+	MAX_ORCHESTRATION_PARALLEL,
+	MAX_SUBAGENT_DELEGATE_PARALLEL,
+	MAX_SUBAGENT_DELEGATION_DEPTH,
+	MAX_SUBAGENT_DELEGATIONS_PER_TASK,
+} from "../orchestration-limits.js";
 import type { SharedMemoryContext } from "../shared-memory.js";
 import type { CustomSubagentDefinition } from "../subagents.js";
 
@@ -127,7 +134,7 @@ const taskSchema = Type.Object({
 	delegate_parallel_hint: Type.Optional(
 		Type.Integer({
 			minimum: 1,
-			maximum: 10,
+			maximum: MAX_SUBAGENT_DELEGATE_PARALLEL,
 			description:
 				"Optional hint for intra-task delegation fan-out. Higher value allows more delegated subtasks to run in parallel inside a single task execution.",
 		}),
@@ -287,16 +294,31 @@ class Mutex {
 	}
 }
 
-const maxParallelFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_MAX_PARALLEL, 20, 1, 20);
+const maxParallelFromEnv = parseBoundedInt(
+	process.env.IOSM_SUBAGENT_MAX_PARALLEL,
+	MAX_ORCHESTRATION_PARALLEL,
+	1,
+	MAX_ORCHESTRATION_PARALLEL,
+);
 const subagentSemaphore = new Semaphore(maxParallelFromEnv);
-const maxDelegationDepthFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_MAX_DELEGATION_DEPTH, 1, 0, 3);
+const maxDelegationDepthFromEnv = parseBoundedInt(
+	process.env.IOSM_SUBAGENT_MAX_DELEGATION_DEPTH,
+	1,
+	0,
+	MAX_SUBAGENT_DELEGATION_DEPTH,
+);
 const maxDelegationsPerTaskFromEnv = parseBoundedInt(
 	process.env.IOSM_SUBAGENT_MAX_DELEGATIONS_PER_TASK,
-	10,
+	MAX_SUBAGENT_DELEGATIONS_PER_TASK,
 	0,
-	10,
+	MAX_SUBAGENT_DELEGATIONS_PER_TASK,
 );
-const maxDelegatedParallelFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_MAX_DELEGATE_PARALLEL, 10, 1, 10);
+const maxDelegatedParallelFromEnv = parseBoundedInt(
+	process.env.IOSM_SUBAGENT_MAX_DELEGATE_PARALLEL,
+	MAX_SUBAGENT_DELEGATE_PARALLEL,
+	1,
+	MAX_SUBAGENT_DELEGATE_PARALLEL,
+);
 const emptyOutputRetriesFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_EMPTY_OUTPUT_RETRIES, 1, 0, 2);
 const retrospectiveRetriesFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_RETRO_RETRIES, 1, 0, 1);
 const orchestrationDependencyWaitTimeoutMsFromEnv = parseBoundedInt(
@@ -578,9 +600,9 @@ function getRunParallelLimit(cwd: string, runId: string): number | undefined {
 	if (teamRun.mode === "sequential") return 1;
 	const maxParallel = teamRun.maxParallel;
 	if (!Number.isInteger(maxParallel) || !maxParallel || maxParallel < 1) {
-		return Math.max(1, Math.min(teamRun.agents, 20));
+		return Math.max(1, Math.min(teamRun.agents, MAX_ORCHESTRATION_AGENTS));
 	}
-	return Math.max(1, Math.min(maxParallel, 20));
+	return Math.max(1, Math.min(maxParallel, MAX_ORCHESTRATION_PARALLEL));
 }
 
 function getOrCreateOrchestrationSemaphore(cwd: string, runId: string): Semaphore | undefined {
@@ -944,7 +966,7 @@ export function createTaskTool(
 				const delegationDepth = maxDelegationDepthFromEnv;
 					const requestedDelegateParallelHint =
 						typeof delegateParallelHint === "number" && Number.isInteger(delegateParallelHint)
-							? Math.max(1, Math.min(10, delegateParallelHint))
+							? Math.max(1, Math.min(MAX_SUBAGENT_DELEGATE_PARALLEL, delegateParallelHint))
 							: undefined;
 				const autoDelegateParallelHint =
 					requestedDelegateParallelHint === undefined

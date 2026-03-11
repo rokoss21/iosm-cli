@@ -80,6 +80,11 @@ import {
 	isInternalUiMetaDetails,
 } from "../../core/messages.js";
 import {
+	MAX_ORCHESTRATION_AGENTS,
+	MAX_ORCHESTRATION_PARALLEL,
+	MAX_SUBAGENT_DELEGATE_PARALLEL,
+} from "../../core/orchestration-limits.js";
+import {
 	loadModelsDevProviderCatalog,
 	type ModelsDevProviderCatalogInfo,
 } from "../../core/models-dev-provider-catalog.js";
@@ -10306,7 +10311,7 @@ export class InteractiveMode {
 			const mentionTask = cleaned.length > 0 ? cleaned : userInput;
 			const orchestrationAwareAgent = /orchestrator/i.test(mentionedAgent);
 			const mentionMode: OrchestrationMode = orchestrationAwareAgent ? "parallel" : "sequential";
-			const mentionMaxParallel = orchestrationAwareAgent ? 20 : undefined;
+			const mentionMaxParallel = orchestrationAwareAgent ? MAX_ORCHESTRATION_PARALLEL : undefined;
 			const mentionPrompt = [
 				`<orchestrate mode="${mentionMode}" agents="1"${mentionMaxParallel ? ` max_parallel="${mentionMaxParallel}"` : ""}>`,
 				`- agent 1: profile=${this.activeProfileName} cwd=${this.sessionManager.getCwd()} agent=${mentionedAgent}`,
@@ -10317,8 +10322,8 @@ export class InteractiveMode {
 				...(orchestrationAwareAgent
 					? [
 							"- Include delegate_parallel_hint in the task call.",
-							"- If user explicitly requested an agent count, set delegate_parallel_hint to that count (clamp 1..10).",
-							"- Otherwise set delegate_parallel_hint based on complexity: simple=1, medium=3-6, complex/risky=7-10.",
+							`- If user explicitly requested an agent count, set delegate_parallel_hint to that count (clamp 1..${MAX_SUBAGENT_DELEGATE_PARALLEL}).`,
+							`- Otherwise set delegate_parallel_hint based on complexity: simple=1, medium=3-6, complex/risky=7-${MAX_SUBAGENT_DELEGATE_PARALLEL}.`,
 							"- For non-trivial tasks, prefer delegate_parallel_hint >= 2 and split into independent <delegate_task> workstreams.",
 							'- Prefer existing custom agents for delegated work when suitable (use <delegate_task agent="name" ...>).',
 							"- If no existing custom agent fits, create focused delegate streams via profile-based <delegate_task> blocks.",
@@ -10881,8 +10886,8 @@ export class InteractiveMode {
 			if (token === "--max-parallel") {
 				const next = rest[index + 1];
 				const parsed = next ? Number.parseInt(next, 10) : Number.NaN;
-				if (!Number.isInteger(parsed) || parsed < 1 || parsed > 20) {
-					this.showWarning("Invalid --max-parallel value (expected 1..20).");
+				if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_ORCHESTRATION_PARALLEL) {
+					this.showWarning(`Invalid --max-parallel value (expected 1..${MAX_ORCHESTRATION_PARALLEL}).`);
 					return undefined;
 				}
 				maxParallel = parsed;
@@ -11439,7 +11444,7 @@ export class InteractiveMode {
 		});
 
 		const runId = `swarm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-		const maxParallel = Math.max(1, Math.min(20, options.maxParallel ?? 3));
+		const maxParallel = Math.max(1, Math.min(MAX_ORCHESTRATION_PARALLEL, options.maxParallel ?? 3));
 		const meta = this.buildSwarmRunMeta({
 			runId,
 			source: "plain",
@@ -11492,7 +11497,7 @@ export class InteractiveMode {
 		});
 
 		const runId = `swarm_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-		const maxParallel = Math.max(1, Math.min(20, input.maxParallel ?? 3));
+		const maxParallel = Math.max(1, Math.min(MAX_ORCHESTRATION_PARALLEL, input.maxParallel ?? 3));
 		const meta = this.buildSwarmRunMeta({
 			runId,
 			source: "singular",
@@ -11780,8 +11785,8 @@ export class InteractiveMode {
 			if (arg === "--agents") {
 				const value = args[index + 1];
 				const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
-				if (!Number.isInteger(parsed) || parsed < 1 || parsed > 20) {
-					this.showWarning("Invalid --agents value (expected 1..20).");
+				if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_ORCHESTRATION_AGENTS) {
+					this.showWarning(`Invalid --agents value (expected 1..${MAX_ORCHESTRATION_AGENTS}).`);
 					return undefined;
 				}
 				agents = parsed;
@@ -11791,8 +11796,8 @@ export class InteractiveMode {
 			if (arg === "--max-parallel") {
 				const value = args[index + 1];
 				const parsed = value ? Number.parseInt(value, 10) : Number.NaN;
-				if (!Number.isInteger(parsed) || parsed < 1 || parsed > 20) {
-					this.showWarning("Invalid --max-parallel value (expected 1..20).");
+				if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_ORCHESTRATION_PARALLEL) {
+					this.showWarning(`Invalid --max-parallel value (expected 1..${MAX_ORCHESTRATION_PARALLEL}).`);
 					return undefined;
 				}
 				maxParallel = parsed;
