@@ -98,6 +98,9 @@ describe("loadCustomSubagents", () => {
 		expect(names.has("test_failure_triager")).toBe(true);
 		expect(names.has("meta_orchestrator")).toBe(true);
 		expect(loaded.agents.find((agent) => agent.name === "meta_orchestrator")?.profile).toBe("meta");
+		expect(loaded.agents.find((agent) => agent.name === "meta_orchestrator")?.instructions).toContain(
+			"Recon is only preparation; once you can name the workstreams, stop exploring and delegate.",
+		);
 	});
 
 	it("allows project agents to override built-in system agents by name", () => {

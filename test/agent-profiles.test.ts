@@ -17,6 +17,9 @@ describe("agent profiles", () => {
 		expect(AGENT_PROFILES.meta.tools).toEqual(AGENT_PROFILES.full.tools);
 		expect(AGENT_PROFILES.meta.thinkingLevel).toBe(AGENT_PROFILES.full.thinkingLevel);
 		expect(AGENT_PROFILES.meta.mainMode).toBe(true);
+		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("bounded read-only recon");
+		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("do not make direct write/edit changes in the main agent before launching the first task call");
+		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("if the user requested a specific number of parallel agents");
 	});
 
 	it("includes meta in main profile cycling order", () => {
