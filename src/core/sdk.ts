@@ -128,6 +128,35 @@ export interface CreateAgentSessionResult {
 	modelFallbackMessage?: string;
 }
 
+export function collectSubagentRenderableText(message: {
+	role: string;
+	content: unknown;
+	display?: boolean;
+}): string[] {
+	if (message.role === "assistant") {
+		if (!Array.isArray(message.content)) return [];
+		return message.content
+			.filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string")
+			.map((part) => part.text.trim())
+			.filter((text) => text.length > 0);
+	}
+
+	if (message.role === "custom" && message.display !== false) {
+		if (typeof message.content === "string") {
+			const text = message.content.trim();
+			return text.length > 0 ? [text] : [];
+		}
+		if (Array.isArray(message.content)) {
+			return message.content
+				.filter((part): part is { type: "text"; text: string } => part?.type === "text" && typeof part.text === "string")
+				.map((part) => part.text.trim())
+				.filter((text) => text.length > 0);
+		}
+	}
+
+	return [];
+}
+
 // Re-exports
 
 export type {
@@ -588,16 +617,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					throw new Error("Operation aborted");
 				}
 				runnerOptions.signal?.addEventListener("abort", abortSubagent, { once: true });
-				const progressState = {
-					toolCallsStarted: 0,
-					toolCallsCompleted: 0,
-					assistantMessages: 0,
-					activeTool: undefined as string | undefined,
-				};
-				const trimInline = (value: string, max = 60): string => {
-					const compact = value.trim().replace(/\s+/g, " ");
-					return compact.length > max ? `${compact.slice(0, Math.max(1, max - 3))}...` : compact;
-				};
+					const progressState = {
+						toolCallsStarted: 0,
+						toolCallsCompleted: 0,
+						assistantMessages: 0,
+						activeTool: undefined as string | undefined,
+					};
+					const displayFallbackChunks: string[] = [];
+					const trimInline = (value: string, max = 60): string => {
+						const compact = value.trim().replace(/\s+/g, " ");
+						return compact.length > max ? `${compact.slice(0, Math.max(1, max - 3))}...` : compact;
+					};
 				const summarizeToolTarget = (toolName: string, args: unknown): string => {
 					if (!args || typeof args !== "object") return `running ${toolName}`;
 					const record = args as Record<string, unknown>;
@@ -636,23 +666,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				};
 				emitProgress("starting", "booting subagent", undefined);
 
-				try {
-					sub.subscribe((event) => {
-						if (event.type === "message_end" && event.message.role === "assistant") {
-							progressState.assistantMessages += 1;
-							for (const part of event.message.content) {
-								if (part.type === "text" && part.text.trim()) {
-									chunks.push(part.text.trim());
+					try {
+						sub.subscribe((event) => {
+							if (event.type === "message_end" && event.message.role === "assistant") {
+								progressState.assistantMessages += 1;
+								chunks.push(...collectSubagentRenderableText(event.message));
+								if (chunks.length > 0) {
+									emitProgress("responding", "drafting response", undefined);
 								}
 							}
-							if (chunks.length > 0) {
-								emitProgress("responding", "drafting response", undefined);
+							if (event.type === "message_end" && event.message.role === "custom") {
+								displayFallbackChunks.push(...collectSubagentRenderableText(event.message));
 							}
-						}
-						if (event.type === "tool_execution_start") {
-							progressState.toolCallsStarted += 1;
-							const toolName = event.toolName ?? "tool";
-							emitProgress("running", summarizeToolTarget(toolName, event.args), toolName);
+							if (event.type === "tool_execution_start") {
+								progressState.toolCallsStarted += 1;
+								const toolName = event.toolName ?? "tool";
+								emitProgress("running", summarizeToolTarget(toolName, event.args), toolName);
 						}
 						if (event.type === "tool_execution_end") {
 							progressState.toolCallsCompleted += 1;
@@ -663,16 +692,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					});
 
 					await sub.prompt(runnerOptions.prompt, { skipIosmAutopilot: true });
-					if (runnerOptions.signal?.aborted) {
-						throw new Error("Operation aborted");
-					}
-					emitProgress("responding", "finalizing response", undefined);
-					const sessionId = sub.sessionManager.getSessionId();
-					return {
-						output: chunks.join("\n\n"),
-						sessionId,
-						stats: {
-							toolCallsStarted: progressState.toolCallsStarted,
+						if (runnerOptions.signal?.aborted) {
+							throw new Error("Operation aborted");
+						}
+						emitProgress("responding", "finalizing response", undefined);
+						const sessionId = sub.sessionManager.getSessionId();
+						const outputChunks = chunks.length > 0 ? chunks : displayFallbackChunks;
+						return {
+							output: outputChunks.join("\n\n"),
+							sessionId,
+							stats: {
+								toolCallsStarted: progressState.toolCallsStarted,
 							toolCallsCompleted: progressState.toolCallsCompleted,
 							assistantMessages: progressState.assistantMessages,
 						},
