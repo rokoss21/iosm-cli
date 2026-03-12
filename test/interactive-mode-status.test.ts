@@ -13,7 +13,10 @@ import {
 	MAX_ORCHESTRATION_PARALLEL,
 } from "../src/core/orchestration-limits.js";
 import { TASK_PLAN_CUSTOM_TYPE } from "../src/core/task-plan.js";
-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.js";
+import {
+	InteractiveMode,
+	resolveStreamingSubmissionMode,
+} from "../src/modes/interactive/interactive-mode.js";
 import { OAuthSelectorComponent } from "../src/modes/interactive/components/oauth-selector.js";
 import { initTheme } from "../src/modes/interactive/theme/theme.js";
 
@@ -71,6 +74,41 @@ describe("InteractiveMode.showStatus", () => {
 		// adds spacer + text
 		expect(fakeThis.chatContainer.children).toHaveLength(5);
 		expect(renderLastLine(fakeThis.chatContainer)).toContain("STATUS_TWO");
+	});
+});
+
+describe("resolveStreamingSubmissionMode", () => {
+	test("downgrades meta submit mode to follow-up while meta subagents are active", () => {
+		expect(
+			resolveStreamingSubmissionMode({
+				configuredMode: "meta",
+				activeProfileName: "meta",
+				activeSubagentCount: 3,
+				activeAssistantOrchestrationContext: false,
+			}),
+		).toBe("followUp");
+	});
+
+	test("keeps meta submit mode when no meta orchestration is active", () => {
+		expect(
+			resolveStreamingSubmissionMode({
+				configuredMode: "meta",
+				activeProfileName: "meta",
+				activeSubagentCount: 0,
+				activeAssistantOrchestrationContext: false,
+			}),
+		).toBe("meta");
+	});
+
+	test("does not change non-meta configured modes", () => {
+		expect(
+			resolveStreamingSubmissionMode({
+				configuredMode: "steer",
+				activeProfileName: "meta",
+				activeSubagentCount: 3,
+				activeAssistantOrchestrationContext: true,
+			}),
+		).toBe("steer");
 	});
 });
 

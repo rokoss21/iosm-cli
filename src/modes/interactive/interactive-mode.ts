@@ -280,6 +280,22 @@ type CompactionQueuedMessage = {
 	mode: "steer" | "followUp" | "meta";
 };
 
+export function resolveStreamingSubmissionMode(input: {
+	configuredMode: "steer" | "followUp" | "meta";
+	activeProfileName: string;
+	activeSubagentCount: number;
+	activeAssistantOrchestrationContext: boolean;
+}): "steer" | "followUp" | "meta" {
+	if (
+		input.configuredMode === "meta" &&
+		input.activeProfileName === "meta" &&
+		(input.activeSubagentCount > 0 || input.activeAssistantOrchestrationContext)
+	) {
+		return "followUp";
+	}
+	return input.configuredMode;
+}
+
 function parseRequestedParallelAgentCount(text: string): number | undefined {
 	const patterns = [
 		/(\d+)\s+(?:parallel|concurrent)\s+agents?/i,
@@ -3841,9 +3857,18 @@ export class InteractiveMode {
 			// If streaming, use configured stream input mode (meta/followUp/steer)
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
 			if (this.session.isStreaming) {
+				const streamingBehavior = resolveStreamingSubmissionMode({
+					configuredMode: this.session.streamInputMode,
+					activeProfileName: this.activeProfileName,
+					activeSubagentCount: this.subagentComponents.size,
+					activeAssistantOrchestrationContext: this.activeAssistantOrchestrationContext,
+				});
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: this.session.streamInputMode });
+				await this.session.prompt(text, { streamingBehavior });
+				if (streamingBehavior !== this.session.streamInputMode) {
+					this.showStatus("Queued follow-up until meta orchestration completes");
+				}
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
