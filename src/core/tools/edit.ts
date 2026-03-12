@@ -16,8 +16,10 @@ import type { ToolPermissionGuard } from "./permissions.js";
 
 const editSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
-	oldText: Type.String({ description: "Exact text to find and replace (must match exactly)" }),
-	newText: Type.String({ description: "New text to replace the old text with" }),
+	oldText: Type.Optional(Type.String({ description: "Exact text to find and replace (must match exactly)" })),
+	findText: Type.Optional(Type.String({ description: "Legacy alias for oldText" })),
+	newText: Type.Optional(Type.String({ description: "New text to replace the old text with" })),
+	replaceText: Type.Optional(Type.String({ description: "Legacy alias for newText" })),
 });
 
 export type EditToolInput = Static<typeof editSchema>;
@@ -55,6 +57,25 @@ export interface EditToolOptions {
 	permissionGuard?: ToolPermissionGuard;
 }
 
+function normalizeEditPayload(input: {
+	path: string;
+	oldText?: string;
+	findText?: string;
+	newText?: string;
+	replaceText?: string;
+}): { path: string; oldText: string; newText: string } {
+	const oldText = input.oldText ?? input.findText;
+	const newText = input.newText ?? input.replaceText;
+	if (typeof oldText !== "string" || typeof newText !== "string") {
+		throw new Error('Edit tool requires both oldText/findText and newText/replaceText.');
+	}
+	return {
+		path: input.path,
+		oldText,
+		newText,
+	};
+}
+
 export function createEditTool(cwd: string, options?: EditToolOptions): AgentTool<typeof editSchema> {
 	const ops = options?.operations ?? defaultEditOperations;
 	const permissionGuard = options?.permissionGuard;
@@ -67,9 +88,10 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
 		parameters: editSchema,
 		execute: async (
 			_toolCallId: string,
-			{ path, oldText, newText }: { path: string; oldText: string; newText: string },
+			input: { path: string; oldText?: string; findText?: string; newText?: string; replaceText?: string },
 			signal?: AbortSignal,
 		) => {
+			const { path, oldText, newText } = normalizeEditPayload(input);
 			if (permissionGuard) {
 				const allowed = await permissionGuard({
 					toolName: "edit",

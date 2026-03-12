@@ -271,6 +271,32 @@ describe("subagent orchestration", () => {
 		expect(observedPrompt).toContain(prompt);
 	});
 
+	it("accepts legacy task field as an alias for prompt", async () => {
+		const cwd = makeTempDir();
+		let observedPrompt = "";
+		const tool = createTaskTool(cwd, async (options) => {
+			observedPrompt = options.prompt;
+			return { output: "ok" };
+		});
+		const validate = TypeCompiler.Compile(tool.parameters);
+
+		expect(
+			validate.Check({
+				task: "Perform a detailed security audit of authentication flows.",
+				profile: "explore",
+			}),
+		).toBe(true);
+
+		const result = await tool.execute("call_legacy_task_alias", {
+			task: "Perform a detailed security audit of authentication flows.",
+			profile: "explore",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
+		expect(result.details?.description).toBe("Perform a detailed security audit of authentication flows.");
+		expect(observedPrompt).toContain("Perform a detailed security audit of authentication flows.");
+	});
+
 	it("uses custom agent profile when profile is omitted", async () => {
 		const cwd = makeTempDir();
 		const tool = createTaskTool(
@@ -1528,6 +1554,79 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedTasks).toBe(3);
 		expect(calls.some((prompt) => prompt.includes("nested-explore-task"))).toBe(true);
 		expect(calls.some((prompt) => prompt.includes("nested-plan-task"))).toBe(true);
+	});
+
+	it("enforces nested delegation split for complex delegated children in meta-hosted tasks", async () => {
+		const cwd = makeTempDir();
+		let childSawEnforcementPrompt = false;
+		const tool = createTaskTool(
+			cwd,
+			async (options) => {
+				if (options.prompt.includes("root-complex-meta-host-task")) {
+					return {
+						output:
+							[
+								"Root analysis.",
+								'<delegate_task profile="explore" description="Broad child audit">',
+								"Perform a broad security audit of the application authentication layer.",
+								"Focus on:",
+								"1. auth.py token and API key flows.",
+								"2. rbac.py permission boundaries.",
+								"3. middleware integration and route coverage.",
+								"4. split findings by subsystem and verification path.",
+								"</delegate_task>",
+							].join("\n"),
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (
+					options.prompt.includes("DELEGATION_ENFORCEMENT") &&
+					options.prompt.includes("Perform a broad security audit of the application authentication layer.")
+				) {
+					childSawEnforcementPrompt = true;
+					return {
+						output:
+							'Child refined.\n<delegate_task profile="explore" description="Inspect auth">nested-auth-task</delegate_task>\n<delegate_task profile="plan" description="Model risks">nested-risk-task</delegate_task>',
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (options.prompt.includes("Perform a broad security audit of the application authentication layer.")) {
+					return {
+						output: "Child broad audit without nested delegation.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (options.prompt.includes("nested-auth-task")) {
+					return {
+						output: "Nested auth inspection complete.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (options.prompt.includes("nested-risk-task")) {
+					return {
+						output: "Nested risk modeling complete.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				return { output: "unexpected" };
+			},
+			{
+				hostProfileName: "meta",
+			},
+		);
+
+		const result = await tool.execute("call_nested_delegate_enforced", {
+			description: "nested delegate enforced",
+			prompt: "root-complex-meta-host-task",
+			profile: "meta",
+		});
+
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		expect(childSawEnforcementPrompt).toBe(true);
+		expect(text).toContain("##### Nested Delegated Subtasks");
+		expect(text).toContain("Nested auth inspection complete.");
+		expect(text).toContain("Nested risk modeling complete.");
+		expect(result.details?.delegatedTasks).toBe(3);
 	});
 
 	it("rejects write-capable background policy", async () => {

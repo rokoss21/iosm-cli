@@ -80,6 +80,12 @@ const taskSchema = Type.Object({
 				"Optional short 3-5 word description of what the subagent will do. If omitted, it is derived from prompt.",
 		}),
 	),
+	task: Type.Optional(
+		Type.String({
+			description:
+				"Legacy alias for prompt. If provided, it is treated as the subagent prompt when prompt is omitted.",
+		}),
+	),
 	prompt: Type.Optional(
 		Type.String({
 			description:
@@ -442,12 +448,13 @@ function deriveTaskDescriptionFromPrompt(prompt: string): string {
 	return `${normalized.slice(0, 77).trimEnd()}...`;
 }
 
-function normalizeTaskPayload(input: { description?: string; prompt?: string }): {
+function normalizeTaskPayload(input: { description?: string; task?: string; prompt?: string }): {
 	description: string;
 	prompt: string;
 } {
 	const rawDescription = input.description?.trim();
-	const rawPrompt = input.prompt?.trim();
+	const rawTask = input.task?.trim();
+	const rawPrompt = input.prompt?.trim() || rawTask;
 	if (rawDescription && rawPrompt) {
 		return { description: rawDescription, prompt: rawPrompt };
 	}
@@ -460,7 +467,7 @@ function normalizeTaskPayload(input: { description?: string; prompt?: string }):
 			prompt: rawPrompt,
 		};
 	}
-	throw new Error('Task tool requires at least one of "description" or "prompt".');
+	throw new Error('Task tool requires at least one of "description", "task", or "prompt".');
 }
 
 function cloneDelegateItems(items: TaskDelegateProgressItem[] | undefined): TaskDelegateProgressItem[] | undefined {
@@ -519,11 +526,28 @@ function mergeRunStats(
 	};
 }
 
-function buildDelegationProtocolPrompt(depthRemaining: number, maxDelegations: number): string {
+function buildDelegationProtocolPrompt(
+	depthRemaining: number,
+	maxDelegations: number,
+	minDelegationsPreferred = 0,
+): string {
 	if (depthRemaining <= 0) {
 		return [
 			`Delegation protocol: depth limit reached.`,
 			`Do not emit <${delegationTagName}> blocks.`,
+		].join("\n");
+	}
+	if (minDelegationsPreferred > 0) {
+		const required = Math.min(Math.max(1, minDelegationsPreferred), maxDelegations);
+		return [
+			`Delegation protocol (required for this run): emit at least ${required} XML block(s) when the assigned work still contains independent slices.`,
+			`For broad audit, implementation, or verification tasks, split by subsystem, file family, or verification stream instead of producing one monolithic answer.`,
+			`<${delegationTagName} profile="explore|plan|iosm|meta|iosm_analyst|iosm_verifier|cycle_planner|full" agent="optional custom subagent name" description="short title" cwd="optional relative path" lock_key="optional lock key" model="optional model override" isolation="none|worktree" depends_on="optional indices like 1|3">`,
+			"Detailed delegated task prompt",
+			`</${delegationTagName}>`,
+			`Keep a brief coordinator note outside the blocks, but do not collapse the full workload into one monolithic answer.`,
+			`If safe decomposition is truly impossible, output exactly one line: DELEGATION_IMPOSSIBLE: <precise reason>.`,
+			`When shared_memory tools are available, exchange intermediate state through shared_memory_write/shared_memory_read instead of repeating large context.`,
 		].join("\n");
 	}
 	return [
@@ -536,8 +560,13 @@ function buildDelegationProtocolPrompt(depthRemaining: number, maxDelegations: n
 	].join("\n");
 }
 
-function withDelegationPrompt(basePrompt: string, depthRemaining: number, maxDelegations: number): string {
-	const protocol = buildDelegationProtocolPrompt(depthRemaining, maxDelegations);
+function withDelegationPrompt(
+	basePrompt: string,
+	depthRemaining: number,
+	maxDelegations: number,
+	minDelegationsPreferred = 0,
+): string {
+	const protocol = buildDelegationProtocolPrompt(depthRemaining, maxDelegations, minDelegationsPreferred);
 	return `${basePrompt}\n\n${protocol}`;
 }
 
@@ -935,6 +964,7 @@ export function createTaskTool(
 			_toolCallId: string,
 			{
 				description: rawDescription,
+				task: rawTask,
 				prompt: rawPrompt,
 				agent: agentName,
 				profile,
@@ -967,6 +997,7 @@ export function createTaskTool(
 			};
 			const { description, prompt } = normalizeTaskPayload({
 				description: rawDescription,
+				task: rawTask,
 				prompt: rawPrompt,
 			});
 
@@ -1062,7 +1093,12 @@ export function createTaskTool(
 				customSubagent?.systemPrompt ??
 				systemPromptByProfile[effectiveProfile] ??
 				systemPromptByProfile.full;
-			const systemPrompt = withDelegationPrompt(baseSystemPrompt, effectiveDelegationDepth, effectiveMaxDelegations);
+			const systemPrompt = withDelegationPrompt(
+				baseSystemPrompt,
+				effectiveDelegationDepth,
+				effectiveMaxDelegations,
+				minDelegationsPreferred,
+			);
 			const promptWithInstructions =
 				customSubagent?.instructions && customSubagent.instructions.trim().length > 0
 					? `${customSubagent.instructions.trim()}\n\nUser task:\n${prompt}`
@@ -1690,11 +1726,28 @@ export function createTaskTool(
 								childCustomSubagent?.systemPrompt ??
 								systemPromptByProfile[childProfile] ??
 								systemPromptByProfile.full;
-								const childSystemPrompt = withDelegationPrompt(
-									childBaseSystemPrompt,
-									Math.max(0, effectiveDelegationDepth - 1),
-									effectiveMaxDelegations,
-								);
+							const childAutoDelegateParallelHint = deriveAutoDelegateParallelHint(
+								childProfile,
+								requestedChildAgent,
+								normalizedHostProfile,
+								request.description,
+								request.prompt,
+							);
+							const childMinDelegationsPreferred =
+								Math.max(0, effectiveDelegationDepth - 1) > 0 &&
+								(childAutoDelegateParallelHint ?? 0) >= 2
+									? Math.min(
+											preferredDelegationFloor,
+											effectiveMaxDelegations,
+											childAutoDelegateParallelHint ?? preferredDelegationFloor,
+										)
+									: 0;
+							const childSystemPrompt = withDelegationPrompt(
+								childBaseSystemPrompt,
+								Math.max(0, effectiveDelegationDepth - 1),
+								effectiveMaxDelegations,
+								childMinDelegationsPreferred,
+							);
 								const requestedChildCwd = request.cwd
 									? path.resolve(subagentCwd, request.cwd)
 									: childCustomSubagent?.cwd ?? subagentCwd;
@@ -1765,111 +1818,157 @@ export function createTaskTool(
 
 									let childOutput = "";
 									let childStats: SubagentRunResult["stats"] | undefined;
-									let childEmptyAttempt = 0;
-									let childRetrospectiveAttempt = 0;
-									let childPromptForAttempt = delegatePrompt;
-									while (true) {
-										try {
-											const childResult = await runner({
-												systemPrompt: childSystemPrompt,
-												tools: childTools,
-												prompt: childPromptForAttempt,
-												cwd: childCwd,
-												modelOverride: childModelOverride,
-												sharedMemoryContext: childSharedMemoryContext,
-												signal: _signal,
-												onProgress: (progress) => {
-													emitProgress({
-														kind: "subagent_progress",
-														phase: "running",
-														message: `delegate ${index + 1}/${delegateTotal}: ${progress.message}`,
-														cwd: progress.cwd ?? childCwd,
-														activeTool: progress.activeTool,
-														delegateIndex: index + 1,
-														delegateTotal,
-														delegateDescription: request.description,
-														delegateProfile: childProfileLabel,
-														delegateItems,
-													});
-												},
-											});
-											throwIfAborted();
-											let attemptOutput: string;
-											let attemptStats: SubagentRunResult["stats"] | undefined;
-											if (typeof childResult === "string") {
-												attemptOutput = childResult;
-											} else {
-												attemptOutput = childResult.output;
-												attemptStats = childResult.stats;
-											}
-											childStats = mergeRunStats(childStats, attemptStats);
-											if (attemptOutput.trim().length > 0) {
-												childOutput = attemptOutput;
-												if (childRetrospectiveAttempt > 0) {
-													retrospectiveRecovered += 1;
+									const runChildPass = async (runPrompt: string): Promise<string> => {
+										let childEmptyAttempt = 0;
+										let childRetrospectiveAttempt = 0;
+										let childPromptForAttempt = runPrompt;
+										while (true) {
+											try {
+												const childResult = await runner({
+													systemPrompt: childSystemPrompt,
+													tools: childTools,
+													prompt: childPromptForAttempt,
+													cwd: childCwd,
+													modelOverride: childModelOverride,
+													sharedMemoryContext: childSharedMemoryContext,
+													signal: _signal,
+													onProgress: (progress) => {
+														emitProgress({
+															kind: "subagent_progress",
+															phase: "running",
+															message: `delegate ${index + 1}/${delegateTotal}: ${progress.message}`,
+															cwd: progress.cwd ?? childCwd,
+															activeTool: progress.activeTool,
+															delegateIndex: index + 1,
+															delegateTotal,
+															delegateDescription: request.description,
+															delegateProfile: childProfileLabel,
+															delegateItems,
+														});
+													},
+												});
+												throwIfAborted();
+												let attemptOutput: string;
+												let attemptStats: SubagentRunResult["stats"] | undefined;
+												if (typeof childResult === "string") {
+													attemptOutput = childResult;
+												} else {
+													attemptOutput = childResult.output;
+													attemptStats = childResult.stats;
 												}
-												break;
+												childStats = mergeRunStats(childStats, attemptStats);
+												if (attemptOutput.trim().length > 0) {
+													if (childRetrospectiveAttempt > 0) {
+														retrospectiveRecovered += 1;
+													}
+													return attemptOutput;
+												}
+												if (childEmptyAttempt >= emptyOutputRetriesFromEnv) {
+													const totalAttempts = childEmptyAttempt + 1;
+													throw new Error(
+														`delegate ${index + 1}/${delegateTotal} returned empty output after ${totalAttempts} attempt${totalAttempts === 1 ? "" : "s"}.`,
+													);
+												}
+												childEmptyAttempt += 1;
+												emitProgress({
+													kind: "subagent_progress",
+													phase: "running",
+													message: `delegate ${index + 1}/${delegateTotal}: empty output, retry ${childEmptyAttempt}/${emptyOutputRetriesFromEnv}`,
+													cwd: childCwd,
+													activeTool: undefined,
+													delegateIndex: index + 1,
+													delegateTotal,
+													delegateDescription: request.description,
+													delegateProfile: childProfileLabel,
+													delegateItems,
+												});
+											} catch (error) {
+												if (_signal?.aborted || isAbortError(error)) {
+													throw new Error("Operation aborted");
+												}
+												const message = error instanceof Error ? error.message : String(error);
+												const cause = classifyFailureCause(message);
+												recordFailureCause(cause);
+												const canRetryRetrospective =
+													childRetrospectiveAttempt < retrospectiveRetriesFromEnv &&
+													isRetrospectiveRetryable(cause);
+												if (!canRetryRetrospective) {
+													throw Object.assign(new Error(message), { failureCause: cause as FailureCause });
+												}
+												childRetrospectiveAttempt += 1;
+												retrospectiveAttempts += 1;
+												const directive = buildRetrospectiveDirective({
+													cause,
+													errorMessage: message,
+													attempt: childRetrospectiveAttempt,
+													target: "delegate",
+												});
+												childPromptForAttempt = `${runPrompt}\n\n${directive}`;
+												emitProgress({
+													kind: "subagent_progress",
+													phase: "running",
+													message: `delegate ${index + 1}/${delegateTotal}: retrospective retry ${childRetrospectiveAttempt}/${retrospectiveRetriesFromEnv} (${cause})`,
+													cwd: childCwd,
+													activeTool: undefined,
+													delegateIndex: index + 1,
+													delegateTotal,
+													delegateDescription: request.description,
+													delegateProfile: childProfileLabel,
+													delegateItems,
+												});
 											}
-											if (childEmptyAttempt >= emptyOutputRetriesFromEnv) {
-												const totalAttempts = childEmptyAttempt + 1;
-												throw new Error(
-													`delegate ${index + 1}/${delegateTotal} returned empty output after ${totalAttempts} attempt${totalAttempts === 1 ? "" : "s"}.`,
-												);
-											}
-											childEmptyAttempt += 1;
-											emitProgress({
-												kind: "subagent_progress",
-												phase: "running",
-												message: `delegate ${index + 1}/${delegateTotal}: empty output, retry ${childEmptyAttempt}/${emptyOutputRetriesFromEnv}`,
-												cwd: childCwd,
-												activeTool: undefined,
-												delegateIndex: index + 1,
-												delegateTotal,
-												delegateDescription: request.description,
-												delegateProfile: childProfileLabel,
-												delegateItems,
-											});
-										} catch (error) {
-											if (_signal?.aborted || isAbortError(error)) {
-												throw new Error("Operation aborted");
-											}
-											const message = error instanceof Error ? error.message : String(error);
-											const cause = classifyFailureCause(message);
-											recordFailureCause(cause);
-											const canRetryRetrospective =
-												childRetrospectiveAttempt < retrospectiveRetriesFromEnv &&
-												isRetrospectiveRetryable(cause);
-											if (!canRetryRetrospective) {
-												throw Object.assign(new Error(message), { failureCause: cause as FailureCause });
-											}
-											childRetrospectiveAttempt += 1;
-											retrospectiveAttempts += 1;
-											const directive = buildRetrospectiveDirective({
-												cause,
-												errorMessage: message,
-												attempt: childRetrospectiveAttempt,
-												target: "delegate",
-											});
-											childPromptForAttempt = `${delegatePrompt}\n\n${directive}`;
-											emitProgress({
-												kind: "subagent_progress",
-												phase: "running",
-												message: `delegate ${index + 1}/${delegateTotal}: retrospective retry ${childRetrospectiveAttempt}/${retrospectiveRetriesFromEnv} (${cause})`,
-												cwd: childCwd,
-												activeTool: undefined,
-												delegateIndex: index + 1,
-												delegateTotal,
-												delegateDescription: request.description,
-												delegateProfile: childProfileLabel,
-												delegateItems,
-											});
 										}
-									}
+									};
 
-								const parsedChildDelegation = parseDelegationRequests(
-									childOutput,
-									effectiveDelegationDepth > 1 ? effectiveMaxDelegations : 0,
-								);
+									childOutput = await runChildPass(delegatePrompt);
+									let parsedChildDelegation = parseDelegationRequests(
+										childOutput,
+										effectiveDelegationDepth > 1 ? effectiveMaxDelegations : 0,
+									);
+									if (
+										childMinDelegationsPreferred > 0 &&
+										parsedChildDelegation.requests.length < childMinDelegationsPreferred
+									) {
+										emitProgress({
+											kind: "subagent_progress",
+											phase: "running",
+											message: `delegate ${index + 1}/${delegateTotal}: nested delegation preference unmet (${parsedChildDelegation.requests.length}/${childMinDelegationsPreferred}), retrying with stronger split guidance`,
+											cwd: childCwd,
+											activeTool: undefined,
+											delegateIndex: index + 1,
+											delegateTotal,
+											delegateDescription: request.description,
+											delegateProfile: childProfileLabel,
+											delegateItems,
+										});
+										const enforcedChildPrompt = [
+											delegatePrompt,
+											"",
+											"[DELEGATION_ENFORCEMENT]",
+											`This delegated workstream must emit at least ${childMinDelegationsPreferred} <delegate_task> blocks for independent sub-work when beneficial.`,
+											`Target parallel fan-out: up to ${Math.min(effectiveMaxDelegateParallel, effectiveMaxDelegations)}.`,
+											"For broad audits or implementations, split by subsystem / file cluster / verification stream instead of doing everything in one pass.",
+											"If safe decomposition is impossible, output exactly one line:",
+											"DELEGATION_IMPOSSIBLE: <reason>",
+											"[/DELEGATION_ENFORCEMENT]",
+										].join("\n");
+										childOutput = await runChildPass(enforcedChildPrompt);
+										parsedChildDelegation = parseDelegationRequests(
+											childOutput,
+											effectiveDelegationDepth > 1 ? effectiveMaxDelegations : 0,
+										);
+									}
+									if (
+										childMinDelegationsPreferred > 0 &&
+										parsedChildDelegation.requests.length < childMinDelegationsPreferred
+									) {
+										const impossibleReason =
+											childOutput.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im)?.[1]?.trim() ??
+											"not provided";
+										delegationWarnings.push(
+											`Child ${index + 1}: delegation fallback (preferred >=${childMinDelegationsPreferred}, got ${parsedChildDelegation.requests.length}). Reason: ${impossibleReason}.`,
+										);
+									}
 								childOutput = parsedChildDelegation.cleanedOutput;
 								delegationWarnings.push(
 									...parsedChildDelegation.warnings.map((warning) => `Child ${index + 1}: ${warning}`),

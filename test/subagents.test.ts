@@ -107,6 +107,9 @@ describe("loadCustomSubagents", () => {
 		expect(loaded.agents.find((agent) => agent.name === "meta_orchestrator")?.instructions).toContain(
 			"Do not collapse the whole implementation into one specialist delegate",
 		);
+		expect(loaded.agents.find((agent) => agent.name === "codebase_auditor")?.instructions).toContain(
+			"split it with nested delegates instead of producing one monolithic audit",
+		);
 	});
 
 	it("allows project agents to override built-in system agents by name", () => {

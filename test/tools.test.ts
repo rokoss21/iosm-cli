@@ -261,6 +261,21 @@ describe("Coding Agent Tools", () => {
 				}),
 			).rejects.toThrow(/Found 3 occurrences/);
 		});
+
+		it("should accept findText and replaceText aliases", async () => {
+			const testFile = join(testDir, "edit-alias-test.txt");
+			const originalContent = "Hello, world!";
+			writeFileSync(testFile, originalContent);
+
+			const result = await editTool.execute("test-call-7b", {
+				path: testFile,
+				findText: "world",
+				replaceText: "testing",
+			});
+
+			expect(getTextOutput(result)).toContain("Successfully replaced");
+			expect(result.details.diff).toContain("testing");
+		});
 	});
 
 	describe("bash tool", () => {

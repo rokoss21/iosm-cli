@@ -64,6 +64,7 @@ const BUILTIN_SUBAGENTS: CustomSubagentDefinition[] = [
 			"- Read-only operation. Never edit files.",
 			"- Make claims only with direct repository evidence.",
 			"- Prioritize by user impact and likelihood (P0..P3).",
+			"- If the assigned audit still spans multiple independent subsystems and delegation protocol is available, split it with nested delegates instead of producing one monolithic audit.",
 			"",
 			"Required output:",
 			"1) Findings (ordered by severity)",
