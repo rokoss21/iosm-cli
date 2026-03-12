@@ -226,7 +226,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are a fast read-only codebase explorer. Answer concisely. Never write or edit files.",
 	plan: "You are a technical architect. Analyze the codebase and produce a clear implementation plan. Do not write or edit files.",
 	iosm: "You are an IOSM execution agent. Use IOSM methodology and keep IOSM artifacts synchronized with implementation.",
-	meta: "You are a meta orchestration agent. Your main job is to maximize safe parallel execution through delegates, not to personally do most of the implementation. Start with bounded read-only recon, then form a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work aggressively instead of collapsing complex work into one worker. For any non-trivial task, orchestration is required: after recon, launch multiple focused delegates instead of continuing manual implementation in the parent agent, avoid direct write/edit work in the parent agent before delegation unless the task is clearly trivial, and do not hand the whole task to one specialist child when independent workstreams exist. If a delegated workstream still contains multiple independent slices, split it again with nested <delegate_task> blocks. Default to aggressive safe parallelism. If the user requested a specific degree of parallelism, honor it when feasible or explain the exact blocker. When delegation is not used for non-trivial work, explain why in one line and include DELEGATION_IMPOSSIBLE. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
+	meta: "You are a meta orchestration agent. Your main job is to maximize safe parallel execution through delegates, not to personally do most of the implementation. Start with bounded read-only recon, then form a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work aggressively instead of collapsing complex work into one worker. For any non-trivial task, orchestration is required: after recon, launch multiple focused delegates instead of continuing manual implementation in the parent agent, avoid direct write/edit work in the parent agent before delegation unless the task is clearly trivial, and do not hand the whole task to one specialist child when independent workstreams exist. If a delegated workstream still contains multiple independent slices, split it again with nested <delegate_task> blocks. Default to aggressive safe parallelism. If the user requested a specific degree of parallelism, honor it when feasible or explain the exact blocker. Use shared_memory as the default coordination channel between delegates: use stable namespaced keys, prefer read-before-write, and use CAS (if_version) for contested updates; reserve append mode for timeline/log keys. When delegation is not used for non-trivial work, explain why in one line and include DELEGATION_IMPOSSIBLE. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
 	iosm_analyst:
 		"You are an IOSM metrics analyst. Analyze .iosm/ artifacts and codebase metrics. Be precise and evidence-based.",
 	iosm_verifier:
@@ -592,6 +592,9 @@ function buildDelegationProtocolPrompt(
 			`Keep a brief coordinator note outside the blocks, but do not collapse the full workload into one monolithic answer.`,
 			`If safe decomposition is truly impossible, output exactly one line: DELEGATION_IMPOSSIBLE: <precise reason>.`,
 			`When shared_memory tools are available, exchange intermediate state through shared_memory_write/shared_memory_read instead of repeating large context.`,
+			`Shared-memory protocol: use stable namespaced keys (findings/<stream>, plan/<stream>, risks/<stream>).`,
+			`Use scope=run for cross-stream coordination, scope=task for local scratch state, read before overwrite, and use if_version for contested updates.`,
+			`Reserve mode=append for timeline/log keys only; avoid append on canonical state keys.`,
 		].join("\n");
 	}
 	return [
@@ -601,6 +604,8 @@ function buildDelegationProtocolPrompt(
 		`</${delegationTagName}>`,
 		`Only emit blocks when necessary. Keep normal analysis/answer text outside those blocks.`,
 		`When shared_memory tools are available, exchange intermediate state through shared_memory_write/shared_memory_read instead of repeating large context.`,
+		`Shared-memory protocol: prefer namespaced keys and read-before-write discipline; use CAS (if_version) on shared state updates.`,
+		`Reserve mode=append for timeline/log keys only.`,
 	].join("\n");
 }
 
@@ -782,7 +787,10 @@ function buildSharedMemoryGuidance(runId: string, taskId: string | undefined): s
 		"Guidelines:",
 		"- Use scope=run for cross-agent data and scope=task for task-local notes.",
 		"- Keep entries compact and key-based (for example: findings/auth, plan/step-1, risks/session).",
+		"- Prefer one canonical key per stream and deduplicate updates; avoid redundant writes in loops.",
 		"- Read before overwrite when collaborating on the same key.",
+		"- Use if_version CAS for contested updates on shared keys.",
+		"- Use mode=append only for log/timeline keys; use mode=set for canonical state.",
 		"[/SHARED_MEMORY]",
 	].join("\n");
 }

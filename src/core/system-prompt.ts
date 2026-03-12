@@ -296,6 +296,7 @@ Operating defaults:
 - If orchestration constraints are ambiguous or conflict, ask one concise clarification (or use ask_user when available) before launching subagents.
 - When the user provides an <orchestrate ...>...</orchestrate> block, treat it as an execution contract and follow its mode/agents/profile/cwd assignments strictly.
 - When orchestration assignments include run_id/task_id/lock_key or depends_on, enforce them in task calls (run_id/task_id for team tracking, lock_key for serialization domains, depends_on for ordering).
+- For delegated parallel runs, use shared_memory_* tools as the primary coordination channel: namespaced keys, read-before-write, and CAS (if_version) for contested updates; reserve append mode for timeline/log keys.
 - For write-heavy parallel orchestration, prefer isolation=worktree to reduce cross-agent interference when the repository is git-backed.
 - If the user message includes @<custom-agent-name>, treat it as an explicit agent selection and call task with agent set to that custom agent name.
 
