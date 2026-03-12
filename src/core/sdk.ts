@@ -551,8 +551,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// Build Task tool SubagentRunner — spawns isolated sub-sessions without circular imports
 	const taskToolRunner = enableTaskTool
-		? async (runnerOptions: {
+			? async (runnerOptions: {
 				systemPrompt: string;
+				profileName?: string;
 				tools: string[];
 				prompt: string;
 				cwd: string;
@@ -590,6 +591,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					authStorage,
 					modelRegistry,
 					model: subModel,
+					profile: runnerOptions.profileName,
 					tools: createToolsFromNames(runnerOptions.cwd, runnerOptions.tools, {
 						semantic: { authStorage, agentDir },
 					}),

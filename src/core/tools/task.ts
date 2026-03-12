@@ -64,6 +64,7 @@ export interface TaskToolProgress {
 
 export type SubagentRunner = (options: {
 	systemPrompt: string;
+	profileName?: string;
 	tools: string[];
 	prompt: string;
 	cwd: string;
@@ -568,6 +569,11 @@ function withDelegationPrompt(
 ): string {
 	const protocol = buildDelegationProtocolPrompt(depthRemaining, maxDelegations, minDelegationsPreferred);
 	return `${basePrompt}\n\n${protocol}`;
+}
+
+function withSubagentInstructions(basePrompt: string, instructions?: string): string {
+	const trimmed = instructions?.trim();
+	return trimmed ? `${basePrompt}\n\n${trimmed}` : basePrompt;
 }
 
 function buildSharedMemoryGuidance(runId: string, taskId: string | undefined): string {
@@ -1089,20 +1095,19 @@ export function createTaskTool(
 					(effectiveDelegateParallelHint ?? 0) >= 2 && effectiveMaxDelegations >= 2
 						? Math.min(preferredDelegationFloor, effectiveMaxDelegations, effectiveDelegateParallelHint ?? preferredDelegationFloor)
 						: 0;
-			const baseSystemPrompt =
+			const baseSystemPrompt = withSubagentInstructions(
 				customSubagent?.systemPrompt ??
-				systemPromptByProfile[effectiveProfile] ??
-				systemPromptByProfile.full;
+					systemPromptByProfile[effectiveProfile] ??
+					systemPromptByProfile.full,
+				customSubagent?.instructions,
+			);
 			const systemPrompt = withDelegationPrompt(
 				baseSystemPrompt,
 				effectiveDelegationDepth,
 				effectiveMaxDelegations,
 				minDelegationsPreferred,
 			);
-			const promptWithInstructions =
-				customSubagent?.instructions && customSubagent.instructions.trim().length > 0
-					? `${customSubagent.instructions.trim()}\n\nUser task:\n${prompt}`
-					: prompt;
+			const promptWithInstructions = prompt;
 			const effectiveModelOverride = requestedModel?.trim() || customSubagent?.model?.trim() || undefined;
 			const requestedBackground = background === true || customSubagent?.background === true;
 			const trackedOrchestrationRun =
@@ -1297,6 +1302,7 @@ export function createTaskTool(
 									try {
 										const result = await runner({
 											systemPrompt,
+											profileName: effectiveProfile,
 											tools,
 											prompt: promptForAttempt,
 											cwd: subagentCwd,
@@ -1553,10 +1559,12 @@ export function createTaskTool(
 										const blocked = new Set(nestedCustomSubagent.disallowedTools);
 										nestedTools = nestedTools.filter((tool) => !blocked.has(tool));
 									}
-									const nestedBaseSystemPrompt =
+									const nestedBaseSystemPrompt = withSubagentInstructions(
 										nestedCustomSubagent?.systemPrompt ??
-										systemPromptByProfile[nestedProfile] ??
-										systemPromptByProfile.full;
+											systemPromptByProfile[nestedProfile] ??
+											systemPromptByProfile.full,
+										nestedCustomSubagent?.instructions,
+									);
 									const nestedSystemPrompt = withDelegationPrompt(
 										nestedBaseSystemPrompt,
 										Math.max(0, depthRemaining - 1),
@@ -1593,10 +1601,7 @@ export function createTaskTool(
 											nestedReleaseIsolation = isolated.cleanup;
 										}
 
-										const nestedPromptWithInstructions =
-											nestedCustomSubagent?.instructions && nestedCustomSubagent.instructions.trim().length > 0
-												? `${nestedCustomSubagent.instructions.trim()}\n\nUser task:\n${nestedRequest.prompt}`
-												: nestedRequest.prompt;
+										const nestedPromptWithInstructions = nestedRequest.prompt;
 										const nestedSharedMemoryGuidance = buildSharedMemoryGuidance(
 											sharedMemoryRunId,
 											sharedMemoryTaskId,
@@ -1614,6 +1619,7 @@ export function createTaskTool(
 
 										const nestedResult = await runner({
 											systemPrompt: nestedSystemPrompt,
+											profileName: nestedProfile,
 											tools: nestedTools,
 											prompt: nestedPrompt,
 											cwd: nestedCwd,
@@ -1722,10 +1728,12 @@ export function createTaskTool(
 								const blocked = new Set(childCustomSubagent.disallowedTools);
 								childTools = childTools.filter((tool) => !blocked.has(tool));
 							}
-							const childBaseSystemPrompt =
+							const childBaseSystemPrompt = withSubagentInstructions(
 								childCustomSubagent?.systemPrompt ??
-								systemPromptByProfile[childProfile] ??
-								systemPromptByProfile.full;
+									systemPromptByProfile[childProfile] ??
+									systemPromptByProfile.full,
+								childCustomSubagent?.instructions,
+							);
 							const childAutoDelegateParallelHint = deriveAutoDelegateParallelHint(
 								childProfile,
 								requestedChildAgent,
@@ -1780,10 +1788,7 @@ export function createTaskTool(
 								}
 
 									const delegateMeta = formatMetaCheckpoint(options?.getMetaMessages?.());
-									const childPromptWithInstructions =
-										childCustomSubagent?.instructions && childCustomSubagent.instructions.trim().length > 0
-											? `${childCustomSubagent.instructions.trim()}\n\nUser task:\n${request.prompt}`
-											: request.prompt;
+									const childPromptWithInstructions = request.prompt;
 									const delegateSharedMemoryGuidance = buildSharedMemoryGuidance(
 										sharedMemoryRunId,
 										sharedMemoryTaskId,
@@ -1826,6 +1831,7 @@ export function createTaskTool(
 											try {
 												const childResult = await runner({
 													systemPrompt: childSystemPrompt,
+													profileName: childProfile,
 													tools: childTools,
 													prompt: childPromptForAttempt,
 													cwd: childCwd,

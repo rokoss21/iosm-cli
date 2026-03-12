@@ -98,11 +98,16 @@ describe("subagent orchestration", () => {
 
 	it("forwards model override to runner and supports background custom subagents", async () => {
 		const cwd = makeTempDir();
-		const observed: Array<{ modelOverride?: string; prompt: string }> = [];
+		const observed: Array<{ modelOverride?: string; profileName?: string; prompt: string; systemPrompt: string }> = [];
 		const tool = createTaskTool(
 			cwd,
 			async (options) => {
-				observed.push({ modelOverride: options.modelOverride, prompt: options.prompt });
+				observed.push({
+					modelOverride: options.modelOverride,
+					profileName: options.profileName,
+					prompt: options.prompt,
+					systemPrompt: options.systemPrompt,
+				});
 				return { output: "ok", sessionId: "session_model" };
 			},
 			{
@@ -134,17 +139,23 @@ describe("subagent orchestration", () => {
 
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(observed[0]?.modelOverride).toBe("anthropic/claude-sonnet-4");
-		expect(observed[0]?.prompt).toContain("Background read instructions");
-		expect(observed[0]?.prompt).toContain("User task:\nscan docs");
+		expect(observed[0]?.profileName).toBe("explore");
+		expect(observed[0]?.prompt).toContain("scan docs");
+		expect(observed[0]?.prompt).toContain("[SHARED_MEMORY]");
+		expect(observed[0]?.systemPrompt).toContain("Background read instructions");
 	});
 
 	it("maps custom agent names passed via profile into agent resolution", async () => {
 		const cwd = makeTempDir();
-		const observedPrompts: string[] = [];
+		const observedCalls: Array<{ prompt: string; systemPrompt: string; profileName?: string }> = [];
 		const tool = createTaskTool(
 			cwd,
 			async (options) => {
-				observedPrompts.push(options.prompt);
+				observedCalls.push({
+					prompt: options.prompt,
+					systemPrompt: options.systemPrompt,
+					profileName: options.profileName,
+				});
 				return { output: "ok", sessionId: "session_alias" };
 			},
 			{
@@ -171,8 +182,10 @@ describe("subagent orchestration", () => {
 		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
 		expect(result.details?.agent).toBe("codebase_auditor");
 		expect(result.details?.profile).toBe("explore");
-		expect(observedPrompts[0]).toContain("Audit with strict evidence.");
-		expect(observedPrompts[0]).toContain("User task:\ninspect repository");
+		expect(observedCalls[0]?.profileName).toBe("explore");
+		expect(observedCalls[0]?.prompt).toContain("inspect repository");
+		expect(observedCalls[0]?.prompt).toContain("[SHARED_MEMORY]");
+		expect(observedCalls[0]?.systemPrompt).toContain("Audit with strict evidence.");
 	});
 
 	it("falls back unknown profile to full without validation failure", async () => {
@@ -299,9 +312,17 @@ describe("subagent orchestration", () => {
 
 	it("uses custom agent profile when profile is omitted", async () => {
 		const cwd = makeTempDir();
+		const observed: Array<{ prompt: string; systemPrompt: string; profileName?: string }> = [];
 		const tool = createTaskTool(
 			cwd,
-			async (options) => ({ output: options.prompt }),
+			async (options) => {
+				observed.push({
+					prompt: options.prompt,
+					systemPrompt: options.systemPrompt,
+					profileName: options.profileName,
+				});
+				return { output: "ok" };
+			},
 			{
 				resolveCustomSubagent: (name) =>
 					name === "codebase_auditor"
@@ -332,11 +353,13 @@ describe("subagent orchestration", () => {
 			agent: "codebase_auditor",
 		});
 
-		expect((result.content[0] as { type: "text"; text: string }).text).toContain(
-			"Audit with strict evidence.",
-		);
+		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
 		expect(result.details?.agent).toBe("codebase_auditor");
 		expect(result.details?.profile).toBe("explore");
+		expect(observed[0]?.profileName).toBe("explore");
+		expect(observed[0]?.prompt).toContain("inspect repository");
+		expect(observed[0]?.prompt).toContain("[SHARED_MEMORY]");
+		expect(observed[0]?.systemPrompt).toContain("Audit with strict evidence.");
 	});
 
 	it("uses full-capability tools for meta profile", async () => {
@@ -954,7 +977,7 @@ describe("subagent orchestration", () => {
 
 	it("supports delegated custom agents via delegate_task agent attribute", async () => {
 		const cwd = makeTempDir();
-		const calls: Array<{ prompt: string; tools: string[]; systemPrompt: string }> = [];
+		const calls: Array<{ prompt: string; tools: string[]; systemPrompt: string; profileName?: string }> = [];
 		const tool = createTaskTool(
 			cwd,
 			async (options) => {
@@ -962,6 +985,7 @@ describe("subagent orchestration", () => {
 					prompt: options.prompt,
 					tools: [...options.tools],
 					systemPrompt: options.systemPrompt,
+					profileName: options.profileName,
 				});
 				if (options.prompt.includes("root-task")) {
 					return {
@@ -970,7 +994,7 @@ describe("subagent orchestration", () => {
 						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
 					};
 				}
-				if (options.prompt.includes("User task:\nscan module")) {
+				if (options.prompt.includes("scan module")) {
 					return {
 						output: "Security review complete.",
 						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
@@ -1004,10 +1028,12 @@ describe("subagent orchestration", () => {
 
 		const text = (result.content[0] as { type: "text"; text: string }).text;
 		expect(calls).toHaveLength(2);
+		expect(calls[1]?.profileName).toBe("plan");
 		expect(calls[1]?.systemPrompt).toContain("Custom security auditor system prompt.");
+		expect(calls[1]?.systemPrompt).toContain("Custom security reviewer instructions.");
 		expect(calls[1]?.tools).toEqual(["read", "grep"]);
-		expect(calls[1]?.prompt).toContain("Custom security reviewer instructions.");
-		expect(calls[1]?.prompt).toContain("User task:\nscan module");
+		expect(calls[1]?.prompt).toContain("scan module");
+		expect(calls[1]?.prompt).toContain("[SHARED_MEMORY]");
 		expect(text).toContain("security_reviewer/plan");
 		expect(result.details?.delegatedTasks).toBe(1);
 		expect(result.details?.delegatedSucceeded).toBe(1);
@@ -1275,10 +1301,16 @@ describe("subagent orchestration", () => {
 	it("auto-enables delegation pressure for complex orchestrator tasks without explicit hint", async () => {
 		const cwd = makeTempDir();
 		let sawEnforcementPrompt = false;
+		const rootCalls: Array<{ profileName?: string; systemPrompt: string; prompt: string }> = [];
 
 		const tool = createTaskTool(
 			cwd,
 				async (options) => {
+					rootCalls.push({
+						profileName: options.profileName,
+						systemPrompt: options.systemPrompt,
+						prompt: options.prompt,
+					});
 					if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
 						sawEnforcementPrompt = true;
 						return {
@@ -1332,6 +1364,8 @@ describe("subagent orchestration", () => {
 		const text = (result.content[0] as { type: "text"; text: string }).text;
 
 		expect(sawEnforcementPrompt).toBe(true);
+		expect(rootCalls[0]?.profileName).toBe("meta");
+		expect(rootCalls[0]?.systemPrompt).toContain("Coordinate complex work.");
 		expect(text).toContain("### Delegated Subtasks");
 		expect(result.details?.delegatedTasks).toBe(2);
 	});
