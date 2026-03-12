@@ -1790,4 +1790,53 @@ describe("subagent orchestration", () => {
 			}),
 		).rejects.toThrow(/Background policy violation/);
 	});
+
+	it("rejects write-capable background policy for iosm profile", async () => {
+		const cwd = makeTempDir();
+		const tool = createTaskTool(cwd, async () => ({ output: "ok" }));
+
+		await expect(
+			tool.execute("call_bg_policy_iosm", {
+				description: "iosm background policy check",
+				prompt: "write files",
+				profile: "iosm",
+				background: true,
+			}),
+		).rejects.toThrow(/Background policy violation/);
+	});
+
+	it("parses delegate_task attributes with single quotes and mixed-case profile", async () => {
+		const cwd = makeTempDir();
+		let delegateCalls = 0;
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("root-single-quote-delegate")) {
+				return {
+					output:
+						"Root analysis.\n<delegate_task profile='Explore' description='Single quoted delegate'>quoted-child-task</delegate_task>",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("quoted-child-task")) {
+				delegateCalls += 1;
+				return {
+					output: "Quoted delegate complete.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_single_quote_delegate_profile", {
+			description: "single quote delegate",
+			prompt: "root-single-quote-delegate",
+			profile: "full",
+		});
+
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		expect(text).toContain("### Delegated Subtasks");
+		expect(delegateCalls).toBe(1);
+		expect(result.details?.delegatedTasks).toBe(1);
+		expect(result.details?.delegatedSucceeded).toBe(1);
+		expect(result.details?.delegatedFailed).toBe(0);
+	});
 });

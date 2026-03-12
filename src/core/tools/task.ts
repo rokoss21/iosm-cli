@@ -233,7 +233,7 @@ const systemPromptByProfile: Record<string, string> = {
 	full: "You are a software engineering agent. Execute the task end-to-end.",
 };
 
-const writeCapableProfiles = new Set(["full", "meta", "iosm_verifier", "cycle_planner"]);
+const writeCapableProfiles = new Set(["full", "meta", "iosm", "iosm_verifier", "cycle_planner"]);
 const delegationTagName = "delegate_task";
 
 type DelegationRequest = {
@@ -614,8 +614,8 @@ function parseDelegationRequests(output: string, maxRequests: number): ParsedDel
 			return "";
 		}
 		const attrs: Record<string, string> = {};
-		for (const match of attrsRaw.matchAll(/([A-Za-z_][A-Za-z0-9_-]*)="([^"]*)"/g)) {
-			attrs[match[1].toLowerCase()] = match[2];
+		for (const match of attrsRaw.matchAll(/([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+			attrs[match[1].toLowerCase()] = (match[2] ?? match[3] ?? "").trim();
 		}
 
 		const prompt = normalizeSpacing(bodyRaw ?? "");
@@ -623,9 +623,10 @@ function parseDelegationRequests(output: string, maxRequests: number): ParsedDel
 			warnings.push(`Ignored delegation block with empty prompt.`);
 			return "";
 		}
-		const profile = (attrs.profile ?? "explore").trim();
+		const profileRaw = (attrs.profile ?? "explore").trim();
+		const profile = profileRaw.toLowerCase();
 		if (!(profile in toolsByProfile)) {
-			warnings.push(`Ignored delegation block with unknown profile "${profile}".`);
+			warnings.push(`Ignored delegation block with unknown profile "${profileRaw}".`);
 			return "";
 		}
 		const isolationRaw = (attrs.isolation ?? "").trim().toLowerCase();
