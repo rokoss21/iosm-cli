@@ -215,6 +215,62 @@ describe("subagent orchestration", () => {
 		expect(observedTools).toContain("write");
 	});
 
+	it("accepts task calls with description only and uses it as the prompt", async () => {
+		const cwd = makeTempDir();
+		let observedPrompt = "";
+		const tool = createTaskTool(cwd, async (options) => {
+			observedPrompt = options.prompt;
+			return { output: "ok" };
+		});
+		const validate = TypeCompiler.Compile(tool.parameters);
+
+		expect(
+			validate.Check({
+				description: "Audit authentication and RBAC flows",
+				profile: "explore",
+			}),
+		).toBe(true);
+
+		const result = await tool.execute("call_description_only", {
+			description: "Audit authentication and RBAC flows",
+			profile: "explore",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
+		expect(result.details?.description).toBe("Audit authentication and RBAC flows");
+		expect(observedPrompt).toContain("Audit authentication and RBAC flows");
+	});
+
+	it("accepts task calls with prompt only and derives a short description", async () => {
+		const cwd = makeTempDir();
+		let observedPrompt = "";
+		const tool = createTaskTool(cwd, async (options) => {
+			observedPrompt = options.prompt;
+			return { output: "ok" };
+		});
+		const validate = TypeCompiler.Compile(tool.parameters);
+		const prompt = [
+			"Perform a security audit of the RMCP codebase.",
+			"Focus on auth, RBAC, SQLi, secrets, and multi-tenancy.",
+		].join("\n");
+
+		expect(
+			validate.Check({
+				prompt,
+				profile: "explore",
+			}),
+		).toBe(true);
+
+		const result = await tool.execute("call_prompt_only", {
+			prompt,
+			profile: "explore",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
+		expect(result.details?.description).toBe("Perform a security audit of the RMCP codebase.");
+		expect(observedPrompt).toContain(prompt);
+	});
+
 	it("uses custom agent profile when profile is omitted", async () => {
 		const cwd = makeTempDir();
 		const tool = createTaskTool(

@@ -74,12 +74,18 @@ export type SubagentRunner = (options: {
 }) => Promise<string | SubagentRunResult>;
 
 const taskSchema = Type.Object({
-	description: Type.String({
-		description: "Short 3-5 word description of what the subagent will do",
-	}),
-	prompt: Type.String({
-		description: "Full task prompt for the subagent",
-	}),
+	description: Type.Optional(
+		Type.String({
+			description:
+				"Optional short 3-5 word description of what the subagent will do. If omitted, it is derived from prompt.",
+		}),
+	),
+	prompt: Type.Optional(
+		Type.String({
+			description:
+				"Optional full task prompt for the subagent. If omitted, the description is used as the prompt.",
+		}),
+	),
 	agent: Type.Optional(
 		Type.String({
 			description: "Optional custom subagent name loaded from .iosm/agents or global agents directory.",
@@ -417,6 +423,44 @@ function deriveAutoDelegateParallelHint(
 
 function normalizeSpacing(text: string): string {
 	return text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function deriveTaskDescriptionFromPrompt(prompt: string): string {
+	const firstMeaningfulLine =
+		prompt
+			.split("\n")
+			.map((line) => line.trim())
+			.find((line) => line.length > 0) ?? "Run subtask";
+	const normalized = firstMeaningfulLine
+		.replace(/^[-*]\s+/, "")
+		.replace(/^\d+[.)]\s+/, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (normalized.length <= 80) {
+		return normalized;
+	}
+	return `${normalized.slice(0, 77).trimEnd()}...`;
+}
+
+function normalizeTaskPayload(input: { description?: string; prompt?: string }): {
+	description: string;
+	prompt: string;
+} {
+	const rawDescription = input.description?.trim();
+	const rawPrompt = input.prompt?.trim();
+	if (rawDescription && rawPrompt) {
+		return { description: rawDescription, prompt: rawPrompt };
+	}
+	if (rawDescription) {
+		return { description: rawDescription, prompt: rawDescription };
+	}
+	if (rawPrompt) {
+		return {
+			description: deriveTaskDescriptionFromPrompt(rawPrompt),
+			prompt: rawPrompt,
+		};
+	}
+	throw new Error('Task tool requires at least one of "description" or "prompt".');
 }
 
 function cloneDelegateItems(items: TaskDelegateProgressItem[] | undefined): TaskDelegateProgressItem[] | undefined {
@@ -890,8 +934,8 @@ export function createTaskTool(
 		execute: async (
 			_toolCallId: string,
 			{
-				description,
-				prompt,
+				description: rawDescription,
+				prompt: rawPrompt,
 				agent: agentName,
 				profile,
 				cwd: targetCwd,
@@ -921,6 +965,10 @@ export function createTaskTool(
 					throw new Error("Operation aborted");
 				}
 			};
+			const { description, prompt } = normalizeTaskPayload({
+				description: rawDescription,
+				prompt: rawPrompt,
+			});
 
 				const runId = `subagent_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 				const sharedMemoryRunId = orchestrationRunId?.trim() || runId;
