@@ -310,6 +310,32 @@ describe("subagent orchestration", () => {
 		expect(observedPrompt).toContain("Perform a detailed security audit of authentication flows.");
 	});
 
+	it("accepts legacy args field as an alias for prompt", async () => {
+		const cwd = makeTempDir();
+		let observedPrompt = "";
+		const tool = createTaskTool(cwd, async (options) => {
+			observedPrompt = options.prompt;
+			return { output: "ok" };
+		});
+		const validate = TypeCompiler.Compile(tool.parameters);
+
+		expect(
+			validate.Check({
+				args: "Run a full security scan and summarize prioritized vulnerabilities.",
+				profile: "explore",
+			}),
+		).toBe(true);
+
+		const result = await tool.execute("call_legacy_args_alias", {
+			args: "Run a full security scan and summarize prioritized vulnerabilities.",
+			profile: "explore",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toBe("ok");
+		expect(result.details?.description).toBe("Run a full security scan and summarize prioritized vulnerabilities.");
+		expect(observedPrompt).toContain("Run a full security scan and summarize prioritized vulnerabilities.");
+	});
+
 	it("uses custom agent profile when profile is omitted", async () => {
 		const cwd = makeTempDir();
 		const observed: Array<{ prompt: string; systemPrompt: string; profileName?: string }> = [];

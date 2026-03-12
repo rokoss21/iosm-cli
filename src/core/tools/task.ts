@@ -87,6 +87,12 @@ const taskSchema = Type.Object({
 				"Legacy alias for prompt. If provided, it is treated as the subagent prompt when prompt is omitted.",
 		}),
 	),
+	args: Type.Optional(
+		Type.String({
+			description:
+				"Legacy alias for prompt used by some models. If provided, it is treated as the subagent prompt when prompt/task are omitted.",
+		}),
+	),
 	prompt: Type.Optional(
 		Type.String({
 			description:
@@ -449,13 +455,14 @@ function deriveTaskDescriptionFromPrompt(prompt: string): string {
 	return `${normalized.slice(0, 77).trimEnd()}...`;
 }
 
-function normalizeTaskPayload(input: { description?: string; task?: string; prompt?: string }): {
+function normalizeTaskPayload(input: { description?: string; task?: string; args?: string; prompt?: string }): {
 	description: string;
 	prompt: string;
 } {
 	const rawDescription = input.description?.trim();
 	const rawTask = input.task?.trim();
-	const rawPrompt = input.prompt?.trim() || rawTask;
+	const rawArgs = input.args?.trim();
+	const rawPrompt = input.prompt?.trim() || rawTask || rawArgs;
 	if (rawDescription && rawPrompt) {
 		return { description: rawDescription, prompt: rawPrompt };
 	}
@@ -468,7 +475,7 @@ function normalizeTaskPayload(input: { description?: string; task?: string; prom
 			prompt: rawPrompt,
 		};
 	}
-	throw new Error('Task tool requires at least one of "description", "task", or "prompt".');
+	throw new Error('Task tool requires at least one of "description", "task", "args", or "prompt".');
 }
 
 function cloneDelegateItems(items: TaskDelegateProgressItem[] | undefined): TaskDelegateProgressItem[] | undefined {
@@ -971,6 +978,7 @@ export function createTaskTool(
 			{
 				description: rawDescription,
 				task: rawTask,
+				args: rawArgs,
 				prompt: rawPrompt,
 				agent: agentName,
 				profile,
@@ -1004,6 +1012,7 @@ export function createTaskTool(
 			const { description, prompt } = normalizeTaskPayload({
 				description: rawDescription,
 				task: rawTask,
+				args: rawArgs,
 				prompt: rawPrompt,
 			});
 
