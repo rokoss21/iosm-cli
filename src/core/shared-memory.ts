@@ -59,6 +59,20 @@ export interface SharedMemoryReadResult {
 	totalMatched: number;
 }
 
+export interface SharedMemoryUsageSummary {
+	runId: string;
+	totalEntries: number;
+	totalWrites: number;
+	runScopeWrites: number;
+	taskScopeWrites: number;
+	currentTaskWrites: number;
+	currentTaskRunScopeWrites: number;
+	currentTaskTaskScopeWrites: number;
+	currentTaskDelegateWrites: number;
+	uniqueWriters: number;
+	uniqueKeys: number;
+}
+
 export interface SharedMemoryWriteInput {
 	key: string;
 	value: string;
@@ -475,6 +489,77 @@ export async function readSharedMemory(
 			totalMatched: matchedItems.length,
 		};
 		}, signal);
+	} catch (error) {
+		normalizeLockError(error);
+	}
+}
+
+export async function summarizeSharedMemoryUsage(
+	context: Pick<SharedMemoryContext, "rootCwd" | "runId" | "taskId">,
+	signal?: AbortSignal,
+): Promise<SharedMemoryUsageSummary> {
+	try {
+		return await withSnapshotStore(
+			{
+				rootCwd: context.rootCwd,
+				runId: context.runId,
+				taskId: context.taskId,
+			},
+			(store) => {
+				const currentTaskId = context.taskId?.trim() || undefined;
+				let runScopeWrites = 0;
+				let taskScopeWrites = 0;
+				let currentTaskWrites = 0;
+				let currentTaskRunScopeWrites = 0;
+				let currentTaskTaskScopeWrites = 0;
+				let currentTaskDelegateWrites = 0;
+				const writerSet = new Set<string>();
+				const keySet = new Set<string>();
+
+				for (const item of store.history) {
+					const scope = item.scope === "task" ? "task" : "run";
+					if (scope === "run") {
+						runScopeWrites += 1;
+					} else {
+						taskScopeWrites += 1;
+					}
+					keySet.add(`${scope}:${item.key}`);
+					const writerToken = [
+						item.writer.taskId?.trim() || "-",
+						item.writer.delegateId?.trim() || "-",
+						item.writer.profile?.trim() || "-",
+					].join("|");
+					writerSet.add(writerToken);
+
+					if (currentTaskId && item.writer.taskId?.trim() === currentTaskId) {
+						currentTaskWrites += 1;
+						if (scope === "run") {
+							currentTaskRunScopeWrites += 1;
+						} else {
+							currentTaskTaskScopeWrites += 1;
+						}
+						if (item.writer.delegateId?.trim()) {
+							currentTaskDelegateWrites += 1;
+						}
+					}
+				}
+
+				return {
+					runId: store.runId,
+					totalEntries: Object.keys(store.entries).length,
+					totalWrites: store.history.length,
+					runScopeWrites,
+					taskScopeWrites,
+					currentTaskWrites,
+					currentTaskRunScopeWrites,
+					currentTaskTaskScopeWrites,
+					currentTaskDelegateWrites,
+					uniqueWriters: writerSet.size,
+					uniqueKeys: keySet.size,
+				};
+			},
+			signal,
+		);
 	} catch (error) {
 		normalizeLockError(error);
 	}

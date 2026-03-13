@@ -6,6 +6,7 @@ import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { afterEach, describe, expect, it } from "vitest";
 import { createTeamRun, getTeamRun, updateTeamTaskStatus } from "../src/core/agent-teams.js";
 import { MAX_SUBAGENT_DELEGATE_PARALLEL } from "../src/core/orchestration-limits.js";
+import { readSharedMemory } from "../src/core/shared-memory.js";
 import { createTaskTool } from "../src/core/tools/task.js";
 
 describe("subagent orchestration", () => {
@@ -1112,6 +1113,183 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedFailed).toBe(0);
 	});
 
+	it("writes orchestrated task summaries into run-scoped shared memory", async () => {
+		const cwd = makeTempDir();
+		const run = createTeamRun({
+			cwd,
+			mode: "parallel",
+			agents: 1,
+			task: "summary snapshot",
+			assignments: [{ profile: "full", cwd, dependsOn: [] }],
+		});
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("root-task")) {
+				return {
+					output: "Root orchestration summary payload.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_orchestrated_summary", {
+			description: "orchestrated summary",
+			prompt: "root-task",
+			profile: "full",
+			run_id: run.runId,
+			task_id: "task_1",
+		});
+
+		expect(result.details?.sharedMemorySummaryKey).toBe("results/task_1");
+		const memory = await readSharedMemory(
+			{
+				rootCwd: cwd,
+				runId: run.runId,
+				taskId: "task_1",
+			},
+			{
+				scope: "run",
+				key: "results/task_1",
+				includeValues: true,
+			},
+		);
+		expect(memory.items).toHaveLength(1);
+		expect(memory.items[0]?.value).toContain('"taskId":"task_1"');
+		expect(memory.items[0]?.value).toContain('"description":"orchestrated summary"');
+	});
+
+	it("auto-publishes coordination plan and delegate findings into shared memory", async () => {
+		const cwd = makeTempDir();
+		const run = createTeamRun({
+			cwd,
+			mode: "parallel",
+			agents: 1,
+			task: "coordination warning",
+			assignments: [{ profile: "full", cwd, dependsOn: [] }],
+		});
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("root-task")) {
+				return {
+					output:
+						'Root analysis.\n<delegate_task profile="explore" description="A">child-one</delegate_task>\n<delegate_task profile="plan" description="B">child-two</delegate_task>',
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("child-one") || options.prompt.includes("child-two")) {
+				return {
+					output: "child complete",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_coordination_warning", {
+			description: "coordination warning",
+			prompt: "root-task",
+			profile: "full",
+			run_id: run.runId,
+			task_id: "task_1",
+		});
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		const findings = await readSharedMemory(
+			{
+				rootCwd: cwd,
+				runId: run.runId,
+				taskId: "task_1",
+			},
+			{
+				scope: "run",
+				prefix: "findings/task_1/",
+				includeValues: true,
+			},
+		);
+		const plan = await readSharedMemory(
+			{
+				rootCwd: cwd,
+				runId: run.runId,
+				taskId: "task_1",
+			},
+			{
+				scope: "run",
+				key: "plan/task_1",
+				includeValues: true,
+			},
+		);
+
+		expect(text).toContain("### Orchestration Summary");
+		expect(text).toContain("shared_memory_delegate_writes_current_task:");
+		expect(text).toContain("claims_keys_matched:");
+		expect(text).toContain("claims_collisions:");
+		expect(text).not.toContain("No shared_memory writes detected from delegates in this task");
+		expect(result.details?.coordination?.currentTaskDelegateWrites ?? 0).toBeGreaterThanOrEqual(2);
+		expect(findings.items.length).toBeGreaterThanOrEqual(2);
+		expect(findings.items.some((item) => item.key === "findings/task_1/1")).toBe(true);
+		expect(findings.items.some((item) => item.key === "findings/task_1/2")).toBe(true);
+		expect(plan.items).toHaveLength(1);
+		expect(plan.items[0]?.value).toContain('"description":"coordination warning"');
+	});
+
+	it("publishes claims keys and shared findings snapshot for delegated streams", async () => {
+		const cwd = makeTempDir();
+		const run = createTeamRun({
+			cwd,
+			mode: "parallel",
+			agents: 1,
+			task: "claims snapshot",
+			assignments: [{ profile: "full", cwd, dependsOn: [] }],
+		});
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("root-task")) {
+				return {
+					output:
+						'Root analysis.\n<delegate_task profile="explore" description="Auth stream">inspect src/auth/service.ts</delegate_task>\n<delegate_task profile="plan" description="UI stream">inspect src/ui/dashboard.tsx</delegate_task>',
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("inspect src/auth/service.ts")) {
+				return {
+					output: "Auth findings ready.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("inspect src/ui/dashboard.tsx")) {
+				return {
+					output: "UI findings ready.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_claims_snapshot", {
+			description: "claims snapshot",
+			prompt: "root-task",
+			profile: "full",
+			run_id: run.runId,
+			task_id: "task_1",
+		});
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		const claims = await readSharedMemory(
+			{
+				rootCwd: cwd,
+				runId: run.runId,
+				taskId: "task_1",
+			},
+			{
+				scope: "run",
+				prefix: "claims/",
+				includeValues: false,
+			},
+		);
+
+		expect(claims.totalMatched).toBeGreaterThanOrEqual(2);
+		expect(text).toContain("### Claim Overlap Snapshot");
+		expect(text).toContain("collisions:");
+		expect(text).toContain("### Shared Findings Snapshot");
+		expect(text).toContain("matched_keys:");
+	});
+
 	it("fails when root subagent keeps returning empty output", async () => {
 		const cwd = makeTempDir();
 		const tool = createTaskTool(cwd, async () => ({
@@ -1621,6 +1799,52 @@ describe("subagent orchestration", () => {
 
 		expect(synthesizedDelegatesObserved).toBeGreaterThanOrEqual(3);
 		expect(result.details?.delegatedTasks ?? 0).toBeGreaterThanOrEqual(3);
+	});
+
+	it("shards synthesized write lock keys to preserve delegate parallelism", async () => {
+		const cwd = makeTempDir();
+		let active = 0;
+		let maxActive = 0;
+		const tool = createTaskTool(
+			cwd,
+			async (options) => {
+				if (options.prompt.includes("Workstream ")) {
+					active += 1;
+					maxActive = Math.max(maxActive, active);
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					active -= 1;
+					return {
+						output: "Delegated stream complete.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
+					return {
+						output: "Monolithic follow-up output without explicit delegate tags.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (options.prompt.includes("root-task")) {
+					return {
+						output: "Root monolithic output.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				return { output: "unexpected" };
+			},
+			{ hostProfileName: "meta" },
+		);
+
+		const result = await tool.execute("call_synth_lock_sharding", {
+			description:
+				"Fix security issues across these streams:\n- auth stream src/auth/service.ts\n- ui stream src/ui/dashboard.tsx\n- data stream src/storage/database.ts",
+			prompt: "root-task",
+			profile: "full",
+			delegate_parallel_hint: 4,
+		});
+
+		expect(result.details?.delegatedTasks ?? 0).toBeGreaterThanOrEqual(3);
+		expect(maxActive).toBeGreaterThan(1);
 	});
 
 	it("enforces delegate fan-out for orchestrated run contexts when hint >= 2", async () => {

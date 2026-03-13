@@ -30,6 +30,9 @@ describe("agent profiles", () => {
 			"For conversational or non-repository requests",
 		);
 		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("Do not output internal reasoning");
+		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("only observed runtime evidence");
+		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("mark the metric as unknown");
+		expect(AGENT_PROFILES.meta.systemPromptAppend).toContain("Never claim a report/file/path exists");
 	});
 
 	it("includes meta in main profile cycling order", () => {

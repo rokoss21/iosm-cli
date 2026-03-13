@@ -1,400 +1,556 @@
-<h1 align="center">IOSM CLI v0.2.5</h1>
+<div align="center">
 
-<p align="center">
-  <strong>AI Engineering Runtime for Professional Developers</strong>
-</p>
-<p align="center">
-  Interactive coding agent · IOSM methodology · MCP · Semantic Search · Checkpoints · Subagent orchestration · Extensions
-</p>
+<h1>IOSM CLI</h1>
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm version" src="https://img.shields.io/npm/v/iosm-cli?style=flat-square&color=cb3837"></a>
-  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm downloads" src="https://img.shields.io/npm/dm/iosm-cli?style=flat-square"></a>
+<p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
+
+<p>
+  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm version" src="https://img.shields.io/npm/v/iosm-cli?style=flat-square&color=cb3837&logo=npm"></a>
+  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm downloads" src="https://img.shields.io/npm/dm/iosm-cli?style=flat-square&logo=npm"></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
-  <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D20.6.0-brightgreen?style=flat-square&logo=node.js">
-  <a href="https://github.com/rokoss21/iosm-cli"><img alt="GitHub" src="https://img.shields.io/badge/github-rokoss21%2Fiosm--cli-black?style=flat-square&logo=github"></a>
+  <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D20.6.0-brightgreen?style=flat-square&logo=node.js&logoColor=white">
+  <a href="https://github.com/rokoss21/iosm-cli"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/rokoss21/iosm-cli?style=flat-square&logo=github"></a>
 </p>
 
-<p align="center">
-  <img src="./docs/assets/preview.jpg" alt="IOSM CLI terminal preview">
+<p>
+  <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-the-iosm-methodology">Methodology</a> ·
+  <a href="#-usage-patterns">Usage Patterns</a> ·
+  <a href="#-agent-profiles">Profiles</a> ·
+  <a href="#-documentation">Documentation</a>
 </p>
+
+<img src="./docs/assets/preview.jpg" alt="IOSM CLI terminal preview" width="860">
+
+</div>
 
 ---
 
-**IOSM CLI** (`iosm-cli`) is not a chat wrapper around an LLM.
+Most AI CLIs are optimized for conversation. **IOSM CLI is optimized for controlled engineering execution** — working directly against your filesystem and shell, orchestrating parallel agents across complex tasks, tracking metrics and artifacts over time, and running improvement cycles that can be audited, repeated, and benchmarked.
 
-It is a runtime for production codebases:
-- a terminal-native coding agent with direct filesystem and shell tooling
-- primary operating profiles: **full** (default), **meta** (orchestration-first), and **iosm** (advanced, methodology-driven engineering cycles)
-- swarm-first orchestration for complex tasks: `Scopes -> Touches -> Locks -> Gates -> Done`, continuous dispatch, retries, checkpoints
-- built-in semantic embeddings search (`semantic_search` tool + `/semantic` + `iosm semantic`)
-- repeatable codebase improvement workflows via **IOSM** (Improve -> Optimize -> Shrink -> Modularize)
-- auditable artifact history for cycles, decisions, and metric evolution across runs
-- operational controls for safe iteration (`/checkpoint`, `/rollback`, `/doctor`, `/memory`)
-- extensibility for teams (MCP + extensions) and embedding (SDK + JSON/RPC modes)
+It is not a chat interface. It is a runtime.
 
-Adoption path is layered: start in **full** profile for low-friction daily usage, switch to **meta** when tasks benefit from adaptive multi-agent orchestration, then use **iosm** profile when you need advanced IOSM cycles, metrics, and governance.
+---
 
-## What's New in v0.2.5
+## Table of Contents
 
-- stronger parallel orchestration defaults for `/orchestrate`:
-  - in `--parallel` mode, omitted `--max-parallel` now auto-matches `--agents`
-  - when no worker profile is set, parallel orchestration defaults workers to `meta` (except read-only host contexts)
-  - assignment-level `delegate_parallel_hint` is propagated so nested delegation can fan out more predictably
-- improved swarm reliability and observability:
-  - dispatch timeout guardrails in scheduler runtime
-  - dependent tasks are auto-blocked when an upstream dependency fails
-  - richer subagent progress visibility while `/swarm` runs
-- safer coordination internals:
-  - queued retries for team status updates under lock contention
-  - shared-memory reads are metadata-first by default (optional value preview when requested)
+- [What You Get](#-what-you-get)
+- [The IOSM Methodology](#-the-iosm-methodology)
+- [Quick Start](#-quick-start)
+- [Usage Patterns](#-usage-patterns)
+- [Agent Profiles](#-agent-profiles)
+- [Complex Change Workflow](#-complex-change-workflow)
+- [Integration Modes](#-integration-modes)
+- [Extensibility](#-extensibility)
+- [Configuration](#-configuration)
+- [Architecture](#-architecture)
+- [Documentation](#-documentation)
+- [Development](#-development)
+- [Contributing](#-contributing)
+- [License](#-license)
 
-## Why It Exists
+---
 
-Most AI CLIs optimize for conversation.
-**IOSM CLI** optimizes for engineering execution quality.
+## ✦ What You Get
 
-| Area | Typical AI CLI | IOSM CLI |
-|------|----------------|------------|
-| Workflow | Prompt-by-prompt | Structured session + IOSM cycles |
-| Safety | Basic confirmations | Checkpoints, rollback, diagnostics, permission policies |
-| Context ops | Ad hoc notes | Managed memory with interactive edit/remove |
-| Tooling | Built-ins only | Built-ins + MCP + extension tools |
-| Integrations | Mostly interactive only | Interactive + print + JSON + JSON-RPC + SDK |
+| Area | Capability |
+|------|-----------|
+| **Everyday coding** | Interactive terminal session with file, search, edit, and shell tools |
+| **Operational safety** | `/checkpoint`, `/rollback`, `/doctor`, granular permission controls |
+| **Complex changes** | `/contract` → `/singular` → `/swarm` — deterministic execution with locks and gates |
+| **Codebase understanding** | Semantic search, repository-scale indexing, project memory |
+| **Multi-agent work** | Parallel subagents with shared memory and consistency model |
+| **Methodology** | IOSM cycles: measurable improvement with metrics, evidence, and artifact history |
+| **Integrations** | Interactive TUI, print mode, JSON event stream, JSON-RPC server, TypeScript SDK |
+| **Extensibility** | MCP servers, TypeScript extensions, Markdown skills, prompt templates, themes |
 
-## Compared to Other Tools
+---
 
-This is not a “better/worse” claim. It is a positioning map so teams can choose the right tool for the job.
+## ✦ The IOSM Methodology
 
-| Tool | Typical Strength | Typical Mode | IOSM CLI Difference |
-|------|------------------|--------------|------------------------|
-| **Claude Code** | Strong conversational coding flow | Terminal conversation | Adds structured IOSM cycles + explicit checkpoint/rollback/doctor workflow |
-| **OpenCode** | Lightweight open-source coding assistant | Terminal-first iteration | Emphasizes repeatable engineering process and quality-gated cycles |
-| **Cursor** | Excellent IDE-native editing and inline assistance | IDE-first | Keeps workflow in terminal with agent tooling, MCP, and scriptable runtime modes |
-| **Gemini CLI** | Fast Gemini-centric command-line assistance | CLI prompts and tasks | Provider-agnostic runtime + IOSM methodology + deeper operational controls |
-| **IOSM CLI** | Structured engineering execution | Terminal runtime + methodology | Designed for reproducible refactors, diagnostics, memory, and cycle artifacts |
+IOSM — **Improve, Optimize, Shrink, Modularize** — is an algorithmic methodology for systematic engineering improvement. It transforms ad-hoc refactoring into a reproducible, measurable process.
 
-## Who It Is For
+**Four mandatory phases — executed in strict order:**
 
-- developers at any level: start in **full** profile and be productive quickly
-- teams that need adaptive multi-agent execution with strict verification closure via **meta** profile
-- advanced engineers and tech leads using **iosm** mode for high-risk refactors and system-level change
-- teams that need auditability, rollback, and repeatable improvement history
-- platform/backend teams that operationalize AI coding into reliable workflows
-- teams building internal coding automation on top of a CLI runtime
+```
+Improve → Optimize → Shrink → Modularize
+```
 
-## Install
+| Phase | Focus |
+|-------|-------|
+| **Improve** | Eliminate defects, inconsistencies, and technical debt |
+| **Optimize** | Reduce resource usage, latency, and execution cost |
+| **Shrink** | Minimize code surface — delete dead code, compress abstractions |
+| **Modularize** | Extract cohesive components, enforce dependency hygiene |
+
+**Six canonical metrics** track progress across every phase:
+
+| Metric | Measures |
+|--------|----------|
+| `semantic` | Code clarity — naming, comments, structure readability |
+| `logic` | Correctness — test coverage, error handling, invariants |
+| `performance` | Runtime efficiency — latency, throughput, resource usage |
+| `simplicity` | Cognitive load — cyclomatic complexity, abstraction depth |
+| `modularity` | Dependency health — coupling, cohesion, interface clarity |
+| `flow` | Delivery velocity — CI reliability, deploy frequency, lead time |
+
+Metrics can be derived automatically or attached as evidence during IOSM cycles.
+
+**The IOSM-Index** aggregates all six metrics into a single weighted health score. Every cycle produces a baseline, hypothesis cards, evidence trails, and a final report — stored in `.iosm/` for permanent project history.
+
+Quality gates after each phase enforce progression: a phase cannot close if any guardrail is breached.
+
+> Full specification: [iosm-spec.md](./iosm-spec.md) · Canonical repository: [github.com/rokoss21/IOSM](https://github.com/rokoss21/IOSM)
+
+---
+
+## ✦ Quick Start
+
+### 1. Install
 
 ```bash
 npm install -g iosm-cli
 iosm --version
 ```
 
-Requirements:
-- Node.js `>=20.6.0`
-- provider auth (environment variable API key and/or `/login`)
-- `/login` now includes the full `models.dev` provider catalog; `/model` loads available models for authenticated providers
+**Requirements:** Node.js `>=20.6.0` · at least one authenticated model provider
 
-### Recommended CLI Toolchain (for maximum efficiency)
+No global install? Use `npx`:
 
-`iosm-cli` ships managed fallback for `rg` and `fd`, but best performance comes from system-installed tooling, especially for large repos.
-
-Tools used by advanced search/analysis workflows:
-- `rg`, `fd`, `ast-grep` (`sg`), `comby`, `jq`, `yq`, `semgrep`, `sed`
-
-macOS (Homebrew):
 ```bash
+npx iosm-cli --version
+```
+
+### 2. Configure a provider
+
+The fastest path is interactive setup inside the app:
+
+```
+iosm
+/login      ← OAuth or API key (models.dev catalog)
+/model      ← pick your model
+```
+
+Or set an environment variable before launching:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # Claude (recommended)
+export OPENAI_API_KEY="sk-..."          # GPT models
+export GEMINI_API_KEY="AI..."           # Gemini
+export GROQ_API_KEY="gsk_..."           # Groq
+# Also supported: OpenRouter, Mistral, xAI, Cerebras, AWS Bedrock
+```
+
+### 3. Run your first session
+
+```bash
+cd /path/to/your/project
+
+# Interactive mode
+iosm
+
+# Or one-shot without entering the TUI
+iosm -p "Summarize the repository architecture"
+```
+
+Inside interactive mode:
+```
+Review the repository structure and summarize the architecture.
+```
+
+### 4. Optional — enhanced search toolchain
+
+Works without these, but large repositories benefit significantly:
+
+```bash
+# macOS
 brew install ripgrep fd ast-grep comby jq yq semgrep
-```
 
-Ubuntu/Debian:
-```bash
-sudo apt-get update
+# Ubuntu / Debian
 sudo apt-get install -y ripgrep fd-find jq yq sed
-
-# optional but recommended:
-# semgrep: pipx install semgrep
-# ast-grep: npm i -g @ast-grep/cli
-# comby: see https://comby.dev/docs/installation
 ```
 
-Check availability quickly:
+Run `/doctor` to check your environment at any time.
+
+---
+
+## ✦ Usage Patterns
+
+### Daily coding and repository work
+
+Default `full` profile. Works on any codebase without prior setup.
+
 ```bash
 iosm
-/doctor
 ```
 
-## 60-Second Start
+Common tasks:
+- implement or refactor features
+- read, search, and edit files with full shell access
+- review architecture or explore unfamiliar modules
+- resume previous sessions: `/resume`, `/fork`, `/tree`
+- keep persistent notes: `/memory`
+
+One-shot tasks skip the interactive TUI entirely:
 
 ```bash
-# 1) Open project and start CLI
-cd /path/to/repo
-iosm
+iosm -p "Audit src/ for unused exports"
+iosm @README.md @src/main.ts -p "Explain the CLI entry points"
+iosm --tools read,grep,find -p "Find all TODO comments in src/"
 ```
 
-Inside the session (full profile):
-```text
-/login            # or /auth: configure credentials (OAuth + API key providers from models.dev)
-/model            # select active provider/model from currently authenticated providers
-<your task>       # start working immediately
-```
+---
 
-When you need advanced IOSM workflow:
-```text
-Shift+Tab         # switch profile to iosm
-/init             # bootstrap IOSM workspace
-/iosm 0.95 --max-iterations 5
-```
+### Read-only planning and review
 
-Core commands to unlock full runtime value:
-- direct prompt to main agent — default for simple tasks (single-agent flow)
-- `/orchestrate` — manual legacy multi-agent orchestration (explicit team-run control)
-- `/swarm` — recommended multi-agent orchestration runtime for complex/risky changes (`run`, `from-singular`, `watch`, `retry`, `resume`)
-- `/init` + `/iosm` — execute measurable IOSM cycles with artifacts and quality gates
-- `/mcp` — connect external tool ecosystems in interactive UI
-- `/semantic` — configure semantic provider, build/rebuild embeddings index, run meaning-based retrieval
-- `/memory` — persist project facts and constraints across sessions
-
-## Real-World Example: Swarm-First IOSM Refactor
-
-```console
-$ iosm
-IOSM CLI v0.2.5 [full]
-
-you> /singular Refactor auth and split session handling from token validation
-iosm> Option 1 selected
-iosm> Start with Swarm (Recommended)
-iosm> /swarm from-singular 2026-03-10-210201 --option 1
-iosm> Swarm run started: swarm_1741632000000_ab12cd
-iosm> status: running (ready/running/blocked/done visible via /swarm watch)
-iosm> Touches -> Locks -> Gates pipeline completed
-iosm> integration report written to .iosm/orchestrate/swarm_1741632000000_ab12cd/reports/
-
-iosm> switch profile: iosm (Shift+Tab)
-iosm> /init
-iosm> IOSM workspace initialized
-iosm> /iosm 0.95 --max-iterations 5
-
-iosm> Baseline captured
-iosm> Planned cycle from team artifacts: simplify auth module
-iosm> Running improve -> verify -> optimize loop
-iosm> Result: simplicity +18%, modularity +11%, performance +6%
-iosm> Artifacts written to .iosm/cycles/2026-03-10-001/
-```
-
-For plain-language execution without `/singular`:
+Use `plan` when you want architecture analysis or code review without any writes.
 
 ```bash
-/swarm run "Refactor auth and reduce integration risk" --max-parallel 3 --budget-usd 12
+iosm --profile plan
 ```
 
-## Architecture Overview
+The agent is restricted to read-only tools. Nothing can be written to disk. Useful for code review, architecture audits, or exploring a codebase you are unfamiliar with before making changes.
 
-`IOSM CLI` is layered so execution stays controllable as task complexity grows:
+---
 
-```text
-Providers (built-ins + full models.dev catalog)
-   ↓
-Auth + Model Selection (/login, /model)
-   ↓
-Agent Runtime (interactive + JSON + JSON-RPC + SDK)
-   ↓
-Tooling Layer (read/edit/bash + search/structural/data/security tools + MCP tools)
-   ↓
-Swarm Runtime (/swarm run|from-singular|watch|retry|resume)
-   ↓
-IOSM Layer (/init, /iosm cycles, metrics, governance)
-   ↓
-Artifacts + Memory (.iosm/cycles/*, checkpoints, /memory state)
+### Complex or risky engineering changes
+
+Define constraints → analyze options → execute with guardrails:
+
+```
+/contract
+/singular Refactor auth module, split token validation from session management
 ```
 
-## Design Principles
+`/singular` produces three implementation options with trade-off analysis. Select one, then choose **Start with Swarm** to hand off to the execution runtime.
 
-- **AI executes structured engineering loops, not ad hoc chats.** Core flow for risky tasks is ` /singular -> /contract -> /swarm -> /iosm `.
-- **Complex work needs controlled execution.** Swarm applies `Scopes -> Touches -> Locks -> Gates -> Done` with continuous dispatch and bounded retries.
-- **Refactoring must be measurable.** IOSM cycles capture baseline, hypotheses, and metric deltas instead of untracked edits.
-- **Every important run must be auditable.** Artifacts and memory preserve decisions and outcomes across sessions.
-- **Adoption should be progressive.** Start in `full` profile for speed, use `meta` for orchestration-first execution, and move to `iosm` for advanced cycles and governance when needed.
+> `/swarm` will not start without an active `/contract`. If none exists, it prompts you to draft one automatically.
 
-## Operating Profiles
+The swarm runtime then executes with locks, gates, retries, and checkpoints, writing per-run artifacts under `.iosm/orchestrate/<run-id>/`.
 
-`IOSM CLI` supports four practical profiles/modes:
+Monitor and control the run:
 
-| Profile | Use It When | Avoid It When | What `/init` Does | Switch/Command |
-|------|-------------|----------------|-------------------|----------------|
-| **full** (default) | You want direct coding help and implementation speed | You need strict multi-workstream orchestration contracts | Generates/updates `AGENTS.md` from real repo scan and prepares `.iosm/agents/` | `Shift+Tab` in TUI or `iosm --profile full` |
-| **meta** (orchestration-first) | You need orchestration-first execution (parallel task/delegate graph + synthesis + verification closure) | You only need casual chat or lightweight Q&A | Same initialization behavior as full profile | `Shift+Tab` in TUI or `iosm --profile meta` |
-| **iosm** (advanced) | You run IOSM cycles with metrics, artifacts, and governance | You only need quick one-off coding support | Bootstraps full IOSM workspace (`iosm.yaml`, `IOSM.md`, `.iosm/cycles/...`) with optional agent verification | `Shift+Tab` in TUI, `iosm --profile iosm`, `/iosm [target-index] [--max-iterations N] [--force-init]` |
-| **plan** | You need read-only architecture/planning/review | You are ready to edit and execute changes | Not intended for initialization-heavy workflows | `Shift+Tab` in TUI or `iosm --profile plan` |
+```
+/swarm watch     ← live status
+/swarm retry     ← retry failed gates
+/swarm resume    ← continue interrupted runs
+```
 
-### META Model Requirements (Important)
+---
 
-For strong `meta` orchestration quality, use modern high-capability models with:
-- large context windows (prefer `>=128k`, ideally `>=200k`)
-- high output token limits
-- reliable long-run tool-calling behavior
+### Measurable codebase improvement (IOSM cycles)
 
-Why this matters:
-- `meta` mode keeps orchestration contracts, task plans, delegate outputs, and synthesis in context
-- small/legacy models are more likely to stop early, under-delegate, or lose orchestration constraints
-- model capability directly affects orchestration stability and output quality
-
-Practical recommendation:
-- for conversational use, switch to `full` (Shift+Tab)
-- for complex orchestration in `meta`, pick your strongest available model via `/model`
-
-Typical advanced flow:
+Use the `iosm` profile for structured improvement with metric tracking and artifact history.
 
 ```bash
 iosm --profile iosm
+```
+
+Bootstrap the workspace once:
+
+```
 /init
+```
+
+Run a full improvement cycle targeting an IOSM-Index of 0.95:
+
+```
 /iosm 0.95 --max-iterations 5
 ```
 
-## Swarm-First Execution
-
-For complex/risky work, use the canonical swarm runtime instead of one monolithic prompt.
-
-Default routing rule:
-- simple tasks -> direct prompt to one agent
-- manual legacy multi-agent split -> `/orchestrate`
-- complex/risky changes (multi-agent orchestration level) -> `/swarm`
-
-`/swarm` supports:
-- contract-bound execution (run blocks until effective `/contract` exists)
-- run-level parallel workers via `--max-parallel` (1..20)
-- continuous dispatch over DAG tasks (ready -> locks -> gates -> checkpoint)
-- intra-task parallelism: one swarm task can fan out to delegated subagents (up to 10) when beneficial
-- run-scoped shared memory (`shared_memory_write` / `shared_memory_read`) across tasks and delegates that share the same `run_id`
-- standalone `task` executions auto-generate internal `run_id/task_id`, enabling shared memory for root + delegates without manual IDs
-- hierarchical touches-based locking and lock downgrade
-- task gates + run gates separation
-- retries by taxonomy (`permission`, `dependency/import`, `test`, `timeout`, `unknown`)
-- checkpoints/recovery (`/swarm resume`) and focused retries (`/swarm retry`)
-- scheduler guards (`progress heuristic` + `conflict density guard`) for stable throughput under contention
-- high-risk spawn candidates require explicit confirmation during run
-
-Example:
+Or use CLI subcommands:
 
 ```bash
-/swarm run "Improve auth reliability and performance with verification gates" \
-  --max-parallel 3 \
-  --budget-usd 15
+iosm init                             # bootstrap .iosm/ workspace
+iosm cycle plan "Reduce auth complexity" "Improve test coverage"
+iosm cycle status                     # check phase progress and gate results
+iosm cycle report                     # full JSON report
+iosm cycle list                       # history of all cycles
 ```
 
-Bridge from decision mode:
+Artifacts are written to `.iosm/cycles/<cycle-id>/` — baselines, hypothesis cards, phase data, and final reports.
+
+---
+
+## ✦ Agent Profiles
+
+Profiles control tool access, thinking level, and behavioral guidance injected into the model's system prompt.
+
+**Primary profiles** — operator-facing:
+
+| Profile | Best for | Tool access | Thinking |
+|---------|----------|-------------|----------|
+| `full` | General engineering (default) | Full toolset | Medium |
+| `meta` | Orchestration-first, parallel delegation | Full toolset | Medium |
+| `iosm` | IOSM cycles, artifact-aware refactoring | Full + IOSM context | Medium |
+| `plan` | Read-only planning and code review | Read-only | Medium |
+
+**Specialist profiles** — for subagent delegation and targeted work:
+
+| Profile | Best for | Tool access | Thinking |
+|---------|----------|-------------|----------|
+| `explore` | Fast codebase exploration (no writes) | Read, grep, find, ls | Off |
+| `iosm_analyst` | Reading `.iosm/` artifacts, reporting | Read-only | Low |
+| `iosm_verifier` | Verifying changes, updating `.iosm/` | bash, read, write | Low |
+| `cycle_planner` | Planning IOSM cycles, writing hypotheses | bash, read, write | Medium |
+
+Select at startup:
 
 ```bash
-/singular "Refactor auth and split session handling from token validation"
-# choose option -> Start with Swarm (Recommended)
+iosm --profile plan
+iosm --profile iosm
 ```
 
-## Core Commands
+Switch during a session: **Shift+Tab** (cycles through primary profiles), or select via the TUI.
 
-| Workflow Step | Command | Why It Matters |
-|------|---------|----------------|
-| Start clean context | `/new` or `/clear` | Reset session state before a new task or after context drift |
-| Configure auth | `/login` or `/auth` | Set OAuth/API key credentials with guided flow from full models.dev provider catalog |
-| Select active model | `/model` | Choose provider/model from available authenticated providers |
-| Launch controlled execution | `/swarm run ...` | Execute complex tasks with contract boundaries, locks, gates, retries, and checkpoints |
-| Bridge decision to execution | `/swarm from-singular ...` | Apply selected `/singular` option under effective contract policy |
-| Legacy orchestration | `/orchestrate --parallel ...` | Keep previous team-run flow when you explicitly need legacy semantics |
-| Initialize IOSM workspace | `/init` | Bootstrap/update IOSM files and cycle workspace |
-| Run IOSM cycle | `/iosm [target-index] [--max-iterations N]` | Execute measurable improve/verify loops with artifact output |
-| Track swarm runs | `/swarm watch`, `/swarm resume`, `/swarm retry` | Observe state, resume checkpoints, and recover failed tasks |
-| Manage MCP servers | `/mcp` | Inspect/add/enable external tool servers interactively |
-| Manage semantic search | `/semantic` | Configure provider with auto model discovery (OpenRouter/Ollama), index codebase, query by intent/meaning |
-| Define engineering contract | `/contract` | Field-by-field interactive contract editor with auto-save and automatic JSON generation |
-| Analyze feasibility variants | `/singular <feature request>` | Runs baseline + standard agent pass, then returns 3 implementation options and recommendation |
-| Manage memory | `/memory` | Add/edit/remove persistent project facts and constraints |
-| Save/restore state | `/checkpoint` / `/rollback` | Safe experimentation with fast rollback |
-| Diagnose runtime | `/doctor` | Verify model/auth/MCP/resources when behavior is inconsistent |
-| Manage settings | `/settings` | Tune runtime defaults and operational preferences |
+> `meta` prioritizes orchestration and delegation over direct execution. Strong results require a capable model with a large context window and reliable tool-calling. For ordinary sessions, `full` is the better default.
 
-## Decision Workflow: `/contract` + `/singular`
+---
 
-### `/contract` (interactive contract manager)
+## ✦ Complex Change Workflow
 
-- No manual JSON editing in terminal.
-- You edit fields directly (`goal`, `scope_include`, `scope_exclude`, `constraints`, `quality_gates`, `definition_of_done`, `risks`, and additional planning fields).
-- Press `Enter` on a field value and it is saved immediately.
-- Contract JSON is built automatically.
+For non-trivial changes, the recommended path is a controlled progression rather than a single giant prompt.
 
-Key manager actions:
-- `Open effective contract` = read merged runtime contract (`project + session`).
-- `Edit session contract` = temporary overlay for current session only.
-- `Edit project contract` = persistent baseline in `.iosm/contract.json`.
+```mermaid
+flowchart LR
+  A[Goal] --> B[/contract]
+  B --> C[/singular]
+  C --> D[/swarm]
+  D --> E[Verified changes]
+  E --> F[/iosm cycle]
+  F --> G[Artifacts + history]
+```
 
-### `/singular <request>` (feature feasibility analyzer)
+**Step-by-step:**
 
-- Command-first flow: write request, run analysis, receive decision options.
-- Uses standard agent-style repository run (not static form output), then merges with baseline repository scan.
-- Produces exactly 3 options:
-  - `Option 1`: practical implementation path (usually recommended).
-  - `Option 2`: alternative strategy with different trade-offs.
-  - `Option 3`: defer/do-not-implement-now path.
-- Each option includes affected files, step-by-step plan, risks, and when-to-choose guidance.
-- User selects `1/2/3`, then chooses `Start with Swarm` or `Continue without Swarm`.
-- `Start with Swarm` executes selected option via `/swarm from-singular ...` under effective `/contract`.
+1. **Define scope** — `/contract` sets what is in scope, what is protected, and what model behavior is expected
+2. **Analyze options** — `/singular <request>` produces three implementation plans with trade-off analysis
+3. **Execute with guardrails** — `/swarm run <task>` enforces a deterministic control model:
+   ```
+   Scopes → Touches → Locks → Gates → Done
+   ```
+4. **Measure** — follow with `/iosm` to capture metric changes as part of a formal cycle
 
-Legacy note:
-- `/blast` and `/shadow` are removed from active workflow.
-- Use `/singular` for feasibility decisions and `/contract` for engineering constraints.
+Run artifacts: `.iosm/orchestrate/<run-id>/` — run state, DAG, checkpoints, events, final report.
 
-## IOSM In One Line
+---
 
-**IOSM** gives you a repeatable loop for improving codebases with explicit quality gates, metrics, and artifact history instead of one-off AI edits.
+## ✦ Integration Modes
 
-Quick start:
+| Mode | Use case | How |
+|------|----------|-----|
+| **Interactive TUI** | Daily engineering work | `iosm` |
+| **Print mode** | One-shot tasks, shell scripts | `iosm -p "..."` |
+| **CI / automation** | Contract-driven runs inside pipelines | `iosm -p "..."` — exits non-zero on failure |
+| **JSON stream** | Machine-readable event output | `iosm --mode json -p "..."` |
+| **RPC server** | IDE / editor integration | `iosm --mode rpc --no-session` |
+| **TypeScript SDK** | Embed the runtime in your own application | `createAgentSession()` |
 
 ```bash
-iosm init
-iosm cycle plan "reduce API latency" "simplify auth module"
-iosm cycle status
-iosm cycle report
+# Print mode — one-shot task
+iosm -p "Review src/auth.ts for security issues"
+
+# Constrain which tools are available
+iosm --tools read,grep,find,ls -p "Audit src/ for dead code"
+
+# Pre-load files as context
+iosm @src/main.ts @src/core/sdk.ts -p "Explain the session lifecycle"
+
+# JSON stream for programmatic consumption
+iosm --mode json -p "Summarize the repository" | jq -r 'select(.type=="text_delta") | .delta'
+
+# RPC server for editor integrations
+iosm --mode rpc --no-session
 ```
 
-## Documentation
+---
 
-Use the docs as the source of truth for details.
+## ✦ Extensibility
+
+`iosm-cli` acts as a runtime platform rather than a closed CLI tool. Every layer is open to extension.
+
+### Extension surfaces
+
+| Surface | Capability |
+|---------|-----------|
+| **MCP servers** | Connect external services as tools (user-level or project-level via `.mcp.json`) |
+| **TypeScript extensions** | Custom tools, slash commands, hooks, UI components, provider adapters |
+| **Markdown skills** | Reusable multi-step workflows as slash commands |
+| **Prompt templates** | Parameterized prompts available as slash commands |
+| **JSON themes** | Customize terminal colors and TUI appearance |
+
+Install from npm, git, or a local path:
+
+```bash
+iosm install npm:@yourorg/your-extension
+iosm install git:github.com/yourorg/your-extension@main
+iosm install ./local-extension --local
+iosm list
+iosm update
+```
+
+### Included examples
+
+- [66 extension examples](./examples/extensions/README.md) — tools, hooks, UI, commands
+- [12 SDK examples](./examples/sdk/README.md) — programmatic session usage
+- [Plan-mode extension](./examples/extensions/plan-mode/README.md)
+- [Subagent orchestration extension](./examples/extensions/subagent/README.md)
+
+---
+
+## ✦ Configuration
+
+Settings merge in priority order: **CLI flags** > **project** `.iosm/settings.json` > **global** `~/.iosm/agent/settings.json`.
+
+### Key paths
+
+```
+~/.iosm/agent/
+├── settings.json        # global defaults
+├── auth.json            # provider credentials
+├── models.json          # model configuration
+├── mcp.json             # global MCP servers
+├── keybindings.json     # keyboard shortcuts
+└── sessions/            # session persistence
+
+.iosm/                   # project workspace (created by /init or iosm init)
+├── iosm.yaml            # methodology config: phases, gates, guardrails, weights
+├── IOSM.md              # auto-generated project playbook
+├── contract.json        # active engineering contract
+├── cycles/              # IOSM cycle artifacts
+├── orchestrate/         # swarm run artifacts
+└── settings.json        # project overrides
+```
+
+### Key settings
+
+```json
+{
+  "model": {
+    "provider": "anthropic",
+    "id": "claude-sonnet-4-20250514",
+    "thinking": "medium"
+  },
+  "tools": {
+    "enabled": ["read", "bash", "edit", "write", "grep", "rg"],
+    "bashTimeout": 30000
+  },
+  "session": {
+    "autoCompact": true,
+    "compactThreshold": 100000
+  },
+  "permissions": {
+    "autoApprove": false
+  }
+}
+```
+
+Run `/settings` inside the TUI to view and modify all settings interactively.
+
+---
+
+## ✦ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                         User                            │
+│         CLI flags · slash commands · SDK calls          │
+└────────────────────────┬────────────────────────────────┘
+                         │
+┌────────────────────────▼────────────────────────────────┐
+│                   iosm-cli runtime                      │
+│   Interactive TUI · Print mode · JSON stream · RPC      │
+│   Session persistence · Checkpoints · Contracts         │
+└──────────┬──────────────────────────┬───────────────────┘
+           │                          │
+┌──────────▼─────────────┐  ┌─────────▼───────────────────┐
+│      Agent engine      │  │        Orchestrator         │
+│  Model · Profiles      │  │  /swarm · /singular · /meta │
+│  Thinking · Tools      │  │  Shared memory · Locks      │
+└──────────┬─────────────┘  └─────────┬───────────────────┘
+           │                          │
+┌──────────▼──────────────────────────▼───────────────────┐
+│                       Tool layer                        │
+│  read · edit · write · bash · grep · rg · fd · ast_grep │
+│  comby · jq · yq · semgrep · sed · semantic_search      │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│                   Filesystem + Shell                    │
+│          Project codebase · External processes          │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│               Artifacts + IOSM cycles                   │
+│   .iosm/cycles/  ·  .iosm/orchestrate/  ·  sessions/    │
+│   metrics-history.jsonl  ·  decision-log.md             │
+└─────────────────────────────────────────────────────────┘
+```
+
+Every layer is independently configurable: tool access per profile, orchestration via swarm or manual delegation, persistence toggleable per session, extension hooks attachable at the tool, command, and event layers of the runtime.
+
+---
+
+## ✦ Documentation
 
 | Topic | Link |
-|------|------|
+|-------|------|
+| Documentation index | [docs/README.md](./docs/README.md) |
 | Getting started | [docs/getting-started.md](./docs/getting-started.md) |
-| CLI flags and options | [docs/cli-reference.md](./docs/cli-reference.md) |
-| Interactive mode (commands, keys, profiles) | [docs/interactive-mode.md](./docs/interactive-mode.md) |
-| IOSM init/cycles | [docs/iosm-init-and-cycles.md](./docs/iosm-init-and-cycles.md) |
-| MCP, providers, settings | [docs/configuration.md](./docs/configuration.md) |
+| CLI reference | [docs/cli-reference.md](./docs/cli-reference.md) |
+| Interactive mode and slash commands | [docs/interactive-mode.md](./docs/interactive-mode.md) |
+| IOSM init and cycles | [docs/iosm-init-and-cycles.md](./docs/iosm-init-and-cycles.md) |
 | Orchestration and subagents | [docs/orchestration-and-subagents.md](./docs/orchestration-and-subagents.md) |
-| Extensions, packages, themes | [docs/extensions-packages-themes.md](./docs/extensions-packages-themes.md) |
+| Configuration and environment | [docs/configuration.md](./docs/configuration.md) |
+| Extensions, packages, skills, themes | [docs/extensions-packages-themes.md](./docs/extensions-packages-themes.md) |
 | Sessions, traces, export | [docs/sessions-traces-export.md](./docs/sessions-traces-export.md) |
-| JSON/RPC/SDK usage | [docs/rpc-json-sdk.md](./docs/rpc-json-sdk.md) |
-| Full docs index | [docs/README.md](./docs/README.md) |
-| Full IOSM specification (local) | [iosm-spec.md](./iosm-spec.md) |
-| IOSM methodology spec (canonical) | [github.com/rokoss21/IOSM](https://github.com/rokoss21/IOSM) |
+| JSON stream, RPC, SDK | [docs/rpc-json-sdk.md](./docs/rpc-json-sdk.md) |
+| Development and testing | [docs/development-and-testing.md](./docs/development-and-testing.md) |
+| Changelog | [CHANGELOG.md](./CHANGELOG.md) |
+| IOSM specification (v1.0) | [iosm-spec.md](./iosm-spec.md) |
+| Canonical IOSM repository | [github.com/rokoss21/IOSM](https://github.com/rokoss21/IOSM) |
 
-## Related Repositories
+---
 
-| Repository | Description |
-|------------|-------------|
-| [IOSM](https://github.com/rokoss21/IOSM) | Canonical IOSM v1.0 specification, schemas, artifact templates, and validation scripts |
-| [iosm-cli](https://github.com/rokoss21/iosm-cli) | This repo — CLI runtime that implements the IOSM methodology as an engineering agent |
-
-## Development
+## ✦ Development
 
 ```bash
+git clone https://github.com/rokoss21/iosm-cli.git
+cd iosm-cli
 npm install
-npm run check
-npm test
-npm run build
+npm run check    # typecheck
+npm test         # run tests (vitest)
+npm run build    # compile to dist/
 ```
 
-Contributing guide: [CONTRIBUTING.md](./CONTRIBUTING.md)
+Additional scripts:
 
-## License
+```bash
+npm run dev            # watch mode (incremental compilation)
+npm run build:binary   # standalone Bun binary
+npm run deploy-local   # build and sync local install
+```
+
+**Repository layout:**
+
+```
+src/           TypeScript source
+test/          Vitest test suites
+docs/          Reference documentation
+examples/      Extension and SDK examples (66 + 12)
+iosm-spec.md   IOSM methodology specification
+```
+
+---
+
+## ✦ Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for development workflow, testing requirements, and contribution guidelines.
+
+Issues and pull requests are welcome. Please open an issue before starting large changes.
+
+---
+
+## ✦ License
 
 [MIT](./LICENSE) © 2026 Emil Rokossovskiy
-
-<p align="center">
-  <sub>Built for teams that treat AI coding as an engineering system, not a chat.</sub>
-</p>

@@ -24,7 +24,12 @@ import {
 	isValidProfileName,
 	type AgentProfileName,
 } from "../agent-profiles.js";
-import type { SharedMemoryContext } from "../shared-memory.js";
+import {
+	readSharedMemory,
+	type SharedMemoryContext,
+	summarizeSharedMemoryUsage,
+	writeSharedMemory,
+} from "../shared-memory.js";
 import type { CustomSubagentDefinition } from "../subagents.js";
 
 /**
@@ -197,6 +202,17 @@ export interface TaskToolDetails {
 	retrospectiveAttempts?: number;
 	retrospectiveRecovered?: number;
 	failureCauses?: Partial<Record<FailureCause, number>>;
+	coordination?: {
+		sharedMemoryWrites?: number;
+		currentTaskWrites?: number;
+		currentTaskDelegateWrites?: number;
+		runScopeWrites?: number;
+		taskScopeWrites?: number;
+		duplicatesDetected?: number;
+		claimKeysMatched?: number;
+		claimCollisions?: number;
+	};
+	sharedMemorySummaryKey?: string;
 }
 
 export interface TaskToolOptions {
@@ -226,7 +242,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are a fast read-only codebase explorer. Answer concisely. Never write or edit files.",
 	plan: "You are a technical architect. Analyze the codebase and produce a clear implementation plan. Do not write or edit files.",
 	iosm: "You are an IOSM execution agent. Use IOSM methodology and keep IOSM artifacts synchronized with implementation.",
-	meta: "You are a meta orchestration agent. Your main job is to maximize safe parallel execution through delegates, not to personally do most of the implementation. Start with bounded read-only recon, then form a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work aggressively instead of collapsing complex work into one worker. For any non-trivial task, orchestration is required: after recon, launch multiple focused delegates instead of continuing manual implementation in the parent agent, avoid direct write/edit work in the parent agent before delegation unless the task is clearly trivial, and do not hand the whole task to one specialist child when independent workstreams exist. If a delegated workstream still contains multiple independent slices, split it again with nested <delegate_task> blocks. Default to aggressive safe parallelism. If the user requested a specific degree of parallelism, honor it when feasible or explain the exact blocker. Use shared_memory as the default coordination channel between delegates: use stable namespaced keys, prefer read-before-write, and use CAS (if_version) for contested updates; reserve append mode for timeline/log keys. When delegation is not used for non-trivial work, explain why in one line and include DELEGATION_IMPOSSIBLE. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped.",
+	meta: "You are a meta orchestration agent. Your main job is to maximize safe parallel execution through delegates, not to personally do most of the implementation. Start with bounded read-only recon, then form a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work aggressively instead of collapsing complex work into one worker. For any non-trivial task, orchestration is required: after recon, launch multiple focused delegates instead of continuing manual implementation in the parent agent, avoid direct write/edit work in the parent agent before delegation unless the task is clearly trivial, and do not hand the whole task to one specialist child when independent workstreams exist. If a delegated workstream still contains multiple independent slices, split it again with nested <delegate_task> blocks. Default to aggressive safe parallelism. If the user requested a specific degree of parallelism, honor it when feasible or explain the exact blocker. Use shared_memory as the default coordination channel between delegates: use stable namespaced keys, prefer read-before-write, and use CAS (if_version) for contested updates; reserve append mode for timeline/log keys. When delegation is not used for non-trivial work, explain why in one line and include DELEGATION_IMPOSSIBLE. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped. For any metrics (speedup, compliance, conflict counts, quality scores), report only values backed by observed runtime evidence; if evidence is missing, mark the metric as unknown. Do not claim report files/artifacts unless they were produced in this run or verified on disk.",
 	iosm_analyst:
 		"You are an IOSM metrics analyst. Analyze .iosm/ artifacts and codebase metrics. Be precise and evidence-based.",
 	iosm_verifier:
@@ -615,6 +631,54 @@ function truncateForDelegationContext(text: string, maxChars = 2200): string {
 	return `${normalized.slice(0, Math.max(100, maxChars - 3)).trimEnd()}...`;
 }
 
+function stripDelegatedSectionHeading(section: string): string {
+	return section.replace(/^####\s+[^\n]*\n?/i, "").trim();
+}
+
+function normalizeDelegatedSectionBody(section: string): string {
+	return stripDelegatedSectionHeading(section)
+		.toLowerCase()
+		.replace(/[`"'*_#~[\](){}<>\\|]/g, " ")
+		.replace(/[^\w\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function detectDuplicateDelegatedSections(sections: readonly string[]): {
+	duplicates: number;
+	duplicatePairs: Array<{ duplicate: number; original: number }>;
+} {
+	const duplicatePairs: Array<{ duplicate: number; original: number }> = [];
+	const normalizedSections = sections.map((section) => normalizeDelegatedSectionBody(section));
+
+	for (let index = 0; index < normalizedSections.length; index += 1) {
+		const current = normalizedSections[index] ?? "";
+		if (current.length < 60) continue;
+		for (let previous = 0; previous < index; previous += 1) {
+			const baseline = normalizedSections[previous] ?? "";
+			if (baseline.length < 60) continue;
+			if (current === baseline) {
+				duplicatePairs.push({ duplicate: index + 1, original: previous + 1 });
+				break;
+			}
+			const shorter = current.length <= baseline.length ? current : baseline;
+			const longer = current.length > baseline.length ? current : baseline;
+			if (shorter.length >= 100 && longer.includes(shorter)) {
+				const coverage = shorter.length / Math.max(1, longer.length);
+				if (coverage >= 0.92) {
+					duplicatePairs.push({ duplicate: index + 1, original: previous + 1 });
+					break;
+				}
+			}
+		}
+	}
+
+	return {
+		duplicates: duplicatePairs.length,
+		duplicatePairs,
+	};
+}
+
 function extractDelegationWorkstreams(text: string, maxItems: number): string[] {
 	if (maxItems <= 0) return [];
 	const seen = new Set<string>();
@@ -709,6 +773,76 @@ function buildAutoDelegationPrompt(input: {
 	].join("\n"));
 }
 
+function uniquifyWorkstreamTitles(titles: string[]): string[] {
+	const counts = new Map<string, number>();
+	return titles.map((title) => {
+		const key = title
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, " ")
+			.trim();
+		const next = (counts.get(key) ?? 0) + 1;
+		counts.set(key, next);
+		if (next <= 1) return title;
+		return `${title} (${next})`;
+	});
+}
+
+function semanticallyDeduplicateWorkstreamTitles(titles: string[]): string[] {
+	const kept: string[] = [];
+	const tokenized = (value: string): Set<string> =>
+		new Set(
+			value
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, " ")
+				.split(/\s+/)
+				.map((token) => token.trim())
+				.filter((token) => token.length >= 3),
+		);
+	const jaccard = (left: Set<string>, right: Set<string>): number => {
+		if (left.size === 0 || right.size === 0) return 0;
+		let intersection = 0;
+		for (const token of left) {
+			if (right.has(token)) intersection += 1;
+		}
+		const union = left.size + right.size - intersection;
+		return union > 0 ? intersection / union : 0;
+	};
+
+	for (const candidate of titles) {
+		const candidateTokens = tokenized(candidate);
+		const duplicate = kept.some((existing) => {
+			const existingTokens = tokenized(existing);
+			const similarity = jaccard(existingTokens, candidateTokens);
+			return similarity >= 0.82;
+		});
+		if (!duplicate) {
+			kept.push(candidate);
+		}
+	}
+	return kept;
+}
+
+function deriveAutoSynthLockKey(streamTitle: string, ordinal: number): string {
+	const pathLike = streamTitle.match(/\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\b/)?.[0];
+	if (pathLike) {
+		const normalizedPath = pathLike
+			.replace(/^[./]+/, "")
+			.split("/")
+			.filter((segment) => segment.length > 0)
+			.slice(0, 2)
+			.join("/");
+		return `auto-synth:${toSharedMemoryKeySegment(normalizedPath, `stream-${ordinal}`)}`;
+	}
+
+	if (/\b(auth|rbac|acl|permission)\b/i.test(streamTitle)) return "auto-synth:auth";
+	if (/\b(db|database|sql|storage|schema)\b/i.test(streamTitle)) return "auto-synth:data";
+	if (/\b(ui|ux|frontend|view|component)\b/i.test(streamTitle)) return "auto-synth:ui";
+	if (/\b(test|qa|verification|coverage)\b/i.test(streamTitle)) return "auto-synth:test";
+	if (/\b(api|gateway|route|http)\b/i.test(streamTitle)) return "auto-synth:api";
+
+	return `auto-synth:${toSharedMemoryKeySegment(streamTitle, `stream-${ordinal}`)}`;
+}
+
 function synthesizeDelegationRequests(input: {
 	description: string;
 	prompt: string;
@@ -742,10 +876,14 @@ function synthesizeDelegationRequests(input: {
 	while (titles.length < missing) {
 		titles.push(`Independent workstream ${titles.length + 1}`);
 	}
+	const semanticallyDeduped = semanticallyDeduplicateWorkstreamTitles(titles);
+	while (semanticallyDeduped.length < missing) {
+		semanticallyDeduped.push(`Independent workstream ${semanticallyDeduped.length + 1}`);
+	}
+	const uniqueTitles = uniquifyWorkstreamTitles(semanticallyDeduped);
 
 	const defaultProfile = deriveAutoDelegateProfile(input.baseProfile, input.description, input.prompt);
-	const synthesizedLockKey = writeCapableProfiles.has(defaultProfile) ? "auto-synth-write-lock" : undefined;
-	return titles.map((streamTitle, index) => ({
+	return uniqueTitles.map((streamTitle, index) => ({
 		description: `Auto: ${streamTitle}`,
 		profile: defaultProfile,
 		agent: pickAutoDelegateAgent(streamTitle, input.availableCustomNames),
@@ -754,10 +892,10 @@ function synthesizeDelegationRequests(input: {
 			rootDescription: input.description,
 			rootPrompt: input.prompt,
 			ordinal: input.currentDelegates + index + 1,
-			total: input.currentDelegates + titles.length,
+			total: input.currentDelegates + uniqueTitles.length,
 		}),
 		cwd: undefined,
-		lockKey: synthesizedLockKey,
+		lockKey: writeCapableProfiles.has(defaultProfile) ? deriveAutoSynthLockKey(streamTitle, index + 1) : undefined,
 		model: undefined,
 		isolation: undefined,
 		dependsOn: undefined,
@@ -794,6 +932,78 @@ function buildSharedMemoryGuidance(runId: string, taskId: string | undefined): s
 		"- Use mode=append only for log/timeline keys; use mode=set for canonical state.",
 		"[/SHARED_MEMORY]",
 	].join("\n");
+}
+
+function toSharedMemoryKeySegment(raw: string | undefined, fallback: string): string {
+	const normalized = (raw ?? "")
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9._-]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	if (!normalized) return fallback;
+	return normalized.slice(0, 64);
+}
+
+function buildTaskPlanSharedMemoryKey(taskId: string | undefined): string {
+	return `plan/${toSharedMemoryKeySegment(taskId, "task")}`;
+}
+
+function buildDelegateFindingSharedMemoryKey(taskId: string | undefined, delegateLabel: string): string {
+	return `findings/${toSharedMemoryKeySegment(taskId, "task")}/${toSharedMemoryKeySegment(delegateLabel, "stream")}`;
+}
+
+function extractClaimCandidates(text: string, maxItems = 3): string[] {
+	const matches = text.match(/\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\b/g) ?? [];
+	const normalized = new Set<string>();
+	for (const match of matches) {
+		const cleaned = match
+			.replace(/^[./]+/, "")
+			.replace(/\/+/g, "/")
+			.trim();
+		if (!cleaned) continue;
+		normalized.add(cleaned);
+		if (normalized.size >= maxItems) break;
+	}
+	return Array.from(normalized);
+}
+
+function buildClaimKey(pathLike: string): string {
+	const segments = pathLike
+		.split("/")
+		.map((segment) => toSharedMemoryKeySegment(segment, "segment"))
+		.filter((segment) => segment.length > 0);
+	if (segments.length === 0) {
+		return "claims/unknown";
+	}
+	return `claims/${segments.slice(0, 6).join("/")}`;
+}
+
+function buildDelegateCoordinationGuidance(input: {
+	taskId: string | undefined;
+	delegateLabel: string;
+	delegateDescription: string;
+}): string {
+	const planKey = buildTaskPlanSharedMemoryKey(input.taskId);
+	const findingKey = buildDelegateFindingSharedMemoryKey(input.taskId, input.delegateLabel);
+	return [
+		"[DELEGATE_COORDINATION]",
+		`delegate_label: ${input.delegateLabel}`,
+		`delegate_description: ${input.delegateDescription}`,
+		`read_first_key: ${planKey}`,
+		`publish_key: ${findingKey}`,
+		"Before heavy repository reads, check current coordination state via shared_memory_read.",
+		"Use claims/<path> run-scoped keys with CAS (if_version) to announce file ownership and reduce duplicate reads.",
+		"Before responding, publish concise stream findings via shared_memory_write.",
+		"Keep ownership strict: do not duplicate sibling streams.",
+		"[/DELEGATE_COORDINATION]",
+	].join("\n");
+}
+
+function createSharedMemoryExcerpt(value: string, maxChars = 1200): string {
+	const normalized = normalizeSpacing(value);
+	if (normalized.length <= maxChars) return normalized;
+	return `${normalized.slice(0, Math.max(120, maxChars - 3)).trimEnd()}...`;
 }
 
 function parseDelegationRequests(output: string, maxRequests: number): ParsedDelegationRequests {
@@ -1580,6 +1790,160 @@ export function createTaskTool(
 							taskId: sharedMemoryTaskId,
 							profile: effectiveProfile,
 						};
+						const publishTaskCoordinationPlan = async (): Promise<void> => {
+							const key = buildTaskPlanSharedMemoryKey(sharedMemoryTaskId);
+							const payload = JSON.stringify({
+								taskId: sharedMemoryTaskId,
+								description,
+								profile: effectiveProfile,
+								objective: createSharedMemoryExcerpt(prompt, 900),
+							});
+							try {
+								await writeSharedMemory(
+									rootSharedMemoryContext,
+									{
+										key,
+										value: payload,
+										scope: "run",
+										mode: "set",
+									},
+									_signal,
+								);
+							} catch (error) {
+								const message = error instanceof Error ? error.message : String(error);
+								delegationWarnings.push(`Shared memory plan publish skipped: ${message}`);
+							}
+						};
+						const publishDelegateFinding = async (input: {
+							delegateLabel: string;
+							delegateDescription: string;
+							delegateProfile: string;
+							status: "done" | "failed";
+							content: string;
+						}): Promise<void> => {
+							const key = buildDelegateFindingSharedMemoryKey(sharedMemoryTaskId, input.delegateLabel);
+							const payload = JSON.stringify({
+								taskId: sharedMemoryTaskId,
+								delegate: input.delegateLabel,
+								description: input.delegateDescription,
+								profile: input.delegateProfile,
+								status: input.status,
+								summary: createSharedMemoryExcerpt(input.content, 1000),
+							});
+							try {
+								await writeSharedMemory(
+									{
+										rootCwd: cwd,
+										runId: sharedMemoryRunId,
+										taskId: sharedMemoryTaskId,
+										delegateId: input.delegateLabel,
+										profile: input.delegateProfile,
+									},
+									{
+										key,
+										value: payload,
+										scope: "run",
+										mode: "set",
+									},
+									_signal,
+								);
+							} catch (error) {
+								const message = error instanceof Error ? error.message : String(error);
+								delegationWarnings.push(
+									`Shared memory finding publish skipped for delegate ${input.delegateLabel}: ${message}`,
+								);
+							}
+						};
+						const publishStreamClaims = async (input: {
+							owner: string;
+							description: string;
+							promptText: string;
+						}): Promise<void> => {
+							const claimPaths = extractClaimCandidates(`${input.description}\n${input.promptText}`, 3);
+							if (claimPaths.length === 0) return;
+							for (const claimPath of claimPaths) {
+								const key = buildClaimKey(claimPath);
+								let lastError: string | undefined;
+								for (let attempt = 0; attempt < 2; attempt += 1) {
+									try {
+										const snapshot = await readSharedMemory(
+											rootSharedMemoryContext,
+											{
+												scope: "run",
+												key,
+												includeValues: true,
+											},
+											_signal,
+										);
+										const current = snapshot.items[0];
+										if (!current) {
+											await writeSharedMemory(
+												rootSharedMemoryContext,
+												{
+													key,
+													value: JSON.stringify({
+														path: claimPath,
+														owners: [input.owner],
+														updatedAt: new Date().toISOString(),
+													}),
+													scope: "run",
+													mode: "set",
+												},
+												_signal,
+											);
+											lastError = undefined;
+											break;
+										}
+										let existingOwners: string[] = [];
+										if (current.value) {
+											try {
+												const parsed = JSON.parse(current.value) as { owners?: unknown };
+												if (Array.isArray(parsed.owners)) {
+													existingOwners = parsed.owners
+														.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+														.slice(0, 12);
+												}
+											} catch {
+												// tolerate malformed payload and overwrite with normalized shape
+											}
+										}
+										if (existingOwners.includes(input.owner)) {
+											lastError = undefined;
+											break;
+										}
+										const nextOwners = [...existingOwners, input.owner].slice(0, 12);
+										await writeSharedMemory(
+											rootSharedMemoryContext,
+											{
+												key,
+												value: JSON.stringify({
+													path: claimPath,
+													owners: nextOwners,
+													updatedAt: new Date().toISOString(),
+												}),
+												scope: "run",
+												mode: "set",
+												ifVersion: current.version,
+											},
+											_signal,
+										);
+										lastError = undefined;
+										break;
+									} catch (error) {
+										const message = error instanceof Error ? error.message : String(error);
+										lastError = message;
+										if (!/version mismatch/i.test(message)) {
+											break;
+										}
+									}
+								}
+								if (lastError) {
+									delegationWarnings.push(
+										`Shared memory claim publish skipped (${key}) for ${input.owner}: ${lastError}`,
+									);
+								}
+							}
+						};
 						try {
 							const runRootPass = async (runPrompt: string): Promise<{
 								output: string;
@@ -1688,6 +2052,12 @@ export function createTaskTool(
 								activeTool: undefined,
 							});
 						}
+						await publishTaskCoordinationPlan();
+						await publishStreamClaims({
+							owner: "root",
+							description,
+							promptText: prompt,
+						});
 						const firstPass = await runRootPass(rootPrompt);
 						output = firstPass.output;
 						subagentSessionId = firstPass.sessionId;
@@ -1828,6 +2198,13 @@ export function createTaskTool(
 								}
 								const causeLabel = cause ? ` [cause=${cause}]` : "";
 								delegatedSections[index] = `#### ${index + 1}. ${request.description} (${formatDelegateTarget(request)})\nERROR${causeLabel}: ${message}`;
+								void publishDelegateFinding({
+									delegateLabel: String(index + 1),
+									delegateDescription: request.description,
+									delegateProfile: formatDelegateTarget(request),
+									status: "failed",
+									content: message,
+								});
 								emitProgress({
 									kind: "subagent_progress",
 									phase: "running",
@@ -1893,6 +2270,13 @@ export function createTaskTool(
 									delegatedFailed += 1;
 									sectionsByIndex[nestedIndex] =
 										`###### ${requestLabel}. ${nestedRequest.description} (${nestedProfileLabel})\nERROR [cause=${cause}]: ${message}`;
+									void publishDelegateFinding({
+										delegateLabel: requestLabel,
+										delegateDescription: nestedRequest.description,
+										delegateProfile: nestedProfileLabel,
+										status: "failed",
+										content: message,
+									});
 								};
 
 								const runNestedDelegate = async (nestedIndex: number): Promise<void> => {
@@ -1986,7 +2370,17 @@ export function createTaskTool(
 											sharedMemoryRunId,
 											sharedMemoryTaskId,
 										);
-										const nestedPrompt = `${nestedPromptWithInstructions}\n\n${nestedSharedMemoryGuidance}`;
+										const nestedCoordinationGuidance = buildDelegateCoordinationGuidance({
+											taskId: sharedMemoryTaskId,
+											delegateLabel: requestLabel,
+											delegateDescription: nestedRequest.description,
+										});
+										const nestedPrompt = `${nestedPromptWithInstructions}\n\n${nestedSharedMemoryGuidance}\n\n${nestedCoordinationGuidance}`;
+										await publishStreamClaims({
+											owner: requestLabel,
+											description: nestedRequest.description,
+											promptText: nestedRequest.prompt,
+										});
 										const nestedModelOverride =
 											nestedRequest.model?.trim() || nestedCustomSubagent?.model?.trim() || undefined;
 										const nestedSharedMemoryContext: SharedMemoryContext = {
@@ -2055,6 +2449,13 @@ export function createTaskTool(
 												)}`;
 											}
 										}
+										await publishDelegateFinding({
+											delegateLabel: requestLabel,
+											delegateDescription: nestedRequest.description,
+											delegateProfile: nestedProfileLabel,
+											status: "done",
+											content: nestedSection,
+										});
 										sectionsByIndex[nestedIndex] = nestedSection;
 									} catch (error) {
 										const message = error instanceof Error ? error.message : String(error);
@@ -2278,7 +2679,12 @@ export function createTaskTool(
 										sharedMemoryRunId,
 										sharedMemoryTaskId,
 									);
-									const delegatePromptBase = `${childPromptWithInstructions}\n\n${delegateSharedMemoryGuidance}`;
+									const delegateCoordinationGuidance = buildDelegateCoordinationGuidance({
+										taskId: sharedMemoryTaskId,
+										delegateLabel: String(index + 1),
+										delegateDescription: request.description,
+									});
+									const delegatePromptBase = `${childPromptWithInstructions}\n\n${delegateSharedMemoryGuidance}\n\n${delegateCoordinationGuidance}`;
 									const delegatePrompt =
 										delegateMeta.section && delegateMeta.appliedCount > 0
 											? `${delegatePromptBase}\n\n${delegateMeta.section}`
@@ -2297,6 +2703,11 @@ export function createTaskTool(
 										delegateItems,
 									});
 								}
+									await publishStreamClaims({
+										owner: String(index + 1),
+										description: request.description,
+										promptText: request.prompt,
+									});
 									const childModelOverride = request.model?.trim() || childCustomSubagent?.model?.trim() || undefined;
 									const childSharedMemoryContext: SharedMemoryContext = {
 										rootCwd: cwd,
@@ -2525,6 +2936,13 @@ export function createTaskTool(
 										: normalizedChildOutput;
 								delegatedSections[index] =
 									`#### ${index + 1}. ${request.description} (${childProfileLabel})\n${childOutputExcerpt}${nestedSection}`;
+								await publishDelegateFinding({
+									delegateLabel: String(index + 1),
+									delegateDescription: request.description,
+									delegateProfile: childProfileLabel,
+									status: "done",
+									content: `${childOutputExcerpt}${nestedSection}`,
+								});
 								emitProgress({
 									kind: "subagent_progress",
 									phase: "running",
@@ -2701,13 +3119,258 @@ export function createTaskTool(
 
 						const normalizedOutput = output.trim().length > 0 ? output.trim() : "(Subagent completed with no output)";
 						const finalSections: string[] = [normalizedOutput];
-						if (delegatedTasks > 0) {
-							const header = `### Delegated Subtasks (${delegatedSucceeded}/${delegatedTasks} done)`;
 						const delegatedBlocks = delegatedSections.filter(
 							(section): section is string => typeof section === "string" && section.trim().length > 0,
 						);
-						finalSections.push([header, ...delegatedBlocks].join("\n\n"));
+						let duplicateDelegatedOutputs = 0;
+						if (delegatedTasks > 0) {
+							const header = `### Delegated Subtasks (${delegatedSucceeded}/${delegatedTasks} done)`;
+							if (delegatedBlocks.length > 1) {
+								const duplicateReport = detectDuplicateDelegatedSections(delegatedBlocks);
+								duplicateDelegatedOutputs = duplicateReport.duplicates;
+								if (duplicateReport.duplicates > 0) {
+									const duplicateHints = duplicateReport.duplicatePairs
+										.slice(0, 5)
+										.map((pair) => `${pair.duplicate}->${pair.original}`)
+										.join(", ");
+									delegationWarnings.push(
+										`Delegation quality: detected ${duplicateReport.duplicates} near-duplicate delegated output(s) (${duplicateHints}). Consider stricter stream partitioning or stronger shared-memory coordination keys.`,
+									);
+								}
+							}
+							finalSections.push([header, ...delegatedBlocks].join("\n\n"));
 						}
+
+						let sharedMemorySummaryKey: string | undefined;
+						if (orchestrationRunId && orchestrationTaskId) {
+							const summaryExcerpt =
+								normalizedOutput.length > 1200
+									? `${normalizedOutput.slice(0, 1197).trimEnd()}...`
+									: normalizedOutput;
+							const summaryPayload = JSON.stringify({
+								taskId: orchestrationTaskId,
+								description,
+								profile: effectiveProfile,
+								delegated: {
+									total: delegatedTasks,
+									succeeded: delegatedSucceeded,
+									failed: delegatedFailed,
+									duplicatesDetected: duplicateDelegatedOutputs,
+								},
+								retrospective: {
+									attempts: retrospectiveAttempts,
+									recovered: retrospectiveRecovered,
+									failureCauses: failureCauses,
+								},
+								summary: summaryExcerpt,
+							});
+							try {
+								const summaryWrite = await writeSharedMemory(
+									{
+										rootCwd: cwd,
+										runId: sharedMemoryRunId,
+										taskId: sharedMemoryTaskId,
+										profile: effectiveProfile,
+									},
+									{
+										key: `results/${orchestrationTaskId}`,
+										value: summaryPayload,
+										scope: "run",
+										mode: "set",
+									},
+									_signal,
+								);
+								sharedMemorySummaryKey = summaryWrite.key;
+							} catch (error) {
+								const message = error instanceof Error ? error.message : String(error);
+								delegationWarnings.push(`Shared memory summary write skipped: ${message}`);
+							}
+						}
+
+						let coordinationSummary:
+							| {
+									sharedMemoryWrites: number;
+									currentTaskWrites: number;
+									currentTaskDelegateWrites: number;
+									runScopeWrites: number;
+									taskScopeWrites: number;
+									duplicatesDetected: number;
+									claimKeysMatched: number;
+									claimCollisions: number;
+							  }
+							| undefined;
+						let claimSummary:
+							| {
+									keysMatched: number;
+									collisions: number;
+									examples: string[];
+							  }
+							| undefined;
+						let sharedFindingsSnapshot:
+							| {
+									keysMatched: number;
+									examples: string[];
+							  }
+							| undefined;
+						if (delegatedTasks > 0 || (orchestrationRunId && orchestrationTaskId)) {
+							try {
+								const usage = await summarizeSharedMemoryUsage(
+									{
+										rootCwd: cwd,
+										runId: sharedMemoryRunId,
+										taskId: sharedMemoryTaskId,
+									},
+									_signal,
+								);
+								if (delegatedTasks > 1 && usage.currentTaskDelegateWrites === 0) {
+									delegationWarnings.push(
+										"No shared_memory writes detected from delegates in this task. Cross-stream coordination may be weak; use stable keys (findings/<stream>, risks/<stream>, plan/<stream>).",
+									);
+								}
+								coordinationSummary = {
+									sharedMemoryWrites: usage.totalWrites,
+									currentTaskWrites: usage.currentTaskWrites,
+									currentTaskDelegateWrites: usage.currentTaskDelegateWrites,
+									runScopeWrites: usage.runScopeWrites,
+									taskScopeWrites: usage.taskScopeWrites,
+									duplicatesDetected: duplicateDelegatedOutputs,
+									claimKeysMatched: 0,
+									claimCollisions: 0,
+								};
+							} catch {
+								// shared-memory summary is advisory; never fail task completion on analytics path.
+							}
+						}
+						if (delegatedTasks > 0) {
+							try {
+								const claims = await readSharedMemory(
+									{
+										rootCwd: cwd,
+										runId: sharedMemoryRunId,
+										taskId: sharedMemoryTaskId,
+									},
+									{
+										scope: "run",
+										prefix: "claims/",
+										includeValues: true,
+										limit: Math.max(40, delegatedTasks * 8),
+									},
+									_signal,
+								);
+								const collisions: Array<{ key: string; owners: string[] }> = [];
+								for (const item of claims.items) {
+									if (!item.value) continue;
+									try {
+										const parsed = JSON.parse(item.value) as { owners?: unknown };
+										if (!Array.isArray(parsed.owners)) continue;
+										const owners = Array.from(
+											new Set(
+												parsed.owners
+													.filter(
+														(value): value is string =>
+															typeof value === "string" && value.trim().length > 0,
+													)
+													.map((value) => value.trim()),
+											),
+										);
+										if (owners.length > 1) {
+											collisions.push({ key: item.key, owners: owners.slice(0, 8) });
+										}
+									} catch {
+										// ignore malformed claim entries and continue best-effort aggregation
+									}
+								}
+								claimSummary = {
+									keysMatched: claims.totalMatched,
+									collisions: collisions.length,
+									examples: collisions.slice(0, 6).map((item) => `${item.key}: ${item.owners.join(", ")}`),
+								};
+								if (coordinationSummary) {
+									coordinationSummary.claimKeysMatched = claimSummary.keysMatched;
+									coordinationSummary.claimCollisions = claimSummary.collisions;
+								}
+							} catch {
+								// advisory only
+							}
+						}
+						if (delegatedTasks > 0) {
+							try {
+								const findingsPrefix = `findings/${toSharedMemoryKeySegment(sharedMemoryTaskId, "task")}/`;
+								const findings = await readSharedMemory(
+									{
+										rootCwd: cwd,
+										runId: sharedMemoryRunId,
+										taskId: sharedMemoryTaskId,
+									},
+									{
+										scope: "run",
+										prefix: findingsPrefix,
+										includeValues: true,
+										limit: Math.max(20, delegatedTasks * 4),
+									},
+									_signal,
+								);
+								const examples = findings.items.slice(0, 6).map((item) => {
+									let excerpt = "";
+									if (item.value) {
+										try {
+											const parsed = JSON.parse(item.value) as { summary?: unknown };
+											if (typeof parsed.summary === "string" && parsed.summary.trim().length > 0) {
+												excerpt = parsed.summary.trim().replace(/\s+/g, " ").slice(0, 120);
+											}
+										} catch {
+											excerpt = item.value.trim().replace(/\s+/g, " ").slice(0, 120);
+										}
+									}
+									return excerpt.length > 0 ? `${item.key}: ${excerpt}` : item.key;
+								});
+								sharedFindingsSnapshot = {
+									keysMatched: findings.totalMatched,
+									examples,
+								};
+							} catch {
+								// advisory only
+							}
+						}
+
+						if (coordinationSummary && delegatedTasks > 0) {
+							finalSections.push(
+								[
+									"### Orchestration Summary",
+									`- delegated: ${delegatedSucceeded}/${delegatedTasks} succeeded (${delegatedFailed} failed)`,
+									`- duplicate_delegated_outputs: ${coordinationSummary.duplicatesDetected}`,
+									`- shared_memory_writes_total: ${coordinationSummary.sharedMemoryWrites}`,
+									`- shared_memory_writes_current_task: ${coordinationSummary.currentTaskWrites}`,
+									`- shared_memory_delegate_writes_current_task: ${coordinationSummary.currentTaskDelegateWrites}`,
+									`- shared_memory_scope_distribution: run=${coordinationSummary.runScopeWrites}, task=${coordinationSummary.taskScopeWrites}`,
+									`- claims_keys_matched: ${coordinationSummary.claimKeysMatched}`,
+									`- claims_collisions: ${coordinationSummary.claimCollisions}`,
+									sharedMemorySummaryKey ? `- shared_memory_summary_key: ${sharedMemorySummaryKey}` : undefined,
+								]
+									.filter((line): line is string => typeof line === "string" && line.trim().length > 0)
+									.join("\n"),
+							);
+						}
+						if (claimSummary && delegatedTasks > 0) {
+							finalSections.push(
+								[
+									"### Claim Overlap Snapshot",
+									`- matched_keys: ${claimSummary.keysMatched}`,
+									`- collisions: ${claimSummary.collisions}`,
+									...claimSummary.examples.map((line) => `- ${line}`),
+								].join("\n"),
+							);
+						}
+						if (sharedFindingsSnapshot && delegatedTasks > 0) {
+							finalSections.push(
+								[
+									"### Shared Findings Snapshot",
+									`- matched_keys: ${sharedFindingsSnapshot.keysMatched}`,
+									...sharedFindingsSnapshot.examples.map((line) => `- ${line}`),
+								].join("\n"),
+							);
+						}
+
 						if (delegationWarnings.length > 0) {
 							finalSections.push(`### Delegation Notes\n${delegationWarnings.map((w) => `- ${w}`).join("\n")}`);
 						}
@@ -2795,6 +3458,8 @@ export function createTaskTool(
 							retrospectiveAttempts: retrospectiveAttempts > 0 ? retrospectiveAttempts : undefined,
 							retrospectiveRecovered: retrospectiveRecovered > 0 ? retrospectiveRecovered : undefined,
 							failureCauses: hasFailureCauses ? { ...failureCauses } : undefined,
+							coordination: coordinationSummary,
+							sharedMemorySummaryKey,
 						};
 						updateTrackedTaskStatus("done");
 						return { text, details };

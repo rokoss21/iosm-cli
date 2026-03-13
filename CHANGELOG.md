@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.2.6] - 2026-03-14
+
+### Added
+
+- **Shared memory scope policy** — new `IOSM_SHARED_MEMORY_SCOPE_POLICY` environment variable (`legacy` / `warn` / `enforce`) controls how missing scope arguments are handled in `shared_memory_read` / `shared_memory_write`; `meta` profile automatically activates `warn` mode so omitted scopes surface a warning in tool output and details
+- **Shared memory usage analytics** — new `summarizeSharedMemoryUsage()` API aggregates write counts by scope, unique writers, unique keys, and per-task/delegate breakdown for observability in orchestrated runs
+- **Nested delegation detection** — `promptMetaWithParallelismGuard` now tracks `nestedDelegationMissing`: when top-level fan-out is satisfied but no nested delegates were observed for multi-stream tasks, the parallelism correction prompt and TUI warning fire explicitly
+- **Workstream semantic deduplication** — `semanticallyDeduplicateWorkstreamTitles()` uses Jaccard token similarity (threshold 0.82) to eliminate near-duplicate delegate workstream titles before dispatch
+- **Duplicate delegated section detection** — `detectDuplicateDelegatedSections()` compares normalized section bodies to catch copy-pasted or near-identical delegate blocks with ≥92% coverage overlap
+- **Workstream title uniquification** — `uniquifyWorkstreamTitles()` appends ordinal suffixes to disambiguate repeated titles in fan-out plans
+- **Coordination details in task tool output** — `TaskToolDetails` now surfaces a `coordination` object with `sharedMemoryWrites`, `currentTaskWrites`, `currentTaskDelegateWrites`, `runScopeWrites`, `taskScopeWrites`, `duplicatesDetected`, `claimKeysMatched`, and `claimCollisions` fields for post-run auditing
+- **Swarm progress shared memory integration** — TUI swarm progress reporter now reads `results/` prefix keys from shared memory to enrich per-task summary display with delegated totals
+
+### Changed
+
+- **META profile evidence policy** — `meta` profile system prompt and subagent task prompt now require that metrics (speedup, compliance scores, conflict counts) are backed only by observed runtime evidence; unknown values must be marked as `unknown` rather than inferred
+- **META profile artifact claims** — `meta` and meta-subagent prompts now prohibit claiming report files or artifacts exist unless they were produced in the current run or verified on disk
+- **`resolveScope` replaces `normalizeScope`** — shared memory tool's scope defaulting logic refactored into `resolveScope()` with policy-aware warning output and `enforce` mode that throws on missing explicit scope
+- **`completedTaskToolCalls` tracking** — parallelism guard now separately tracks completed (resolved) task calls so nested delegation assessment waits for actual task completion rather than firing prematurely on partial state
+
+### Fixed
+
+- **False nested-delegation compliance** — guard no longer silently passes when top-level fan-out count is met but zero nested delegates exist inside multi-stream tasks; correction prompt now fires
+- **Scope warning surface** — `shared_memory_write` and `shared_memory_read` tool results now include `scopePolicy` and `scopeWarning` in their `details` payload for agent-side introspection
+
+### Documentation
+
+- **README redesign** — complete rewrite with professional positioning, IOSM methodology section with 4-phase table and 6 metrics, architecture ASCII diagram, profile split into primary/specialist, integration modes with CI row, extensibility as runtime platform, accurate install/extension syntax from docs
+
 ## [0.2.5] - 2026-03-13
 
 ### Added

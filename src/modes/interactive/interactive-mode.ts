@@ -115,6 +115,7 @@ import {
 	type ContractState,
 	type EngineeringContract,
 } from "../../core/contract.js";
+import { readSharedMemory } from "../../core/shared-memory.js";
 import {
 	buildProjectIndex,
 	collectChangedFilesSince,
@@ -340,6 +341,7 @@ function buildMetaParallelismCorrection(input: {
 	rawRootDelegateBlocks?: number;
 	workerDiversityMissing?: boolean;
 	distinctWorkers?: number;
+	nestedDelegationMissing?: boolean;
 }): string {
 	const validationFailure =
 		input.taskToolError && /Validation failed for tool "task"/i.test(input.taskToolError)
@@ -352,6 +354,9 @@ function buildMetaParallelismCorrection(input: {
 			"Emit the missing top-level task calls in the same assistant response when branches are independent.",
 			input.workerDiversityMissing
 				? `Top-level task fan-out currently targets only ${input.distinctWorkers ?? 1} worker identity. Use at least 2 focused worker identities (profile/agent) or force nested delegation inside each stream.`
+				: undefined,
+			input.nestedDelegationMissing
+				? "Top-level fan-out exists, but no nested delegates were observed. For each broad top-level stream, emit nested <delegate_task> fan-out or one explicit line: DELEGATION_IMPOSSIBLE: <precise reason>."
 				: undefined,
 			"Each task tool call MUST include description and prompt.",
 		'If you want a custom subagent, pass it via agent="name"; keep profile set to the capability profile, not the custom subagent name.',
@@ -378,11 +383,13 @@ async function promptMetaWithParallelismGuard(input: {
 		launchedTopLevelTasks: number;
 		distinctWorkers: number;
 		workerDiversityMissing: boolean;
+		nestedDelegationMissing: boolean;
 		taskPlanSnapshot?: TaskPlanSnapshot;
 		taskToolError?: string;
 	}) => Promise<void>;
 }): Promise<void> {
 	let taskToolCalls = 0;
+	let completedTaskToolCalls = 0;
 	let nonTaskToolCalls = 0;
 	let taskPlanSnapshot: TaskPlanSnapshot | undefined;
 	let taskToolError: string | undefined;
@@ -397,19 +404,28 @@ async function promptMetaWithParallelismGuard(input: {
 		if (!requiredTopLevelTasks || delegationImpossibleDeclared) {
 			return;
 		}
+		const canAssessNestedDelegation = options?.finalize || completedTaskToolCalls >= taskToolCalls;
 		const needsMoreTopLevelTasks = taskToolCalls < requiredTopLevelTasks;
 		const workerDiversityMissing =
 			!needsMoreTopLevelTasks &&
 			requiredTopLevelTasks >= 2 &&
 			distinctTaskWorkers.size === 1 &&
 			delegatedChildTasksSeen === 0;
-		if (!needsMoreTopLevelTasks && !workerDiversityMissing) {
+		const nestedDelegationMissing =
+			!needsMoreTopLevelTasks &&
+			!workerDiversityMissing &&
+			requiredTopLevelTasks >= 2 &&
+			taskToolCalls > 0 &&
+			delegatedChildTasksSeen === 0 &&
+			canAssessNestedDelegation &&
+			!taskToolError;
+		if (!needsMoreTopLevelTasks && !workerDiversityMissing && !nestedDelegationMissing) {
 			return;
 		}
 		const hasComplexPlan = !!taskPlanSnapshot;
 		const hasTaskFailure = !!taskToolError;
 		const hasRawRootDelegates = rawRootDelegateBlocks > 0;
-		if (needsMoreTopLevelTasks && !hasTaskFailure && !hasRawRootDelegates) {
+		if (needsMoreTopLevelTasks && !hasTaskFailure && !hasRawRootDelegates && !nestedDelegationMissing) {
 			const minimumNonTaskCalls = hasComplexPlan ? 0 : 2;
 			if (!options?.finalize && nonTaskToolCalls < minimumNonTaskCalls) {
 				return;
@@ -423,6 +439,7 @@ async function promptMetaWithParallelismGuard(input: {
 			rawRootDelegateBlocks,
 			workerDiversityMissing,
 			distinctWorkers: distinctTaskWorkers.size,
+			nestedDelegationMissing,
 		});
 	};
 
@@ -463,11 +480,13 @@ async function promptMetaWithParallelismGuard(input: {
 			return;
 		}
 		if (event.type === "tool_execution_end" && event.toolName === "task" && event.isError) {
+			completedTaskToolCalls += 1;
 			taskToolError = extractTaskToolErrorText(event.result) ?? taskToolError;
 			maybeScheduleCorrection();
 			return;
 		}
 		if (event.type === "tool_execution_end" && event.toolName === "task" && !event.isError) {
+			completedTaskToolCalls += 1;
 			const result = event.result as { details?: Record<string, unknown> } | undefined;
 			const delegatedTasks = result?.details?.delegatedTasks;
 			if (typeof delegatedTasks === "number" && Number.isFinite(delegatedTasks) && delegatedTasks > 0) {
@@ -486,10 +505,18 @@ async function promptMetaWithParallelismGuard(input: {
 				requiredTopLevelTasks >= 2 &&
 				distinctTaskWorkers.size === 1 &&
 				delegatedChildTasksSeen === 0;
+			let nestedDelegationMissingAfterRun =
+				!!requiredTopLevelTasks &&
+				requiredTopLevelTasks >= 2 &&
+				taskToolCalls >= requiredTopLevelTasks &&
+				taskToolCalls > 0 &&
+				delegatedChildTasksSeen === 0 &&
+				!workerDiversityMissingAfterRun &&
+				!taskToolError;
 			if (
 				correctionText &&
 				requiredTopLevelTasks &&
-				(taskToolCalls < requiredTopLevelTasks || workerDiversityMissingAfterRun) &&
+				(taskToolCalls < requiredTopLevelTasks || workerDiversityMissingAfterRun || nestedDelegationMissingAfterRun) &&
 				!delegationImpossibleDeclared
 			) {
 				await input.session.prompt(correctionText, {
@@ -504,10 +531,20 @@ async function promptMetaWithParallelismGuard(input: {
 					requiredTopLevelTasks >= 2 &&
 					distinctTaskWorkers.size === 1 &&
 					delegatedChildTasksSeen === 0;
+				nestedDelegationMissingAfterRun =
+					!!requiredTopLevelTasks &&
+					requiredTopLevelTasks >= 2 &&
+					taskToolCalls >= requiredTopLevelTasks &&
+					taskToolCalls > 0 &&
+					delegatedChildTasksSeen === 0 &&
+					!workerDiversityMissingAfterRun &&
+					!taskToolError;
 			}
 			if (
 				requiredTopLevelTasks &&
-				(taskToolCalls < requiredTopLevelTasks || workerDiversityMissingAfterRun) &&
+				(taskToolCalls < requiredTopLevelTasks ||
+					workerDiversityMissingAfterRun ||
+					nestedDelegationMissingAfterRun) &&
 				!delegationImpossibleDeclared &&
 				input.onPersistentNonCompliance
 			) {
@@ -516,6 +553,7 @@ async function promptMetaWithParallelismGuard(input: {
 					launchedTopLevelTasks: taskToolCalls,
 					distinctWorkers: distinctTaskWorkers.size,
 					workerDiversityMissing: workerDiversityMissingAfterRun,
+					nestedDelegationMissing: nestedDelegationMissingAfterRun,
 					taskPlanSnapshot,
 					taskToolError,
 				});
@@ -10894,6 +10932,14 @@ export class InteractiveMode {
 				onPersistentNonCompliance: async (details) => {
 					if (typeof this.runSwarmFromTask !== "function") return;
 					if (this.session.isStreaming || this.iosmAutomationRun || this.iosmVerificationSession) return;
+					const topLevelSatisfied = details.launchedTopLevelTasks >= details.requiredTopLevelTasks;
+					if (details.nestedDelegationMissing && topLevelSatisfied && !details.workerDiversityMissing) {
+						this.showWarning(
+							"META quality warning: top-level fan-out completed, but nested delegate fan-out was not observed. " +
+								"Repeat with explicit nested delegation requirements or include DELEGATION_IMPOSSIBLE for narrow streams.",
+						);
+						return;
+					}
 					const explicitRequested = parseRequestedParallelAgentCount(userInput);
 					const hasComplexSignal =
 						/\b(audit|security|hardening|refactor|migration|orchestrat|parallel|delegate|multi[-\s]?agent)\b/i.test(
@@ -12344,6 +12390,106 @@ export class InteractiveMode {
 		const errorCount = taskStates.filter((task) => task.status === "error").length;
 		const blockedCount = taskStates.filter((task) => task.status === "blocked").length;
 		const total = taskStates.length;
+		const summaryByTask = new Map<
+			string,
+			{
+				delegatedTotal?: number;
+				delegatedSucceeded?: number;
+				delegatedFailed?: number;
+				summary?: string;
+			}
+		>();
+		let summaryKeysMatched = 0;
+		let findingKeysMatched = 0;
+		try {
+			const summaryRead = await readSharedMemory(
+				{
+					rootCwd: cwd,
+					runId: input.runId,
+				},
+				{
+					scope: "run",
+					prefix: "results/",
+					includeValues: true,
+					limit: Math.max(50, total * 6),
+				},
+			);
+			summaryKeysMatched = summaryRead.totalMatched;
+			for (const item of summaryRead.items) {
+				const key = item.key.trim();
+				if (!key.startsWith("results/")) continue;
+				const taskId = key.slice("results/".length).trim();
+				if (!taskId) continue;
+				let parsedSummary:
+					| {
+							delegatedTotal?: number;
+							delegatedSucceeded?: number;
+							delegatedFailed?: number;
+							summary?: string;
+					  }
+					| undefined;
+				if (item.value) {
+					try {
+						const parsed = JSON.parse(item.value) as {
+							delegated?: { total?: number; succeeded?: number; failed?: number };
+							summary?: string;
+						};
+						parsedSummary = {
+							delegatedTotal: parsed.delegated?.total,
+							delegatedSucceeded: parsed.delegated?.succeeded,
+							delegatedFailed: parsed.delegated?.failed,
+							summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
+						};
+					} catch {
+						// keep best-effort behavior for malformed summary payloads
+					}
+				}
+				summaryByTask.set(taskId, parsedSummary ?? {});
+			}
+			const findingsRead = await readSharedMemory(
+				{
+					rootCwd: cwd,
+					runId: input.runId,
+				},
+				{
+					scope: "run",
+					prefix: "findings/",
+					includeValues: false,
+					limit: Math.max(100, total * 12),
+				},
+			);
+			findingKeysMatched = findingsRead.totalMatched;
+		} catch {
+			// shared-memory aggregation is advisory, never fail swarm completion on it
+		}
+		const missingSummaryTasks = input.plan.tasks
+			.map((task) => task.id)
+			.filter((taskId) => !summaryByTask.has(taskId));
+		const sharedMemoryLines = [
+			"## Shared Memory Coordination",
+			`- result_keys: ${summaryKeysMatched}`,
+			`- finding_keys: ${findingKeysMatched}`,
+			`- task_summaries_found: ${summaryByTask.size}/${total}`,
+			missingSummaryTasks.length > 0
+				? `- missing_task_summaries: ${missingSummaryTasks.slice(0, 12).join(", ")}`
+				: "- missing_task_summaries: none",
+			...input.plan.tasks.slice(0, 12).map((task) => {
+				const summary = summaryByTask.get(task.id);
+				if (!summary) return `- ${task.id}: no summary key`;
+				const delegatedPart =
+					typeof summary.delegatedTotal === "number" &&
+					typeof summary.delegatedSucceeded === "number" &&
+					typeof summary.delegatedFailed === "number"
+						? `delegated=${summary.delegatedSucceeded}/${summary.delegatedTotal} (failed=${summary.delegatedFailed})`
+						: "delegated=n/a";
+				const summaryExcerpt =
+					typeof summary.summary === "string" && summary.summary.trim().length > 0
+						? summary.summary.trim().replace(/\s+/g, " ").slice(0, 120)
+						: "no summary excerpt";
+				return `- ${task.id}: ${delegatedPart}; ${summaryExcerpt}`;
+			}),
+			"",
+		];
 
 		const reportLines = [
 			"# Swarm Integration Report",
@@ -12368,6 +12514,7 @@ export class InteractiveMode {
 			...schedulerResult.runGate.failures.map((item) => `- fail: ${item}`),
 			...schedulerResult.runGate.warnings.map((item) => `- warn: ${item}`),
 			"",
+			...sharedMemoryLines,
 			"## Spawn Backlog",
 			...(schedulerResult.spawnBacklog.length > 0
 				? schedulerResult.spawnBacklog.map((item) => `- ${item.description} | ${item.path} | ${item.changeType} | fp=${item.fingerprint}`)
@@ -12385,6 +12532,7 @@ export class InteractiveMode {
 				"# Shared Context",
 				"",
 				`Run ${input.runId} finished with status: ${schedulerResult.state.status}.`,
+				`Shared memory summaries: ${summaryByTask.size}/${total} task result key(s), findings=${findingKeysMatched}.`,
 				`Recommendation: ${schedulerResult.runGate.pass ? "proceed to /iosm for measurable optimization" : "resolve failed gates before /iosm"}.`,
 			].join("\n"),
 		});
@@ -12396,6 +12544,7 @@ export class InteractiveMode {
 				`status: ${schedulerResult.state.status}`,
 				`tasks: ${doneCount}/${total} done · ${errorCount} error · ${blockedCount} blocked`,
 				`budget_usd: ${schedulerResult.state.budget.spentUsd.toFixed(2)}${input.meta.budgetUsd ? `/${input.meta.budgetUsd.toFixed(2)}` : ""}`,
+				`shared_memory: summaries ${summaryByTask.size}/${total} · findings ${findingKeysMatched}`,
 				`watch: /swarm watch ${input.runId}`,
 				`resume: /swarm resume ${input.runId}`,
 			].join("\n"),
@@ -13076,10 +13225,13 @@ export class InteractiveMode {
 				"- if nested split is impossible for a non-trivial stream, emit one line: DELEGATION_IMPOSSIBLE: <reason>",
 				"- keep required orchestration task calls in foreground; do not set background=true unless user explicitly requested detached async runs",
 			"- do not poll .iosm/subagents/background via bash/read during orchestration; wait for task results and then synthesize",
-			"- include run_id and task_id from each assignment in the task tool arguments",
-			"- keep each agent in its assigned cwd",
-			"- avoid edit collisions; if two write-capable agents target same area, serialize those writes",
-			"- aggregate outputs into one concise final synthesis",
+				"- include run_id and task_id from each assignment in the task tool arguments",
+				"- publish one run-scoped shared-memory summary key per assignment (results/<task_id>) before final synthesis",
+				"- in final synthesis, only report metrics backed by observed run evidence (task details, shared-memory keys, test output, or verified files); otherwise mark them unknown",
+				"- never claim report/artifact files exist unless created in this run or verified on disk",
+				"- keep each agent in its assigned cwd",
+				"- avoid edit collisions; if two write-capable agents target same area, serialize those writes",
+				"- aggregate outputs into one concise final synthesis",
 			"</orchestrate>",
 		].join("\n");
 

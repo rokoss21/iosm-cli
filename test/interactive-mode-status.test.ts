@@ -2099,6 +2099,15 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 			handler?.({ type: "tool_execution_start", toolName: "task", toolCallId: "task_1" });
 			handler?.({ type: "tool_execution_start", toolName: "task", toolCallId: "task_2" });
 			handler?.({ type: "tool_execution_start", toolName: "task", toolCallId: "task_3" });
+			for (const toolCallId of ["task_1", "task_2", "task_3"]) {
+				handler?.({
+					type: "tool_execution_end",
+					toolName: "task",
+					toolCallId,
+					isError: false,
+					result: { details: { delegatedTasks: 2 } },
+				});
+			}
 		});
 		const fakeThis: any = {
 			sessionManager: { getCwd: () => "/tmp/workspace" },
@@ -2266,6 +2275,78 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		expect(correctionPrompt).toContain("at least 3");
 	});
 
+	test("injects meta correction when top-level fan-out has no nested delegates", async () => {
+		let handler: ((event: any) => void) | undefined;
+		const subscribe = vi.fn((next: (event: any) => void) => {
+			handler = next;
+			return () => {
+				handler = undefined;
+			};
+		});
+		const prompt = vi.fn(async (text: string) => {
+			if (text === "аудит безопасности") {
+				handler?.({
+					type: "message_end",
+					message: {
+						role: "custom",
+						customType: TASK_PLAN_CUSTOM_TYPE,
+						details: {
+							complexity: "complex",
+							steps: [
+								{ title: "Recon", status: "done" },
+								{ title: "Workstream A", status: "pending" },
+								{ title: "Workstream B", status: "pending" },
+							],
+							currentStepIndex: 1,
+							completedSteps: 1,
+							totalSteps: 3,
+						},
+					},
+				});
+				handler?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_1",
+					args: { profile: "explore", description: "a" },
+				});
+				handler?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_2",
+					args: { profile: "plan", description: "b" },
+				});
+				handler?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_3",
+					args: { profile: "full", description: "c" },
+				});
+				for (const toolCallId of ["task_1", "task_2", "task_3"]) {
+					handler?.({
+						type: "tool_execution_end",
+						toolName: "task",
+						toolCallId,
+						isError: false,
+						result: { details: { delegatedTasks: 0 } },
+					});
+				}
+			}
+		});
+		const fakeThis: any = {
+			sessionManager: { getCwd: () => "/tmp/workspace" },
+			session: { prompt, subscribe },
+			activeProfileName: "meta",
+			resolveMentionedAgent: vi.fn(() => undefined),
+		};
+
+		await (InteractiveMode as any).prototype.promptWithTaskFallback.call(fakeThis, "аудит безопасности");
+
+		expect(prompt).toHaveBeenCalledTimes(2);
+		const [correctionPrompt] = prompt.mock.calls[1] as [string];
+		expect(correctionPrompt).toContain("[META_PARALLELISM_CORRECTION]");
+		expect(correctionPrompt).toContain("no nested delegates were observed");
+	});
+
 	test("falls back to swarm execution when meta orchestration remains non-compliant after correction", async () => {
 		let handler: ((event: any) => void) | undefined;
 		const subscribe = vi.fn((next: (event: any) => void) => {
@@ -2302,6 +2383,83 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 			{ maxParallel: 3 },
 		);
 		expect(showWarning).toHaveBeenCalledWith(expect.stringContaining("META enforcement fallback"));
+	});
+
+	test("does not fallback to swarm when only nested delegation quality is missing", async () => {
+		let handler: ((event: any) => void) | undefined;
+		const subscribe = vi.fn((next: (event: any) => void) => {
+			handler = next;
+			return () => {
+				handler = undefined;
+			};
+		});
+		const prompt = vi.fn(async (text: string) => {
+			if (text === "аудит безопасности") {
+				handler?.({
+					type: "message_end",
+					message: {
+						role: "custom",
+						customType: TASK_PLAN_CUSTOM_TYPE,
+						details: {
+							complexity: "complex",
+							steps: [
+								{ title: "Recon", status: "done" },
+								{ title: "Workstream A", status: "pending" },
+								{ title: "Workstream B", status: "pending" },
+							],
+							currentStepIndex: 1,
+							completedSteps: 1,
+							totalSteps: 3,
+						},
+					},
+				});
+				handler?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_1",
+					args: { profile: "explore", description: "a" },
+				});
+				handler?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_2",
+					args: { profile: "plan", description: "b" },
+				});
+				handler?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_3",
+					args: { profile: "full", description: "c" },
+				});
+				for (const toolCallId of ["task_1", "task_2", "task_3"]) {
+					handler?.({
+						type: "tool_execution_end",
+						toolName: "task",
+						toolCallId,
+						isError: false,
+						result: { details: { delegatedTasks: 0 } },
+					});
+				}
+			}
+		});
+		const runSwarmFromTask = vi.fn(async () => {});
+		const showWarning = vi.fn();
+		const fakeThis: any = {
+			sessionManager: { getCwd: () => "/tmp/workspace" },
+			session: { prompt, subscribe, isStreaming: false },
+			activeProfileName: "meta",
+			resolveMentionedAgent: vi.fn(() => undefined),
+			runSwarmFromTask,
+			showWarning,
+			iosmAutomationRun: undefined,
+			iosmVerificationSession: undefined,
+		};
+
+		await (InteractiveMode as any).prototype.promptWithTaskFallback.call(fakeThis, "аудит безопасности");
+
+		expect(prompt).toHaveBeenCalledTimes(2);
+		expect(runSwarmFromTask).not.toHaveBeenCalled();
+		expect(showWarning).toHaveBeenCalledWith(expect.stringContaining("META quality warning"));
 	});
 
 	test("does not inject worker-diversity correction when single worker already delegated internally", async () => {

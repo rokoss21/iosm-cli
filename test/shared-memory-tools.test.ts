@@ -55,4 +55,28 @@ describe("shared memory tool payload shaping", () => {
 		expect(typeof valueItems[0]?.valuePreview).toBe("string");
 		expect(String(valueItems[0]?.valuePreview).length).toBeLessThanOrEqual(200);
 	});
+
+	it("emits scope warning in meta context when scope is omitted", async () => {
+		const context = {
+			rootCwd: cwd,
+			runId: "run_tools_meta",
+			taskId: "task_1",
+			profile: "meta",
+		};
+		const writeTool = createSharedMemoryWriteTool(context);
+		const readTool = createSharedMemoryReadTool(context);
+
+		const writeResult = await writeTool.execute("write_meta_1", {
+			key: "findings/meta",
+			value: "meta note",
+		});
+		const writeText = (writeResult.content[0] as { type: "text"; text: string }).text;
+		expect(writeText).toContain('warning: scope omitted -> defaulted to "task"');
+
+		const readResult = await readTool.execute("read_meta_1", {
+			key: "findings/meta",
+		});
+		const readText = (readResult.content[0] as { type: "text"; text: string }).text;
+		expect(readText).toContain('warning: scope omitted -> defaulted to "task"');
+	});
 });

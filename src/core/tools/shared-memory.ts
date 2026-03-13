@@ -8,6 +8,17 @@ import {
 	writeSharedMemory,
 } from "../shared-memory.js";
 
+type SharedMemoryScopePolicy = "legacy" | "warn" | "enforce";
+
+function resolveSharedMemoryScopePolicy(raw: string | undefined): SharedMemoryScopePolicy {
+	const normalized = (raw ?? "").trim().toLowerCase();
+	if (normalized === "warn") return "warn";
+	if (normalized === "enforce") return "enforce";
+	return "legacy";
+}
+
+const sharedMemoryScopePolicy = resolveSharedMemoryScopePolicy(process.env.IOSM_SHARED_MEMORY_SCOPE_POLICY);
+
 const sharedMemoryWriteSchema = Type.Object({
 	key: Type.String({
 		minLength: 1,
@@ -116,8 +127,26 @@ function summarizeWriter(context: SharedMemoryContext): string {
 	return parts.length > 0 ? parts : "root";
 }
 
-function normalizeScope(scope: SharedMemoryScope | undefined): SharedMemoryScope {
-	return scope ?? "task";
+function resolveScope(input: {
+	scope: SharedMemoryScope | undefined;
+	context: SharedMemoryContext;
+	operation: "read" | "write";
+}): { scope: SharedMemoryScope; warning?: string } {
+	if (input.scope) return { scope: input.scope };
+	if (sharedMemoryScopePolicy === "enforce") {
+		throw new Error(
+			`shared_memory_${input.operation} requires explicit scope ("run" or "task"). ` +
+				`Set IOSM_SHARED_MEMORY_SCOPE_POLICY=legacy to restore implicit defaults.`,
+		);
+	}
+	const shouldWarn = sharedMemoryScopePolicy === "warn" || input.context.profile === "meta";
+	if (!shouldWarn) {
+		return { scope: "task" };
+	}
+	return {
+		scope: "task",
+		warning: `scope omitted -> defaulted to "task" for shared_memory_${input.operation}. Pass explicit scope to avoid ambiguity.`,
+	};
 }
 
 function normalizeMode(mode: SharedMemoryWriteMode | undefined): SharedMemoryWriteMode {
@@ -134,23 +163,31 @@ export function createSharedMemoryWriteTool(context: SharedMemoryContext): Agent
 		execute: async (_toolCallId: string, params: unknown, _signal?: AbortSignal) => {
 			const input = params as SharedMemoryWriteInput;
 			const ensured = ensureContext(context);
+			const scopeResolution = resolveScope({
+				scope: input.scope,
+				context: ensured,
+				operation: "write",
+			});
 			const result = await writeSharedMemory(ensured, {
 				key: input.key,
 				value: input.value,
-				scope: normalizeScope(input.scope),
+				scope: scopeResolution.scope,
 				mode: normalizeMode(input.mode),
 				ifVersion: input.if_version,
 			}, _signal);
+			const warningLine = scopeResolution.warning ? `\nwarning: ${scopeResolution.warning}` : "";
 			return {
 				content: [
 					{
 						type: "text" as const,
-						text: `shared memory updated (${result.scope}:${result.key} v${result.version} by ${summarizeWriter(ensured)})`,
+						text: `shared memory updated (${result.scope}:${result.key} v${result.version} by ${summarizeWriter(ensured)})${warningLine}`,
 					},
 				],
 				details: {
 					runId: ensured.runId,
 					item: summarizeSharedMemoryItemForDetails(result, false),
+					scopePolicy: sharedMemoryScopePolicy,
+					scopeWarning: scopeResolution.warning,
 				},
 			};
 		},
@@ -170,8 +207,13 @@ export function createSharedMemoryReadTool(context: SharedMemoryContext): AgentT
 				throw new Error("shared_memory_read accepts either key or prefix, not both");
 			}
 			const ensured = ensureContext(context);
+			const scopeResolution = resolveScope({
+				scope: input.scope,
+				context: ensured,
+				operation: "read",
+			});
 			const result = await readSharedMemory(ensured, {
-				scope: normalizeScope(input.scope),
+				scope: scopeResolution.scope,
 				key: input.key,
 				prefix: input.prefix,
 				limit: input.limit,
@@ -195,6 +237,9 @@ export function createSharedMemoryReadTool(context: SharedMemoryContext): AgentT
 									: ` value=${item.value.length > 80 ? `${item.value.slice(0, 77)}...` : item.value}`;
 							return `- ${item.key} v${item.version}${writer ? ` (${writer})` : ""}${valuePart}`;
 						});
+			if (scopeResolution.warning) {
+				lines.unshift(`warning: ${scopeResolution.warning}`);
+			}
 			return {
 				content: [{ type: "text" as const, text: [header, ...lines].join("\n") }],
 				details: {
@@ -202,6 +247,8 @@ export function createSharedMemoryReadTool(context: SharedMemoryContext): AgentT
 					scope: result.scope,
 					totalMatched: result.totalMatched,
 					items: result.items.map((item) => summarizeSharedMemoryItemForDetails(item, input.include_values === true)),
+					scopePolicy: sharedMemoryScopePolicy,
+					scopeWarning: scopeResolution.warning,
 				},
 			};
 		},
