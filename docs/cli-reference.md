@@ -257,13 +257,16 @@ iosm --api-key sk-test-123           # Override for this run
 
 ### Available Tools
 
-`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`
+`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `git_read`, `fs_ops`
 
 Tool notes:
 - `rg`, `fd` are managed by iosm-cli and auto-resolved when missing.
 - `ast_grep`, `comby`, `jq`, `yq`, `semgrep` are optional external CLIs and should be available in `PATH` to use their tools.
 - `sed` tool is preview/extraction-oriented; in-place edits are intentionally blocked.
 - `semantic_search` uses configured embeddings provider/index (`/semantic setup`).
+- `fetch` is profile-aware: read-only profiles allow only `GET/HEAD/OPTIONS`; write-capable profiles allow full HTTP method set.
+- `git_read` provides structured read-only git actions (`status`, `diff`, `log`, `blame`) without raw shell passthrough.
+- `fs_ops` performs structured filesystem mutations (`mkdir`, `move`, `copy`, `delete`) with explicit `recursive`/`force` safety flags.
 
 **Examples:**
 

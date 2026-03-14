@@ -7,6 +7,7 @@ import { beforeAll, describe, expect, test, vi } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { createTeamRun } from "../src/core/agent-teams.js";
+import * as sdk from "../src/core/sdk.js";
 import { KeybindingsManager } from "../src/core/keybindings.js";
 import { INTERNAL_UI_META_CUSTOM_TYPE } from "../src/core/messages.js";
 import {
@@ -1674,6 +1675,129 @@ describe("InteractiveMode contract/singular commands", () => {
 			requested: 2,
 		});
 		expect(explicit).toBe(2);
+	});
+
+	test("dispatchSwarmTaskWithAgent retries once with protocol correction when first attempt has zero task calls", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-swarm-dispatch-cwd-"));
+		const agentDir = mkdtempSync(join(tmpdir(), "iosm-swarm-dispatch-agent-"));
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		let subscriber: ((event: any) => void) | undefined;
+		const subSessionPrompt = vi.fn(async (promptText: string) => {
+			if (promptText.includes("[SWARM_PROTOCOL_CORRECTION]")) {
+				subscriber?.({
+					type: "tool_execution_start",
+					toolName: "task",
+					toolCallId: "task_call_2",
+					args: { description: "Audit workstream" },
+				});
+				subscriber?.({
+					type: "tool_execution_end",
+					toolName: "task",
+					toolCallId: "task_call_2",
+					isError: false,
+					result: {
+						output: "done",
+						details: {
+							delegatedTasks: 0,
+							delegatedFailed: 0,
+						},
+					},
+				});
+				subscriber?.({
+					type: "message_end",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: "Task execution completed." }],
+					},
+				});
+				return;
+			}
+
+			subscriber?.({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "I will provide a summary." }],
+				},
+			});
+		});
+		const createAgentSessionSpy = vi.spyOn(sdk, "createAgentSession");
+
+		try {
+			process.env[ENV_AGENT_DIR] = agentDir;
+
+			createAgentSessionSpy.mockResolvedValue({
+				session: {
+					prompt: subSessionPrompt,
+					subscribe: (next: (event: any) => void) => {
+						subscriber = next;
+						return () => {
+							subscriber = undefined;
+						};
+					},
+					abort: vi.fn(async () => {}),
+					dispose: vi.fn(),
+					isStreaming: false,
+				},
+			} as any);
+
+			const progressEvents: Array<{ phase?: string }> = [];
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			Object.defineProperty(fakeThis, "session", {
+				value: {
+					model: { id: "test-model" },
+					modelRegistry: { authStorage: AuthStorage.inMemory() },
+					thinkingLevel: "medium",
+				},
+				configurable: true,
+			});
+			Object.defineProperty(fakeThis, "sessionManager", {
+				value: { getCwd: () => cwd },
+				configurable: true,
+			});
+			fakeThis.resolveSwarmTaskProfile = vi.fn(() => "meta");
+			fakeThis.deriveSwarmTaskDelegateParallelHint = vi.fn(() => 3);
+			fakeThis.resolveSwarmDispatchTimeoutMs = vi.fn(() => 15_000);
+			fakeThis.estimateSwarmTaskCostUsd = vi.fn(() => 0.35);
+			fakeThis.parseSwarmSpawnCandidates = vi.fn(() => []);
+
+			const result = await (InteractiveMode as any).prototype.dispatchSwarmTaskWithAgent.call(fakeThis, {
+				meta: {
+					runId: "swarm_test_run",
+					request: "full audit",
+				},
+				task: {
+					id: "task_2",
+					brief: "Audit workstream 1/3 for: full audit",
+					concurrency_class: "implementation",
+					severity: "high",
+				},
+				runtime: {
+					touches: ["src/core/swarm/planner.ts"],
+					scopes: ["src/**"],
+				},
+				contract: {},
+				onProgress: (progress: { phase?: string }) => {
+					progressEvents.push(progress);
+				},
+			});
+
+			expect(result.status).toBe("done");
+			expect(subSessionPrompt).toHaveBeenCalledTimes(2);
+			expect(subSessionPrompt.mock.calls[1]?.[0]).toContain("[SWARM_PROTOCOL_CORRECTION]");
+			expect(subSessionPrompt.mock.calls[1]?.[0]).toContain('run_id="swarm_test_run"');
+			expect(subSessionPrompt.mock.calls[1]?.[0]).toContain('task_id="task_2"');
+			expect(progressEvents.some((event) => event.phase === "protocol correction")).toBe(true);
+		} finally {
+			createAgentSessionSpy.mockRestore();
+			if (originalAgentDir === undefined) {
+				delete process.env[ENV_AGENT_DIR];
+			} else {
+				process.env[ENV_AGENT_DIR] = originalAgentDir;
+			}
+			rmSync(cwd, { recursive: true, force: true });
+			rmSync(agentDir, { recursive: true, force: true });
+		}
 	});
 
 	test("promptSingularDecision allows swarm start when defer recommendation exists but user picks non-defer option", async () => {

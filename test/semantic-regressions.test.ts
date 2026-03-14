@@ -11,6 +11,19 @@ describe("semantic integration regressions", () => {
 		expect("semantic_search" in perCwdTools).toBe(true);
 	});
 
+	it("registers fetch/git_read/fs_ops in the expected tool registries", () => {
+		expect("fetch" in allTools).toBe(true);
+		expect("git_read" in allTools).toBe(true);
+		expect("fs_ops" in allTools).toBe(true);
+		expect(readOnlyTools.some((tool) => tool.name === "fetch")).toBe(true);
+		expect(readOnlyTools.some((tool) => tool.name === "git_read")).toBe(true);
+		expect(readOnlyTools.some((tool) => tool.name === "fs_ops")).toBe(false);
+		const perCwdTools = createAllTools(process.cwd());
+		expect("fetch" in perCwdTools).toBe(true);
+		expect("git_read" in perCwdTools).toBe(true);
+		expect("fs_ops" in perCwdTools).toBe(true);
+	});
+
 	it("exposes /semantic and /singular in slash commands", () => {
 		const slashNames = BUILTIN_SLASH_COMMANDS.map((command) => command.name);
 		expect(slashNames).toContain("semantic");
@@ -23,5 +36,19 @@ describe("semantic integration regressions", () => {
 		expect(AGENT_PROFILES.meta.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.explore.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.iosm.tools).toContain("semantic_search");
+	});
+
+	it("enables fetch/git_read in read-only profiles and fs_ops in write profiles", () => {
+		expect(AGENT_PROFILES.explore.tools).toContain("fetch");
+		expect(AGENT_PROFILES.explore.tools).toContain("git_read");
+		expect(AGENT_PROFILES.explore.tools).not.toContain("fs_ops");
+
+		expect(AGENT_PROFILES.plan.tools).toContain("fetch");
+		expect(AGENT_PROFILES.plan.tools).toContain("git_read");
+		expect(AGENT_PROFILES.plan.tools).not.toContain("fs_ops");
+
+		expect(AGENT_PROFILES.full.tools).toContain("fs_ops");
+		expect(AGENT_PROFILES.meta.tools).toContain("fs_ops");
+		expect(AGENT_PROFILES.iosm.tools).toContain("fs_ops");
 	});
 });

@@ -26,6 +26,9 @@ const toolDescriptions: Record<string, string> = {
 	sed: "Run sed for stream editing/extraction previews (no in-place edits)",
 	semantic_search:
 		"Semantic embeddings search over the project index (actions: status, index, rebuild, query)",
+	fetch: "Make HTTP requests with bounded response capture and manual redirect handling",
+	git_read: "Structured read-only git introspection (status, diff, log, blame)",
+	fs_ops: "Structured filesystem mutations (mkdir, move, copy, delete) with recursive/force guards",
 	task: "Run a specialized subagent (supports profile, cwd, lock_key for optional write serialization, run_id/task_id, model override, background mode for detached runs, and agent=<custom name from .iosm/agents>)",
 };
 
@@ -152,6 +155,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const hasSemgrep = tools.includes("semgrep");
 	const hasSed = tools.includes("sed");
 	const hasSemanticSearch = tools.includes("semantic_search");
+	const hasFetch = tools.includes("fetch");
+	const hasGitRead = tools.includes("git_read");
+	const hasFsOps = tools.includes("fs_ops");
 	const hasRead = tools.includes("read");
 
 	// File exploration guidelines
@@ -160,10 +166,16 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	} else if (hasBash && (hasGrep || hasFind || hasLs || hasRg || hasFd)) {
 		addGuideline("Prefer grep/find/ls/rg/fd tools over bash for codebase exploration (faster and less noisy)");
 	}
+	if (hasBash && hasGitRead) {
+		addGuideline("Prefer git_read over bash for git status/diff/log/blame analysis in read-only workflows");
+	}
+	if (hasBash && hasFetch) {
+		addGuideline("Prefer fetch over bash curl/wget for HTTP retrieval when structured request parameters are sufficient");
+	}
 
-	if (hasRg || hasFd || hasAstGrep || hasComby || hasJq || hasYq || hasSemgrep || hasSed || hasSemanticSearch) {
+	if (hasRg || hasFd || hasAstGrep || hasComby || hasJq || hasYq || hasSemgrep || hasSed || hasSemanticSearch || hasFetch || hasGitRead || hasFsOps) {
 		addGuideline(
-			"Route work to specialized tools first: rg/fd (search/discovery), semantic_search (concept-level retrieval), ast_grep/comby (structural code queries), jq/yq (data/config transforms), semgrep (risk scans), sed (stream extraction)",
+			"Route work to specialized tools first: rg/fd (search/discovery), semantic_search (concept-level retrieval), ast_grep/comby (structural code queries), jq/yq (data/config transforms), semgrep (risk scans), sed (stream extraction), fetch (HTTP retrieval), git_read (git analysis), fs_ops (filesystem mutations)",
 		);
 	}
 
@@ -224,6 +236,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	// Write guideline
 	if (hasWrite) {
 		addGuideline("Use write only for new files or complete rewrites");
+	}
+	if (hasFsOps) {
+		addGuideline("Use fs_ops for mkdir/move/copy/delete workflows instead of broad bash file mutation commands");
 	}
 
 	// Output guideline (only when actually writing or executing)

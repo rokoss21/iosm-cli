@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No unreleased changes._
 
+## [0.2.7] - 2026-03-14
+
+### Added
+
+- **`fetch` built-in tool** — added structured HTTP tool with fields `url`, `method`, `headers`, `body`, `timeout`, `max_bytes`, `response_format`, `max_redirects`; includes manual redirect loop control, bounded body capture, and `auto` JSON/text formatting by `content-type`
+- **`git_read` built-in tool** — added read-only structured git introspection actions (`status`, `diff`, `log`, `blame`) with action-specific validation and safe argv execution (no raw shell passthrough)
+- **`fs_ops` built-in tool** — added structured filesystem mutation tool (`mkdir`, `move`, `copy`, `delete`) with explicit `recursive`/`force` safety gates and `EXDEV` move fallback (`copy + delete`)
+- **SDK/public exports for new tools** — exported factories, tool singletons, and typed input/options/details surfaces for `fetch`, `git_read`, and `fs_ops`
+
+### Changed
+
+- **Profile tool policy expansion** — `fetch` and `git_read` are now included in read-only exploration profiles; `fs_ops` is included in write-capable engineering profiles (`full`, `meta`, `iosm`)
+- **Dynamic `fetch` method policy by active profile** — read-only profiles (`explore`, `plan`, `iosm_analyst`) allow only `GET|HEAD|OPTIONS`; write-capable profiles allow full method set (`GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS`)
+- **Unified tool permission/pre-hook integration** — `fetch` and `fs_ops` now pass through the same session permission and pre-tool hook pipeline used by write-capable built-ins
+- **Mutation classification updates** — `fs_ops` is now classified as mutating in shadow guard and task write-capable tool checks
+
+### Documentation
+
+- Updated CLI help, system prompt tool guidance, and docs pages to include `fetch`, `git_read`, and `fs_ops` with usage/policy notes
+- Updated profile/tool tables and architecture snippets to reflect the expanded built-in tool layer
+
+### Tests
+
+- Added dedicated coverage for `fetch`, `git_read`, and `fs_ops`
+- Added regression assertions for profile membership, read-only/write-capable classification, shadow guard behavior, and CLI help/tool listings
+
 ## [0.2.6] - 2026-03-14
 
 ### Added

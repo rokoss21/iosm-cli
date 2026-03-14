@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { parseArgs } from "../src/cli/args.js";
+import { describe, expect, test, vi } from "vitest";
+import { parseArgs, printHelp } from "../src/cli/args.js";
 
 describe("parseArgs", () => {
 	describe("--version flag", () => {
@@ -256,6 +256,28 @@ describe("parseArgs", () => {
 			const result = parseArgs(["--no-tools", "--tools", "read,bash"]);
 			expect(result.noTools).toBe(true);
 			expect(result.tools).toEqual(["read", "bash"]);
+		});
+	});
+
+	describe("--tools values", () => {
+		test("parses newly added built-in tools", () => {
+			const result = parseArgs(["--tools", "read,fetch,git_read,fs_ops"]);
+			expect(result.tools).toEqual(["read", "fetch", "git_read", "fs_ops"]);
+		});
+	});
+
+	describe("help output", () => {
+		test("lists new tool names", () => {
+			const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			try {
+				printHelp();
+				const rendered = consoleSpy.mock.calls.map((call) => String(call[0] ?? "")).join("\n");
+				expect(rendered).toContain("fetch");
+				expect(rendered).toContain("git_read");
+				expect(rendered).toContain("fs_ops");
+			} finally {
+				consoleSpy.mockRestore();
+			}
 		});
 	});
 

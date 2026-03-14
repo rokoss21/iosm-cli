@@ -11919,8 +11919,6 @@ export class InteractiveMode {
 		let activeTool: string | undefined;
 		const dispatchTimeoutMs = this.resolveSwarmDispatchTimeoutMs();
 		let timedOut = false;
-		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-		let detachStopListener: (() => void) | undefined;
 		const delegatedFailureCauses = new Map<string, number>();
 		const accumulateFailureCauses = (raw: unknown): void => {
 			if (!raw || typeof raw !== "object") return;
@@ -12058,22 +12056,26 @@ export class InteractiveMode {
 				});
 			}
 		});
+		const protocolCorrectionPrompt = [
+			"[SWARM_PROTOCOL_CORRECTION]",
+			`Previous response for run_id="${input.meta.runId}" task_id="${input.task.id}" executed zero task tool calls.`,
+			"Execute the required task tool call now. Do not return prose-only output.",
+			`Required task call args: description="${safeDescription || input.task.id}", profile="${profile}", delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
+			minDelegatesRequired > 0
+				? `Inside this single task call, emit at least ${minDelegatesRequired} independent <delegate_task> subtasks (target parallel fan-out up to ${delegateParallelHint}).`
+				: "Keep execution focused in a single task call unless decomposition is clearly beneficial.",
+			minDelegatesRequired > 0
+				? 'If safe decomposition is impossible, output exactly one line: DELEGATION_IMPOSSIBLE: <reason>.'
+				: "If decomposition is not beneficial, continue with single-agent execution in the task call.",
+			"If blocked, output exactly one line: BLOCKED: <reason>",
+			"[/SWARM_PROTOCOL_CORRECTION]",
+		].join("\n");
 
-		try {
-			emitProgress({
-				phase: "booting subagent",
-				phaseState: "starting",
-			});
-			if (input.stopSignal?.aborted) {
-				return {
-					taskId: input.task.id,
-					status: "blocked",
-					error: "Swarm run interrupted.",
-					failureCause: "interrupted",
-					costUsd: this.estimateSwarmTaskCostUsd(input.task),
-				};
-			}
-			const promptPromise = swarmSession.prompt(prompt, {
+		const runPromptAttempt = async (attemptPrompt: string): Promise<void> => {
+			let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+			let detachStopListener: (() => void) | undefined;
+
+			const promptPromise = swarmSession.prompt(attemptPrompt, {
 				expandPromptTemplates: false,
 				skipIosmAutopilot: true,
 				skipOrchestrationDirective: true,
@@ -12083,6 +12085,7 @@ export class InteractiveMode {
 			void promptPromise.catch(() => {
 				// handled by race below
 			});
+
 			const timeoutPromise = new Promise<void>((_, reject) => {
 				timeoutHandle = setTimeout(() => {
 					timedOut = true;
@@ -12096,6 +12099,7 @@ export class InteractiveMode {
 					reject(new Error(`Swarm task dispatch timed out after ${dispatchTimeoutMs}ms.`));
 				}, dispatchTimeoutMs);
 			});
+
 			const stopPromise = new Promise<void>((_, reject) => {
 				if (!input.stopSignal) return;
 				const onAbort = () => {
@@ -12115,7 +12119,48 @@ export class InteractiveMode {
 				input.stopSignal.addEventListener("abort", onAbort, { once: true });
 				detachStopListener = () => input.stopSignal?.removeEventListener("abort", onAbort);
 			});
-			await Promise.race([promptPromise, timeoutPromise, stopPromise]);
+
+			try {
+				await Promise.race([promptPromise, timeoutPromise, stopPromise]);
+			} finally {
+				detachStopListener?.();
+				if (timeoutHandle) {
+					clearTimeout(timeoutHandle);
+				}
+			}
+		};
+
+		try {
+			emitProgress({
+				phase: "booting subagent",
+				phaseState: "starting",
+			});
+			if (input.stopSignal?.aborted) {
+				return {
+					taskId: input.task.id,
+					status: "blocked",
+					error: "Swarm run interrupted.",
+					failureCause: "interrupted",
+					costUsd: this.estimateSwarmTaskCostUsd(input.task),
+				};
+			}
+			await runPromptAttempt(prompt);
+
+			const firstAttemptOutput = chunks.join("\n\n").trim();
+			const firstAttemptBlocked = /^\s*BLOCKED\s*:/im.test(firstAttemptOutput);
+			const needsProtocolCorrection =
+				!firstAttemptBlocked &&
+				!input.stopSignal?.aborted &&
+				taskToolCalls === 0 &&
+				taskErrors.length === 0;
+
+			if (needsProtocolCorrection) {
+				emitProgress({
+					phase: "protocol correction",
+					phaseState: "running",
+				});
+				await runPromptAttempt(protocolCorrectionPrompt);
+			}
 		} catch (error) {
 			return {
 				taskId: input.task.id,
@@ -12130,10 +12175,6 @@ export class InteractiveMode {
 				costUsd: this.estimateSwarmTaskCostUsd(input.task),
 			};
 		} finally {
-			detachStopListener?.();
-			if (timeoutHandle) {
-				clearTimeout(timeoutHandle);
-			}
 			unsubscribe();
 			if (timedOut || swarmSession.isStreaming) {
 				await swarmSession.abort().catch(() => {

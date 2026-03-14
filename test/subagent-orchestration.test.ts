@@ -511,6 +511,9 @@ describe("subagent orchestration", () => {
 		expect(observedTools).toContain("bash");
 		expect(observedTools).toContain("edit");
 		expect(observedTools).toContain("write");
+		expect(observedTools).toContain("fetch");
+		expect(observedTools).toContain("git_read");
+		expect(observedTools).toContain("fs_ops");
 	});
 
 	it("honors maxParallel from orchestration run metadata", async () => {

@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.6</h1>
+<h1>IOSM CLI 0.2.7</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -471,8 +471,8 @@ Run `/settings` inside the TUI to view and modify all settings interactively.
            │                          │
 ┌──────────▼──────────────────────────▼───────────────────┐
 │                       Tool layer                        │
-│  read · edit · write · bash · grep · rg · fd · ast_grep │
-│  comby · jq · yq · semgrep · sed · semantic_search      │
+│  read · edit · write · fs_ops · bash · grep · rg · fd · ast_grep │
+│  comby · jq · yq · semgrep · sed · semantic_search · fetch · git_read │
 └─────────────────────────┬───────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────┐

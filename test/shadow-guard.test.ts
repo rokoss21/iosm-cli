@@ -40,4 +40,21 @@ describe("shadow guard", () => {
 		guard.disable();
 		expect(activeTools).toEqual(["read", "task", "todo_read"]);
 	});
+
+	it("treats fs_ops as mutating when shadow mode is enabled", () => {
+		let activeTools = ["read", "fs_ops", "bash"];
+		const guard = new ShadowGuard({
+			getActiveTools: () => [...activeTools],
+			getAllTools: () => ["read", "fetch", "git_read", "fs_ops", "bash", "edit", "write", "task"],
+			setActiveTools: (next) => {
+				activeTools = [...next];
+			},
+		});
+
+		guard.enable();
+		expect(guard.shouldDenyTool("fs_ops")).toBe(true);
+		expect(activeTools).toContain("fetch");
+		expect(activeTools).toContain("git_read");
+		expect(activeTools).not.toContain("fs_ops");
+	});
 });

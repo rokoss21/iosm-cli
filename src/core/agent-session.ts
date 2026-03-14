@@ -102,7 +102,7 @@ import {
 	type TaskPlanSnapshot,
 } from "./task-plan.js";
 import type { BashOperations } from "./tools/bash.js";
-import { createAllTools } from "./tools/index.js";
+import { createAllTools, getAllowedFetchMethodsForProfile } from "./tools/index.js";
 import type { ToolPermissionRequest } from "./tools/index.js";
 
 // ============================================================================
@@ -2911,7 +2911,7 @@ export class AgentSession {
 		};
 		const baseTools = this._baseToolsOverride
 			? this._baseToolsOverride
-			: createAllTools(this._cwd, {
+				: createAllTools(this._cwd, {
 					read: { autoResizeImages },
 					bash: {
 						commandPrefix: shellCommandPrefix,
@@ -2934,6 +2934,19 @@ export class AgentSession {
 					},
 					semantic: {
 						authStorage: this._modelRegistry.authStorage,
+					},
+					fetch: {
+						resolveAllowedMethods: () => getAllowedFetchMethodsForProfile(this._profileName),
+						permissionGuard: async (request) => {
+							evaluatePreToolHooks(request);
+							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
+						},
+					},
+					fsOps: {
+						permissionGuard: async (request) => {
+							evaluatePreToolHooks(request);
+							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
+						},
 					},
 				});
 

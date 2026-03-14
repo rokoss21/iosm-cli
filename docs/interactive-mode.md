@@ -336,8 +336,8 @@ Profiles change the agent's behavior, available tools, and system prompt:
 
 | Profile | Tools | Use Case |
 |---------|-------|----------|
-| `full` | All built-ins (read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search) | Default development work |
-| `plan` | Read-only (read, grep, find, ls) | Architecture planning, code review |
+| `full` | All built-ins (read, bash, edit, write, fs_ops, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, git_read) | Default development work |
+| `plan` | Read-only bundle (read, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, git_read) | Architecture planning, code review |
 | `iosm` | All + IOSM context | IOSM cycle execution with artifact sync |
 | `meta` | Full toolset + orchestration-first contract | Adaptive multi-agent/delegate execution with verification closure |
 

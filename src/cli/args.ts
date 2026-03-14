@@ -235,7 +235,7 @@ ${chalk.bold("Options:")}
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
 	--no-tools                     Disable all built-in tools
 	--tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
-	                                 Available: read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search
+	                                 Available: read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, git_read, fs_ops
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -366,5 +366,8 @@ ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   semgrep - Structural static/security scan tool
   sed    - Stream editing/extraction tool (no in-place edits)
   semantic_search - Embedding-based semantic search (status/index/rebuild/query)
+  fetch  - HTTP request tool with bounded body capture and redirect control
+  git_read - Structured read-only git introspection (status/diff/log/blame)
+  fs_ops - Structured filesystem mutations (mkdir/move/copy/delete with safety flags)
 `);
 }

@@ -252,7 +252,7 @@ const systemPromptByProfile: Record<string, string> = {
 	full: "You are a software engineering agent. Execute the task end-to-end.",
 };
 
-const writeCapableTools = new Set(["bash", "edit", "write"]);
+const writeCapableTools = new Set(["bash", "edit", "write", "fs_ops"]);
 const backgroundUnsafeTools = new Set(writeCapableTools);
 const writeCapableProfiles = new Set(
 	(Object.keys(toolsByProfile) as AgentProfileName[]).filter((profileName) =>

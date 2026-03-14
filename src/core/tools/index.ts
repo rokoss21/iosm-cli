@@ -27,6 +27,19 @@ export {
 	editTool,
 } from "./edit.js";
 export {
+	createFetchTool,
+	type FetchToolDetails,
+	type FetchToolInput,
+	type FetchToolOptions,
+	type FetchMethod,
+	type FetchResponseFormat,
+	DEFAULT_FETCH_TIMEOUT_SECONDS,
+	DEFAULT_FETCH_MAX_BYTES,
+	DEFAULT_FETCH_MAX_REDIRECTS,
+	getAllowedFetchMethodsForProfile,
+	fetchTool,
+} from "./fetch.js";
+export {
 	type ExternalCliToolDetails,
 	type ExternalCliToolInput,
 	type ExternalCliToolOptions,
@@ -46,6 +59,13 @@ export {
 	findTool,
 } from "./find.js";
 export {
+	createFsOpsTool,
+	type FsOpsToolDetails,
+	type FsOpsToolInput,
+	type FsOpsToolOptions,
+	fsOpsTool,
+} from "./fs-ops.js";
+export {
 	createGrepTool,
 	type GrepOperations,
 	type GrepToolDetails,
@@ -53,6 +73,13 @@ export {
 	type GrepToolOptions,
 	grepTool,
 } from "./grep.js";
+export {
+	createGitReadTool,
+	type GitReadToolDetails,
+	type GitReadToolInput,
+	type GitReadToolOptions,
+	gitReadTool,
+} from "./git-read.js";
 export {
 	createJqTool,
 	type JqToolInput,
@@ -143,9 +170,17 @@ import { astGrepTool, createAstGrepTool } from "./ast-grep.js";
 import { type BashToolOptions, bashTool, createBashTool } from "./bash.js";
 import { combyTool, createCombyTool } from "./comby.js";
 import { createEditTool, type EditToolOptions, editTool } from "./edit.js";
+import {
+	createFetchTool,
+	type FetchToolOptions,
+	fetchTool,
+	getAllowedFetchMethodsForProfile,
+} from "./fetch.js";
 import { createFdTool, fdTool } from "./fd.js";
 import { createFindTool, findTool } from "./find.js";
+import { createFsOpsTool, type FsOpsToolOptions, fsOpsTool } from "./fs-ops.js";
 import { createGrepTool, grepTool } from "./grep.js";
+import { createGitReadTool, gitReadTool } from "./git-read.js";
 import { createJqTool, jqTool } from "./jq.js";
 import { createLsTool, lsTool } from "./ls.js";
 import { createReadTool, type ReadToolOptions, readTool } from "./read.js";
@@ -182,6 +217,10 @@ export const readOnlyTools: Tool[] = [
 	semgrepTool,
 	sedTool,
 	semanticSearchTool,
+	createFetchTool(process.cwd(), {
+		resolveAllowedMethods: () => getAllowedFetchMethodsForProfile("plan"),
+	}),
+	gitReadTool,
 ];
 
 // All available tools (using process.cwd())
@@ -202,6 +241,9 @@ export const allTools = {
 	semgrep: semgrepTool,
 	sed: sedTool,
 	semantic_search: semanticSearchTool,
+	fetch: fetchTool,
+	git_read: gitReadTool,
+	fs_ops: fsOpsTool,
 	todo_write: todoWriteTool,
 	todo_read: todoReadTool,
 };
@@ -219,6 +261,10 @@ export interface ToolsOptions {
 	write?: WriteToolOptions;
 	/** Options for the semantic_search tool */
 	semantic?: SemanticSearchToolOptions;
+	/** Options for the fetch tool */
+	fetch?: FetchToolOptions;
+	/** Options for the fs_ops tool */
+	fsOps?: FsOpsToolOptions;
 }
 
 /**
@@ -237,6 +283,12 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
  * Create read-only tools configured for a specific working directory.
  */
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
+	const fetchOptions: FetchToolOptions = {
+		...(options?.fetch ?? {}),
+		resolveAllowedMethods:
+			options?.fetch?.resolveAllowedMethods ?? (() => getAllowedFetchMethodsForProfile("plan")),
+	};
+
 	return [
 		createReadTool(cwd, options?.read),
 		createGrepTool(cwd),
@@ -251,6 +303,8 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		createSemgrepTool(cwd),
 		createSedTool(cwd),
 		createSemanticSearchTool(cwd, options?.semantic),
+		createFetchTool(cwd, fetchOptions),
+		createGitReadTool(cwd),
 	];
 }
 
@@ -275,6 +329,9 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		semgrep: createSemgrepTool(cwd),
 		sed: createSedTool(cwd),
 		semantic_search: createSemanticSearchTool(cwd, options?.semantic),
+		fetch: createFetchTool(cwd, options?.fetch),
+		git_read: createGitReadTool(cwd),
+		fs_ops: createFsOpsTool(cwd, options?.fsOps),
 		todo_write: todoWriteTool,
 		todo_read: todoReadTool,
 	};

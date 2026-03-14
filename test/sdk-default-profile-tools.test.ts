@@ -31,5 +31,8 @@ describe("createAgentSession default profile tools", () => {
 		expect(active).toContain("rg");
 		expect(active).toContain("fd");
 		expect(active).toContain("ast_grep");
+		expect(active).toContain("fetch");
+		expect(active).toContain("git_read");
+		expect(active).toContain("fs_ops");
 	});
 });
