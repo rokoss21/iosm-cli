@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes._
+## [0.2.8] - 2026-03-14
+
+### Added
+
+- **`git_write` built-in tool** — added structured git mutation actions (`add`, `restore`, `reset_index`, `commit`, `switch`, `branch_create`, `fetch`, `pull`, `push`, `stash_push`, `stash_pop`, `stash_apply`, `stash_drop`, `stash_list`) with action-specific validation, permission-guard integration, and safe argv execution (no raw shell passthrough)
+- **GitHub tools settings** — added persistent `githubTools` settings block (`networkEnabled`, `token`) and interactive settings submenu for enabling git network actions and managing GitHub token
+- **Expanded `git_read` actions** — added read-only actions `show`, `branch_list`, `remote_list`, and `rev_parse` while preserving backwards compatibility for existing `status`, `diff`, `log`, and `blame` contracts
+
+### Changed
+
+- **Shared git tool runtime** — consolidated git process execution/capture/truncation/error handling into a common internal helper used by `git_read` and `git_write`
+- **Profile and mutation policy updates** — enabled `git_write` by default in write-capable profiles (`full`, `meta`, `iosm`) and classified it as mutating in task/shadow-guard policy checks
+- **Interactive menu hint UX polish** — normalized selector/menu control hints across settings, model/oauth/MCP selectors, tree/session views, and config/model-scoping panels for consistent navigation/action/search/exit guidance
+
+### Documentation
+
+- Updated README header/version marker to `0.2.8`
+- Updated CLI/config/interactive/development/RPC docs for `git_write` network actions, GitHub tools settings (`networkEnabled`, `token`), and expanded `git_read` action coverage
+
+### Tests
+
+- Added dedicated `git_write` tool coverage and expanded `git_read` tests for new actions (`show`, `branch_list`, `remote_list`, `rev_parse`)
+- Added UI regression checks for settings/menu hint behavior updates
 
 ## [0.2.7] - 2026-03-14
 

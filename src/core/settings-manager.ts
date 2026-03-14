@@ -43,6 +43,22 @@ export interface MarkdownSettings {
 	codeBlockIndent?: string; // default: "  "
 }
 
+export interface WebSearchSettings {
+	enabled?: boolean; // default: true
+	providerMode?: "auto" | "tavily"; // default: auto
+	fallbackMode?: "searxng_ddg" | "searxng_only" | "none"; // default: searxng_ddg
+	safeSearch?: "off" | "moderate" | "strict"; // default: moderate
+	maxResults?: number; // default: 8
+	timeoutSeconds?: number; // default: 20
+	tavilyApiKey?: string; // optional Tavily API key (can also come from env)
+	searxngUrl?: string; // optional SearXNG base URL (can also come from env)
+}
+
+export interface GithubToolsSettings {
+	networkEnabled?: boolean; // default: false
+	token?: string; // optional GitHub token used for git network operations
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -97,6 +113,28 @@ export interface Settings {
 	autocompleteMaxVisible?: number; // Max visible items in autocomplete dropdown (default: 5)
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
+	webSearch?: WebSearchSettings;
+	githubTools?: GithubToolsSettings;
+}
+
+const WEB_SEARCH_PROVIDER_MODES = ["auto", "tavily"] as const;
+const WEB_SEARCH_FALLBACK_MODES = ["searxng_ddg", "searxng_only", "none"] as const;
+const WEB_SEARCH_SAFE_SEARCH_MODES = ["off", "moderate", "strict"] as const;
+const WEB_SEARCH_MAX_RESULTS_VALUES = [3, 5, 8, 10, 15] as const;
+const WEB_SEARCH_TIMEOUT_VALUES = [10, 20, 30, 45, 60] as const;
+
+function nearestAllowedValue(value: number, allowed: readonly number[], fallback: number): number {
+	if (!Number.isFinite(value)) return fallback;
+	let best = allowed[0] ?? fallback;
+	let bestDistance = Math.abs(best - value);
+	for (const candidate of allowed) {
+		const distance = Math.abs(candidate - value);
+		if (distance < bestDistance) {
+			best = candidate;
+			bestDistance = distance;
+		}
+	}
+	return best;
 }
 
 /** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
@@ -888,6 +926,173 @@ export class SettingsManager {
 		}
 		this.globalSettings.images.blockImages = blocked;
 		this.markModified("images", "blockImages");
+		this.save();
+	}
+
+	getWebSearchEnabled(): boolean {
+		return this.settings.webSearch?.enabled ?? true;
+	}
+
+	setWebSearchEnabled(enabled: boolean): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		this.globalSettings.webSearch.enabled = enabled;
+		this.markModified("webSearch", "enabled");
+		this.save();
+	}
+
+	getWebSearchProviderMode(): "auto" | "tavily" {
+		const mode = this.settings.webSearch?.providerMode;
+		return WEB_SEARCH_PROVIDER_MODES.includes(mode as (typeof WEB_SEARCH_PROVIDER_MODES)[number]) ? mode! : "auto";
+	}
+
+	setWebSearchProviderMode(mode: "auto" | "tavily"): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		this.globalSettings.webSearch.providerMode = mode;
+		this.markModified("webSearch", "providerMode");
+		this.save();
+	}
+
+	getWebSearchFallbackMode(): "searxng_ddg" | "searxng_only" | "none" {
+		const mode = this.settings.webSearch?.fallbackMode;
+		return WEB_SEARCH_FALLBACK_MODES.includes(mode as (typeof WEB_SEARCH_FALLBACK_MODES)[number]) ? mode! : "searxng_ddg";
+	}
+
+	setWebSearchFallbackMode(mode: "searxng_ddg" | "searxng_only" | "none"): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		this.globalSettings.webSearch.fallbackMode = mode;
+		this.markModified("webSearch", "fallbackMode");
+		this.save();
+	}
+
+	getWebSearchSafeSearch(): "off" | "moderate" | "strict" {
+		const mode = this.settings.webSearch?.safeSearch;
+		return WEB_SEARCH_SAFE_SEARCH_MODES.includes(mode as (typeof WEB_SEARCH_SAFE_SEARCH_MODES)[number]) ? mode! : "moderate";
+	}
+
+	setWebSearchSafeSearch(mode: "off" | "moderate" | "strict"): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		this.globalSettings.webSearch.safeSearch = mode;
+		this.markModified("webSearch", "safeSearch");
+		this.save();
+	}
+
+	getWebSearchMaxResults(): 3 | 5 | 8 | 10 | 15 {
+		const value = this.settings.webSearch?.maxResults;
+		if (typeof value !== "number") return 8;
+		if (WEB_SEARCH_MAX_RESULTS_VALUES.includes(value as (typeof WEB_SEARCH_MAX_RESULTS_VALUES)[number])) {
+			return value as 3 | 5 | 8 | 10 | 15;
+		}
+		return nearestAllowedValue(value, WEB_SEARCH_MAX_RESULTS_VALUES, 8) as 3 | 5 | 8 | 10 | 15;
+	}
+
+	setWebSearchMaxResults(maxResults: number): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		this.globalSettings.webSearch.maxResults = nearestAllowedValue(maxResults, WEB_SEARCH_MAX_RESULTS_VALUES, 8);
+		this.markModified("webSearch", "maxResults");
+		this.save();
+	}
+
+	getWebSearchTimeoutSeconds(): 10 | 20 | 30 | 45 | 60 {
+		const value = this.settings.webSearch?.timeoutSeconds;
+		if (typeof value !== "number") return 20;
+		if (WEB_SEARCH_TIMEOUT_VALUES.includes(value as (typeof WEB_SEARCH_TIMEOUT_VALUES)[number])) {
+			return value as 10 | 20 | 30 | 45 | 60;
+		}
+		return nearestAllowedValue(value, WEB_SEARCH_TIMEOUT_VALUES, 20) as 10 | 20 | 30 | 45 | 60;
+	}
+
+	setWebSearchTimeoutSeconds(timeoutSeconds: number): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		this.globalSettings.webSearch.timeoutSeconds = nearestAllowedValue(timeoutSeconds, WEB_SEARCH_TIMEOUT_VALUES, 20);
+		this.markModified("webSearch", "timeoutSeconds");
+		this.save();
+	}
+
+	getWebSearchTavilyApiKey(): string | undefined {
+		const key = this.settings.webSearch?.tavilyApiKey;
+		if (typeof key !== "string") return undefined;
+		const normalized = key.trim();
+		return normalized.length > 0 ? normalized : undefined;
+	}
+
+	isWebSearchTavilyApiKeyConfigured(): boolean {
+		return this.getWebSearchTavilyApiKey() !== undefined;
+	}
+
+	setWebSearchTavilyApiKey(apiKey: string | undefined): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		const normalized = apiKey?.trim();
+		this.globalSettings.webSearch.tavilyApiKey = normalized && normalized.length > 0 ? normalized : undefined;
+		this.markModified("webSearch", "tavilyApiKey");
+		this.save();
+	}
+
+	getWebSearchSearxngUrl(): string | undefined {
+		const url = this.settings.webSearch?.searxngUrl;
+		if (typeof url !== "string") return undefined;
+		const normalized = url.trim();
+		return normalized.length > 0 ? normalized : undefined;
+	}
+
+	isWebSearchSearxngUrlConfigured(): boolean {
+		return this.getWebSearchSearxngUrl() !== undefined;
+	}
+
+	setWebSearchSearxngUrl(url: string | undefined): void {
+		if (!this.globalSettings.webSearch) {
+			this.globalSettings.webSearch = {};
+		}
+		const normalized = url?.trim();
+		this.globalSettings.webSearch.searxngUrl = normalized && normalized.length > 0 ? normalized : undefined;
+		this.markModified("webSearch", "searxngUrl");
+		this.save();
+	}
+
+	getGithubToolsNetworkEnabled(): boolean {
+		return this.settings.githubTools?.networkEnabled ?? false;
+	}
+
+	setGithubToolsNetworkEnabled(enabled: boolean): void {
+		if (!this.globalSettings.githubTools) {
+			this.globalSettings.githubTools = {};
+		}
+		this.globalSettings.githubTools.networkEnabled = enabled;
+		this.markModified("githubTools", "networkEnabled");
+		this.save();
+	}
+
+	getGithubToolsToken(): string | undefined {
+		const token = this.settings.githubTools?.token;
+		if (typeof token !== "string") return undefined;
+		const normalized = token.trim();
+		return normalized.length > 0 ? normalized : undefined;
+	}
+
+	isGithubToolsTokenConfigured(): boolean {
+		return this.getGithubToolsToken() !== undefined;
+	}
+
+	setGithubToolsToken(token: string | undefined): void {
+		if (!this.globalSettings.githubTools) {
+			this.globalSettings.githubTools = {};
+		}
+		const normalized = token?.trim();
+		this.globalSettings.githubTools.token = normalized && normalized.length > 0 ? normalized : undefined;
+		this.markModified("githubTools", "token");
 		this.save();
 	}
 

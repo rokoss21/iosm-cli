@@ -159,7 +159,7 @@ class SessionSelectorHeader implements Component {
 		let hintLine1: string;
 		let hintLine2: string;
 		if (this.confirmingDeletePath !== null) {
-			const confirmHint = "Delete session? [Enter] confirm · [Esc/Ctrl+C] cancel";
+			const confirmHint = `${keyHint("selectConfirm", "confirm delete")} · ${keyHint("selectCancel", "cancel")}`;
 			hintLine1 = theme.fg("error", truncateToWidth(confirmHint, width, "…"));
 			hintLine2 = "";
 		} else if (this.statusMessage) {
@@ -171,6 +171,8 @@ class SessionSelectorHeader implements Component {
 			const sep = theme.fg("muted", " · ");
 			const hint1 = keyHint("tab", "scope") + sep + theme.fg("muted", 're:<pattern> regex · "phrase" exact');
 			const hint2Parts = [
+				keyHint("selectConfirm", "open"),
+				keyHint("selectCancel", "close"),
 				keyHint("toggleSessionSort", "sort"),
 				appKeyHint(this.keybindings, "toggleSessionNamedFilter", "named"),
 				keyHint("deleteSession", "delete"),
@@ -884,7 +886,7 @@ export class SessionSelectorComponent extends Container implements Focusable {
 		panel.addChild(new Spacer(1));
 		panel.addChild(this.renameInput);
 		panel.addChild(new Spacer(1));
-		panel.addChild(new Text(theme.fg("muted", "Enter to save · Esc/Ctrl+C to cancel"), 1, 0));
+		panel.addChild(new Text(theme.fg("muted", `${keyHint("selectConfirm", "save")} · ${keyHint("selectCancel", "cancel")}`), 1, 0));
 
 		this.buildBaseLayout(panel, { showHeader: false });
 		this.requestRender();

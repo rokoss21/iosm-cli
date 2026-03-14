@@ -40,6 +40,23 @@ export {
 	fetchTool,
 } from "./fetch.js";
 export {
+	createWebSearchTool,
+	type WebSearchAttemptDetail,
+	type WebSearchAttemptStatus,
+	type WebSearchFallbackMode,
+	type WebSearchProvider,
+	type WebSearchProviderMode,
+	type WebSearchRuntimeConfig,
+	type WebSearchSafeSearch,
+	type WebSearchSearchDepth,
+	type WebSearchToolDetails,
+	type WebSearchToolInput,
+	type WebSearchToolOptions,
+	DEFAULT_WEB_SEARCH_MAX_RESULTS,
+	DEFAULT_WEB_SEARCH_TIMEOUT_SECONDS,
+	webSearchTool,
+} from "./web-search.js";
+export {
 	type ExternalCliToolDetails,
 	type ExternalCliToolInput,
 	type ExternalCliToolOptions,
@@ -80,6 +97,13 @@ export {
 	type GitReadToolOptions,
 	gitReadTool,
 } from "./git-read.js";
+export {
+	createGitWriteTool,
+	type GitWriteToolDetails,
+	type GitWriteToolInput,
+	type GitWriteToolOptions,
+	gitWriteTool,
+} from "./git-write.js";
 export {
 	createJqTool,
 	type JqToolInput,
@@ -176,11 +200,13 @@ import {
 	fetchTool,
 	getAllowedFetchMethodsForProfile,
 } from "./fetch.js";
+import { createWebSearchTool, type WebSearchToolOptions, webSearchTool } from "./web-search.js";
 import { createFdTool, fdTool } from "./fd.js";
 import { createFindTool, findTool } from "./find.js";
 import { createFsOpsTool, type FsOpsToolOptions, fsOpsTool } from "./fs-ops.js";
 import { createGrepTool, grepTool } from "./grep.js";
 import { createGitReadTool, gitReadTool } from "./git-read.js";
+import { createGitWriteTool, type GitWriteToolOptions, gitWriteTool } from "./git-write.js";
 import { createJqTool, jqTool } from "./jq.js";
 import { createLsTool, lsTool } from "./ls.js";
 import { createReadTool, type ReadToolOptions, readTool } from "./read.js";
@@ -220,6 +246,7 @@ export const readOnlyTools: Tool[] = [
 	createFetchTool(process.cwd(), {
 		resolveAllowedMethods: () => getAllowedFetchMethodsForProfile("plan"),
 	}),
+	webSearchTool,
 	gitReadTool,
 ];
 
@@ -242,7 +269,9 @@ export const allTools = {
 	sed: sedTool,
 	semantic_search: semanticSearchTool,
 	fetch: fetchTool,
+	web_search: webSearchTool,
 	git_read: gitReadTool,
+	git_write: gitWriteTool,
 	fs_ops: fsOpsTool,
 	todo_write: todoWriteTool,
 	todo_read: todoReadTool,
@@ -263,6 +292,10 @@ export interface ToolsOptions {
 	semantic?: SemanticSearchToolOptions;
 	/** Options for the fetch tool */
 	fetch?: FetchToolOptions;
+	/** Options for the web_search tool */
+	webSearch?: WebSearchToolOptions;
+	/** Options for the git_write tool */
+	gitWrite?: GitWriteToolOptions;
 	/** Options for the fs_ops tool */
 	fsOps?: FsOpsToolOptions;
 }
@@ -304,6 +337,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		createSedTool(cwd),
 		createSemanticSearchTool(cwd, options?.semantic),
 		createFetchTool(cwd, fetchOptions),
+		createWebSearchTool(cwd, options?.webSearch),
 		createGitReadTool(cwd),
 	];
 }
@@ -330,7 +364,9 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		sed: createSedTool(cwd),
 		semantic_search: createSemanticSearchTool(cwd, options?.semantic),
 		fetch: createFetchTool(cwd, options?.fetch),
+		web_search: createWebSearchTool(cwd, options?.webSearch),
 		git_read: createGitReadTool(cwd),
+		git_write: createGitWriteTool(cwd, options?.gitWrite),
 		fs_ops: createFsOpsTool(cwd, options?.fsOps),
 		todo_write: todoWriteTool,
 		todo_read: todoReadTool,

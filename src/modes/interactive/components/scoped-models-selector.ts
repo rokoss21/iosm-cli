@@ -12,6 +12,7 @@ import {
 } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
+import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 // EnabledIds: null = all enabled (no filter), string[] = explicit ordered list
 type EnabledIds = string[] | null;
@@ -133,7 +134,7 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.fg("accent", theme.bold("Model Configuration")), 0, 0));
-		this.addChild(new Text(theme.fg("muted", "Session-only. Ctrl+S to save to settings."), 0, 0));
+		this.addChild(new Text(`${theme.fg("muted", "Session-only. ")}${rawKeyHint("ctrl+s", "save to settings")}`, 0, 0));
 		this.addChild(new Spacer(1));
 
 		// Search input
@@ -169,10 +170,20 @@ export class ScopedModelsSelectorComponent extends Container implements Focusabl
 		const enabledCount = this.enabledIds?.length ?? this.allIds.length;
 		const allEnabled = this.enabledIds === null;
 		const countText = allEnabled ? "all enabled" : `${enabledCount}/${this.allIds.length} enabled`;
-		const parts = ["Enter toggle", "^A all", "^X clear", "^P provider", "Alt+↑↓ reorder", "^S save", countText];
-		return this.isDirty
-			? theme.fg("dim", `  ${parts.join(" · ")} `) + theme.fg("warning", "(unsaved)")
-			: theme.fg("dim", `  ${parts.join(" · ")}`);
+		const sep = theme.fg("muted", " · ");
+		const parts = [
+			rawKeyHint("↑/↓", "navigate"),
+			keyHint("selectConfirm", "toggle"),
+			rawKeyHint("ctrl+a", "all"),
+			rawKeyHint("ctrl+x", "clear"),
+			rawKeyHint("ctrl+p", "provider"),
+			rawKeyHint("alt+↑/↓", "reorder"),
+			rawKeyHint("ctrl+s", "save"),
+			keyHint("selectCancel", "close"),
+			theme.fg("muted", countText),
+		];
+		const base = `  ${parts.join(sep)}`;
+		return this.isDirty ? `${base}${sep}${theme.fg("warning", "unsaved changes")}` : base;
 	}
 
 	private refresh(): void {

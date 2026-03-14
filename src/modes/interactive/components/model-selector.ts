@@ -13,7 +13,7 @@ import type { ModelRegistry } from "../../../core/model-registry.js";
 import type { SettingsManager } from "../../../core/settings-manager.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
-import { keyHint } from "./keybinding-hints.js";
+import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 interface ModelItem {
 	provider: string;
@@ -127,7 +127,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			}
 		};
 		this.addChild(this.searchInput);
-
+		this.addChild(new Spacer(1));
+		const sep = theme.fg("muted", " · ");
+		const controlsHint =
+			rawKeyHint("↑/↓", "navigate") +
+			sep +
+			keyHint("selectConfirm", "select") +
+			sep +
+			keyHint("selectCancel", "close") +
+			sep +
+			rawKeyHint("type", "search");
+		this.addChild(new Text(controlsHint, 0, 0));
 		this.addChild(new Spacer(1));
 
 		// Create list container
@@ -226,7 +236,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private getScopeHintText(): string {
-		return keyHint("tab", "scope") + theme.fg("muted", " (all/scoped)");
+		return keyHint("tab", "switch scope") + theme.fg("muted", " (all/scoped)");
 	}
 
 	private setScope(scope: ModelScope): void {

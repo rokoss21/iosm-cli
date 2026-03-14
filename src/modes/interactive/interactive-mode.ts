@@ -1167,6 +1167,8 @@ export class InteractiveMode {
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
+	private extensionInputRestoreComponent: Component | undefined = undefined;
+	private extensionInputRestoreFocus: Component | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 
@@ -1204,6 +1206,10 @@ export class InteractiveMode {
 
 	// Custom header from extension (undefined = use built-in header)
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
+
+	// Active selector shown in editor container (used to restore UI after temporary dialogs)
+	private activeSelectorComponent: Component | undefined = undefined;
+	private activeSelectorFocus: Component | undefined = undefined;
 
 	// Convenience accessors
 	private get agent() {
@@ -3405,6 +3411,14 @@ export class InteractiveMode {
 			};
 			opts?.signal?.addEventListener("abort", onAbort, { once: true });
 
+			const canRestoreSelector =
+				this.activeSelectorComponent !== undefined &&
+				this.editorContainer.children.includes(this.activeSelectorComponent);
+			this.extensionInputRestoreComponent = canRestoreSelector ? this.activeSelectorComponent : this.editor;
+			this.extensionInputRestoreFocus = canRestoreSelector
+				? (this.activeSelectorFocus ?? this.activeSelectorComponent)
+				: this.editor;
+
 			this.extensionInput = new ExtensionInputComponent(
 				title,
 				placeholder,
@@ -3434,9 +3448,13 @@ export class InteractiveMode {
 	private hideExtensionInput(): void {
 		this.extensionInput?.dispose();
 		this.editorContainer.clear();
-		this.editorContainer.addChild(this.editor);
+		const restoreComponent = this.extensionInputRestoreComponent ?? this.editor;
+		const restoreFocus = this.extensionInputRestoreFocus ?? restoreComponent;
+		this.editorContainer.addChild(restoreComponent);
 		this.extensionInput = undefined;
-		this.ui.setFocus(this.editor);
+		this.extensionInputRestoreComponent = undefined;
+		this.extensionInputRestoreFocus = undefined;
+		this.ui.setFocus(restoreFocus);
 		this.ui.requestRender();
 	}
 
@@ -5922,8 +5940,12 @@ export class InteractiveMode {
 			this.editorContainer.clear();
 			this.editorContainer.addChild(this.editor);
 			this.ui.setFocus(this.editor);
+			this.activeSelectorComponent = undefined;
+			this.activeSelectorFocus = undefined;
 		};
 		const { component, focus } = create(done);
+		this.activeSelectorComponent = component;
+		this.activeSelectorFocus = focus;
 		this.editorContainer.clear();
 		this.editorContainer.addChild(component);
 		this.ui.setFocus(focus);
@@ -6479,6 +6501,16 @@ export class InteractiveMode {
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
+					webSearchEnabled: this.settingsManager.getWebSearchEnabled(),
+					webSearchProviderMode: this.settingsManager.getWebSearchProviderMode(),
+					webSearchFallbackMode: this.settingsManager.getWebSearchFallbackMode(),
+					webSearchSafeSearch: this.settingsManager.getWebSearchSafeSearch(),
+					webSearchMaxResults: this.settingsManager.getWebSearchMaxResults(),
+					webSearchTimeoutSeconds: this.settingsManager.getWebSearchTimeoutSeconds(),
+					webSearchTavilyApiKeyConfigured: this.settingsManager.isWebSearchTavilyApiKeyConfigured(),
+					webSearchSearxngUrlConfigured: this.settingsManager.isWebSearchSearxngUrlConfigured(),
+					githubToolsNetworkEnabled: this.settingsManager.getGithubToolsNetworkEnabled(),
+					githubToolsTokenConfigured: this.settingsManager.isGithubToolsTokenConfigured(),
 				},
 				{
 					onAutoCompactChange: (enabled) => {
@@ -6515,6 +6547,117 @@ export class InteractiveMode {
 					onTransportChange: (transport) => {
 						this.settingsManager.setTransport(transport);
 						this.session.agent.setTransport(transport);
+					},
+					onWebSearchEnabledChange: (enabled) => {
+						this.settingsManager.setWebSearchEnabled(enabled);
+					},
+					onWebSearchProviderModeChange: (mode) => {
+						this.settingsManager.setWebSearchProviderMode(mode);
+					},
+					onWebSearchFallbackModeChange: (mode) => {
+						this.settingsManager.setWebSearchFallbackMode(mode);
+					},
+					onWebSearchSafeSearchChange: (mode) => {
+						this.settingsManager.setWebSearchSafeSearch(mode);
+					},
+					onWebSearchMaxResultsChange: (maxResults) => {
+						this.settingsManager.setWebSearchMaxResults(maxResults);
+					},
+					onWebSearchTimeoutSecondsChange: (timeoutSeconds) => {
+						this.settingsManager.setWebSearchTimeoutSeconds(timeoutSeconds);
+					},
+					onWebSearchTavilyApiKeyAction: async (action) => {
+						if (action === "clear") {
+							this.settingsManager.setWebSearchTavilyApiKey(undefined);
+							await this.settingsManager.flush();
+							this.showStatus("Web Search Tool: Tavily API key cleared.");
+							return "not configured";
+						}
+
+						const current = this.settingsManager.getWebSearchTavilyApiKey();
+						const entered = await this.showExtensionInput(
+							"Web Search Tool: Tavily API key",
+							current ?? "tvly-...",
+						);
+						if (entered === undefined) {
+							return this.settingsManager.isWebSearchTavilyApiKeyConfigured() ? "configured" : "not configured";
+						}
+						const normalized = entered.trim();
+						if (!normalized) {
+							this.showWarning("Tavily API key cannot be empty.");
+							return this.settingsManager.isWebSearchTavilyApiKeyConfigured() ? "configured" : "not configured";
+						}
+
+						this.settingsManager.setWebSearchTavilyApiKey(normalized);
+						await this.settingsManager.flush();
+						this.showStatus("Web Search Tool: Tavily API key saved.");
+						return "configured";
+					},
+					onWebSearchSearxngUrlAction: async (action) => {
+						if (action === "clear") {
+							this.settingsManager.setWebSearchSearxngUrl(undefined);
+							await this.settingsManager.flush();
+							this.showStatus("Web Search Tool: SearXNG base URL cleared.");
+							return "not configured";
+						}
+
+						const current = this.settingsManager.getWebSearchSearxngUrl();
+						const entered = await this.showExtensionInput(
+							"Web Search Tool: SearXNG base URL",
+							current ?? "https://searx.example",
+						);
+						if (entered === undefined) {
+							return this.settingsManager.isWebSearchSearxngUrlConfigured() ? "configured" : "not configured";
+						}
+						const normalized = entered.trim();
+						if (!normalized) {
+							this.showWarning("SearXNG base URL cannot be empty.");
+							return this.settingsManager.isWebSearchSearxngUrlConfigured() ? "configured" : "not configured";
+						}
+						try {
+							const parsed = new URL(normalized);
+							if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+								throw new Error("SearXNG URL must use http or https.");
+							}
+						} catch (error) {
+							this.showWarning(error instanceof Error ? error.message : "Invalid SearXNG URL.");
+							return this.settingsManager.isWebSearchSearxngUrlConfigured() ? "configured" : "not configured";
+						}
+
+						this.settingsManager.setWebSearchSearxngUrl(normalized);
+						await this.settingsManager.flush();
+						this.showStatus("Web Search Tool: SearXNG base URL saved.");
+						return "configured";
+					},
+					onGithubToolsNetworkEnabledChange: (enabled) => {
+						this.settingsManager.setGithubToolsNetworkEnabled(enabled);
+					},
+					onGithubToolsTokenAction: async (action) => {
+						if (action === "clear") {
+							this.settingsManager.setGithubToolsToken(undefined);
+							await this.settingsManager.flush();
+							this.showStatus("Github tools: token cleared.");
+							return "not configured";
+						}
+
+						const current = this.settingsManager.getGithubToolsToken();
+						const entered = await this.showExtensionInput(
+							"Github tools: token",
+							current ?? "ghp_...",
+						);
+						if (entered === undefined) {
+							return this.settingsManager.isGithubToolsTokenConfigured() ? "configured" : "not configured";
+						}
+						const normalized = entered.trim();
+						if (!normalized) {
+							this.showWarning("GitHub token cannot be empty.");
+							return this.settingsManager.isGithubToolsTokenConfigured() ? "configured" : "not configured";
+						}
+
+						this.settingsManager.setGithubToolsToken(normalized);
+						await this.settingsManager.flush();
+						this.showStatus("Github tools: token saved.");
+						return "configured";
 					},
 					onThinkingLevelChange: (level) => {
 						this.session.setThinkingLevel(level);

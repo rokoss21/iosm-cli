@@ -234,8 +234,8 @@ ${chalk.bold("Options:")}
   --models <patterns>            Comma-separated model patterns for Ctrl+P cycling
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
 	--no-tools                     Disable all built-in tools
-	--tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
-	                                 Available: read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, git_read, fs_ops
+		--tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
+		                                 Available: read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read, git_write, fs_ops
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -349,6 +349,8 @@ ${chalk.bold("Environment Variables:")}
   ${ENV_SESSION_TRACE_DIR.padEnd(32)} - Session trace directory override
   ${ENV_SHARE_VIEWER_URL.padEnd(32)} - Base URL for /share command (default: https://iosm.dev/session/)
   ${ENV_AI_ANTIGRAVITY_VERSION.padEnd(32)} - Override Antigravity User-Agent version (e.g., 1.23.0)
+  TAVILY_API_KEY                    - API key for Tavily web search provider
+  IOSM_WEB_SEARCH_SEARXNG_URL       - SearXNG base URL for web_search fallback (legacy: PI_WEB_SEARCH_SEARXNG_URL)
 ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   read   - Read file contents
   bash   - Execute bash commands
@@ -367,7 +369,9 @@ ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   sed    - Stream editing/extraction tool (no in-place edits)
   semantic_search - Embedding-based semantic search (status/index/rebuild/query)
   fetch  - HTTP request tool with bounded body capture and redirect control
-  git_read - Structured read-only git introspection (status/diff/log/blame)
+  web_search - Web discovery tool (Tavily primary with SearXNG/DuckDuckGo fallback)
+  git_read - Structured read-only git introspection (status/diff/log/blame/show/branch_list/remote_list/rev_parse)
+  git_write - Structured git mutation tool (add/restore/reset_index/commit/switch/branch_create/fetch/pull/push/stash_*)
   fs_ops - Structured filesystem mutations (mkdir/move/copy/delete with safety flags)
 `);
 }

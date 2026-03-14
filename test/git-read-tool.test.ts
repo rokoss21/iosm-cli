@@ -9,11 +9,12 @@ function makeTempDir(prefix: string): string {
 	return join(tmpdir(), `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 }
 
-function runGit(cwd: string, args: string[]): void {
+function runGit(cwd: string, args: string[]): string {
 	const result = spawnSync("git", args, { cwd, stdio: "pipe" });
 	if (result.status !== 0) {
 		throw new Error(result.stderr.toString("utf-8") || `git ${args.join(" ")} failed`);
 	}
+	return result.stdout.toString("utf-8").trim();
 }
 
 function getText(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -72,6 +73,42 @@ describe("git_read tool", () => {
 		expect(output).toContain("initial commit");
 	});
 
+	it("returns show output using default HEAD ref", async () => {
+		const tool = createGitReadTool(repoDir);
+		const result = await tool.execute("git-read-show-1", { action: "show", file: "app.txt" });
+		const output = getText(result);
+
+		expect(output).toContain("initial commit");
+		expect(output).toContain("line 2");
+	});
+
+	it("returns branch_list output", async () => {
+		const tool = createGitReadTool(repoDir);
+		const result = await tool.execute("git-read-branch-list-1", { action: "branch_list" });
+		const output = getText(result);
+
+		expect(output).toContain("*");
+	});
+
+	it("returns remote_list output in verbose mode by default", async () => {
+		runGit(repoDir, ["remote", "add", "origin", "https://example.com/test/repo.git"]);
+		const tool = createGitReadTool(repoDir);
+		const result = await tool.execute("git-read-remote-list-1", { action: "remote_list" });
+		const output = getText(result);
+
+		expect(output).toContain("origin");
+		expect(output).toContain("https://example.com/test/repo.git");
+	});
+
+	it("returns rev_parse output and supports short hashes", async () => {
+		const expected = runGit(repoDir, ["rev-parse", "--short", "HEAD"]);
+		const tool = createGitReadTool(repoDir);
+		const result = await tool.execute("git-read-rev-parse-1", { action: "rev_parse", short: true });
+		const output = getText(result);
+
+		expect(output.trim()).toBe(expected);
+	});
+
 	it("returns blame output for specific file", async () => {
 		const tool = createGitReadTool(repoDir);
 		const result = await tool.execute("git-read-4", { action: "blame", file: "app.txt", line_start: 1, line_end: 2 });
@@ -89,6 +126,16 @@ describe("git_read tool", () => {
 				head: "HEAD",
 			}),
 		).rejects.toThrow(/requires base when head is provided/i);
+	});
+
+	it("validates ref-like parameters", async () => {
+		const tool = createGitReadTool(repoDir);
+		await expect(
+			tool.execute("git-read-invalid-ref-1", {
+				action: "show",
+				ref: "-bad-ref",
+			}),
+		).rejects.toThrow(/must not start with '-'/i);
 	});
 
 	it("fails outside a git repository", async () => {

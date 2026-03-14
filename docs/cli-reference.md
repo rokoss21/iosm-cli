@@ -257,7 +257,7 @@ iosm --api-key sk-test-123           # Override for this run
 
 ### Available Tools
 
-`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `git_read`, `fs_ops`
+`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `web_search`, `git_read`, `git_write`, `fs_ops`, `todo_read`, `todo_write`
 
 Tool notes:
 - `rg`, `fd` are managed by iosm-cli and auto-resolved when missing.
@@ -265,8 +265,23 @@ Tool notes:
 - `sed` tool is preview/extraction-oriented; in-place edits are intentionally blocked.
 - `semantic_search` uses configured embeddings provider/index (`/semantic setup`).
 - `fetch` is profile-aware: read-only profiles allow only `GET/HEAD/OPTIONS`; write-capable profiles allow full HTTP method set.
-- `git_read` provides structured read-only git actions (`status`, `diff`, `log`, `blame`) without raw shell passthrough.
+- `fetch` can be used for remote GitHub inspection without cloning via GitHub API/RAW endpoints (for example `api.github.com`, `raw.githubusercontent.com`).
+- `web_search` is discovery-oriented (Tavily primary, fallback chain configurable via settings/environment). Use `fetch` to read specific URLs.
+- `git_read` provides structured read-only git actions (`status`, `diff`, `log`, `blame`, `show`, `branch_list`, `remote_list`, `rev_parse`) without raw shell passthrough.
+- `git_write` provides structured git write actions (`add`, `restore`, `reset_index`, `commit`, `switch`, `branch_create`, `fetch`, `pull`, `push`, `stash_*`) with action-specific validation and no raw passthrough. Network actions require enabling GitHub tools network access in settings.
 - `fs_ops` performs structured filesystem mutations (`mkdir`, `move`, `copy`, `delete`) with explicit `recursive`/`force` safety flags.
+- `todo_read` / `todo_write` provide persistent task-state tracking for multi-step work in the current workspace.
+
+Best-practice patterns:
+- Git analysis: `git_read status` -> targeted `git_read diff/log/blame/show` on the exact files/refs you need.
+- Git mutation: perform minimal-scope `git_write` actions first (explicit files/branch/message), then re-check with `git_read status/diff`.
+- Web research: use `web_search` for discovery (prefer `include_domains`, `exclude_domains`, `days`, `topic` for tighter scope), then validate claims with `fetch` on primary URLs.
+- For API endpoints via `fetch`, prefer `response_format=json`; for HTML/text pages use `response_format=text` (or `auto`) and tune `max_bytes`/`timeout` to keep output usable.
+- File exploration: use bounded reads/searches (`path`, `glob`, `context`, `limit`); for large files, page with `read` using `offset`/`limit` instead of dumping whole files.
+- File mutation: prefer `edit` for surgical changes and `write` for full rewrites; use `fs_ops` for `mkdir/move/copy/delete`, with `force=true` only when replacement/no-op behavior is intentional.
+- Structured data transforms: use `jq`/`yq` to compute/preview transforms, then persist the final state through `edit`/`write`.
+- Semantic retrieval: use `semantic_search status` first when relevance looks stale, then run `query`; run `index`/`rebuild` when config or index freshness requires it.
+- Multi-step execution: keep task progress synchronized with `todo_write` and recover state with `todo_read` before resuming long threads.
 
 **Examples:**
 

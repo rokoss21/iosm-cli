@@ -261,8 +261,8 @@ describe("parseArgs", () => {
 
 	describe("--tools values", () => {
 		test("parses newly added built-in tools", () => {
-			const result = parseArgs(["--tools", "read,fetch,git_read,fs_ops"]);
-			expect(result.tools).toEqual(["read", "fetch", "git_read", "fs_ops"]);
+			const result = parseArgs(["--tools", "read,fetch,web_search,git_read,git_write,fs_ops"]);
+			expect(result.tools).toEqual(["read", "fetch", "web_search", "git_read", "git_write", "fs_ops"]);
 		});
 	});
 
@@ -273,7 +273,9 @@ describe("parseArgs", () => {
 				printHelp();
 				const rendered = consoleSpy.mock.calls.map((call) => String(call[0] ?? "")).join("\n");
 				expect(rendered).toContain("fetch");
+				expect(rendered).toContain("web_search");
 				expect(rendered).toContain("git_read");
+				expect(rendered).toContain("git_write");
 				expect(rendered).toContain("fs_ops");
 			} finally {
 				consoleSpy.mockRestore();

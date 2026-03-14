@@ -42,10 +42,19 @@ const READ_EXPLORATION_TOOLS = [
 	"sed",
 	"semantic_search",
 	"fetch",
+	"web_search",
 	"git_read",
 ] as const;
 
-const WRITE_ENGINEERING_TOOLS = ["read", "bash", "edit", "write", "fs_ops", ...READ_EXPLORATION_TOOLS.slice(1)] as const;
+const WRITE_ENGINEERING_TOOLS = [
+	"read",
+	"bash",
+	"edit",
+	"write",
+	"git_write",
+	"fs_ops",
+	...READ_EXPLORATION_TOOLS.slice(1),
+] as const;
 const READ_ONLY_PROFILE_SET = new Set<AgentProfileName>(["explore", "plan", "iosm_analyst"]);
 
 export const AGENT_PROFILES: Record<AgentProfileName, AgentProfile> = {

@@ -233,7 +233,7 @@ const { session } = await createAgentSession({
 import { readOnlyTools } from "iosm-cli";
 
 const { session } = await createAgentSession({
-  tools: readOnlyTools,  // Read-only bundle (code search + semantic + HTTP/git introspection)
+  tools: readOnlyTools,  // Read-only bundle (code search + semantic + web discovery + HTTP/git introspection)
   authStorage,
   modelRegistry,
 });

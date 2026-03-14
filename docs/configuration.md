@@ -78,11 +78,18 @@ Settings are merged in this order (later wins):
     "shell": "/bin/zsh",
     "cols": 120
   },
+  "githubTools": {
+    "networkEnabled": false,
+    "token": "optional-gh-token"
+  },
   "permissions": {
     "autoApprove": false
   }
 }
 ```
+
+`githubTools.networkEnabled` controls whether `git_write` network actions (`fetch`, `pull`, `push`) are allowed.  
+`githubTools.token` is optional and, when set, is injected for GitHub HTTPS authentication during network git actions.
 
 ## MCP Configuration
 
@@ -218,6 +225,8 @@ The table below lists common environment variables, but is not exhaustive.
 | `IOSM_SHARE_VIEWER_URL` | Default | Custom base URL for `/share` links |
 | `IOSM_AI_ANTIGRAVITY_VERSION` | Auto | Override Antigravity user-agent version |
 | `IOSM_SKIP_VERSION_CHECK` | `false` | Disable update/version checks |
+| `TAVILY_API_KEY` | unset | Enables Tavily primary provider for `web_search` |
+| `IOSM_WEB_SEARCH_SEARXNG_URL` | unset | Optional SearXNG fallback base URL for `web_search` (legacy alias: `PI_WEB_SEARCH_SEARXNG_URL`) |
 
 ### Example: Shell Configuration
 
@@ -245,8 +254,8 @@ Profiles control the agent's behavior, available tools, and system prompt.
 
 | Profile | Tools | Behavior |
 |---------|-------|----------|
-| `full` | All built-ins (read, bash, edit, write, fs_ops, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, git_read) | Default full development capabilities |
-| `plan` | Read-only bundle (read, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, git_read) | Architecture planning and code review |
+| `full` | All built-ins (read, bash, edit, write, git_write, fs_ops, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read) | Default full development capabilities |
+| `plan` | Read-only bundle (read, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read) | Architecture planning and code review |
 | `iosm` | All + IOSM context | IOSM cycle execution with artifact synchronization |
 | `meta` | Full tools + orchestration-first contract | Adaptive multi-agent/delegate execution with verification closure |
 

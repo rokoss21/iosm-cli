@@ -160,14 +160,20 @@ class ConfigSelectorHeader implements Component {
 	render(width: number): string[] {
 		const title = theme.bold("Resource Configuration");
 		const sep = theme.fg("muted", " · ");
-		const hint = rawKeyHint("space", "toggle") + sep + rawKeyHint("esc", "close");
+		const hint =
+			rawKeyHint("↑/↓", "navigate") +
+			sep +
+			rawKeyHint("space/enter", "toggle") +
+			sep +
+			rawKeyHint("esc", "close");
 		const hintWidth = visibleWidth(hint);
 		const titleWidth = visibleWidth(title);
 		const spacing = Math.max(1, width - titleWidth - hintWidth);
+		const searchHint = `${rawKeyHint("type", "search resources")}${sep}${rawKeyHint("ctrl+c", "exit")}`;
 
 		return [
 			truncateToWidth(`${title}${" ".repeat(spacing)}${hint}`, width, ""),
-			theme.fg("muted", "Type to filter resources"),
+			truncateToWidth(searchHint, width, ""),
 		];
 	}
 }

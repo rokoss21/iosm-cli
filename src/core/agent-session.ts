@@ -2942,6 +2942,32 @@ export class AgentSession {
 							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
 						},
 					},
+					webSearch: {
+						resolveRuntimeConfig: () => ({
+							enabled: this.settingsManager.getWebSearchEnabled(),
+							providerMode: this.settingsManager.getWebSearchProviderMode(),
+							fallbackMode: this.settingsManager.getWebSearchFallbackMode(),
+							safeSearch: this.settingsManager.getWebSearchSafeSearch(),
+							maxResults: this.settingsManager.getWebSearchMaxResults(),
+							timeoutSeconds: this.settingsManager.getWebSearchTimeoutSeconds(),
+						}),
+						resolveTavilyApiKey: () => this.settingsManager.getWebSearchTavilyApiKey(),
+						resolveSearxngBaseUrl: () => this.settingsManager.getWebSearchSearxngUrl(),
+						permissionGuard: async (request) => {
+							evaluatePreToolHooks(request);
+							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
+						},
+					},
+					gitWrite: {
+						resolveRuntimeConfig: () => ({
+							networkEnabled: this.settingsManager.getGithubToolsNetworkEnabled(),
+						}),
+						resolveGithubToken: () => this.settingsManager.getGithubToolsToken(),
+						permissionGuard: async (request) => {
+							evaluatePreToolHooks(request);
+							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
+						},
+					},
 					fsOps: {
 						permissionGuard: async (request) => {
 							evaluatePreToolHooks(request);

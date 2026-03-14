@@ -1,6 +1,7 @@
 import { type Component, Container, getEditorKeybindings, Spacer, Text, truncateToWidth } from "@mariozechner/pi-tui";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
+import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 interface UserMessageItem {
 	id: string; // Entry ID in the session
@@ -116,6 +117,14 @@ export class UserMessageSelectorComponent extends Container {
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.bold("Branch from Message"), 1, 0));
 		this.addChild(new Text(theme.fg("muted", "Select a message to create a new branch from that point"), 1, 0));
+		const sep = theme.fg("muted", " · ");
+		const controlsHint =
+			rawKeyHint("↑/↓", "navigate") +
+			sep +
+			keyHint("selectConfirm", "branch") +
+			sep +
+			keyHint("selectCancel", "close");
+		this.addChild(new Text(controlsHint, 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));

@@ -49,12 +49,16 @@ export class McpSelectorComponent extends Container implements Focusable {
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(theme.bold(theme.fg("accent", "MCP Servers")), 0, 0));
+		const sep = theme.fg("muted", " · ");
 		this.addChild(
 			new Text(
-				theme.fg(
-					"muted",
-					`${rawKeyHint("↑/↓", "select")} · ${rawKeyHint("space", "enable/disable")} · ${rawKeyHint("r", "reconnect")} · ${rawKeyHint("d", "remove")} · ${rawKeyHint("a", "add cmd")} · ${rawKeyHint("esc", "close")}`,
-				),
+				`${rawKeyHint("↑/↓", "navigate")}${sep}${rawKeyHint("enter/space", "toggle")}${sep}${rawKeyHint("type", "search")}${sep}${rawKeyHint("esc", "close")}`,
+				0,
+			),
+		);
+		this.addChild(
+			new Text(
+				`${rawKeyHint("r", "reconnect")}${sep}${rawKeyHint("d", "remove")}${sep}${rawKeyHint("a", "add command")}`,
 				0,
 			),
 		);

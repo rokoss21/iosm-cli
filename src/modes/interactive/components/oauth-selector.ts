@@ -3,6 +3,7 @@ import { Container, fuzzyFilter, getEditorKeybindings, Input, Spacer, Text, Trun
 import type { AuthStorage } from "../../../core/auth-storage.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
+import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 export type LoginProviderKind = "oauth" | "api_key";
 
@@ -64,6 +65,17 @@ export class OAuthSelectorComponent extends Container {
 
 		this.searchInput = new Input();
 		this.addChild(this.searchInput);
+		this.addChild(new Spacer(1));
+		const sep = theme.fg("muted", " · ");
+		const controlsHint =
+			rawKeyHint("↑/↓", "navigate") +
+			sep +
+			keyHint("selectConfirm", "select") +
+			sep +
+			keyHint("selectCancel", "close") +
+			sep +
+			rawKeyHint("type", "search");
+		this.addChild(new TruncatedText(controlsHint));
 		this.addChild(new Spacer(1));
 
 		// Create list container

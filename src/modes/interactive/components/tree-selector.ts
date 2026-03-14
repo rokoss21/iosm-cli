@@ -13,7 +13,7 @@ import {
 import type { SessionTreeNode } from "../../../core/session-manager.js";
 import { theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
-import { keyHint } from "./keybinding-hints.js";
+import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 /** Gutter info: position (displayIndent where connector was) and whether to show │ */
 interface GutterInfo {
@@ -1023,10 +1023,31 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
+		const sep = theme.fg("muted", " · ");
 		this.addChild(
 			new TruncatedText(
-				theme.fg("muted", "  ↑/↓: move. ←/→: page. Shift+L: label. ") +
-					theme.fg("muted", "^D/^T/^U/^L/^A: filters (^O/⇧^O cycle)"),
+				theme.fg("muted", "  ") +
+					rawKeyHint("↑/↓", "navigate") +
+					sep +
+					rawKeyHint("←/→", "page") +
+					sep +
+					keyHint("selectConfirm", "open") +
+					sep +
+					keyHint("selectCancel", "close") +
+					sep +
+					rawKeyHint("shift+l", "label"),
+				0,
+				0,
+			),
+		);
+		this.addChild(
+			new TruncatedText(
+				theme.fg("muted", "  ") +
+					rawKeyHint("ctrl+d/t/u/l/a", "set filter") +
+					sep +
+					rawKeyHint("ctrl+o/shift+ctrl+o", "cycle filter") +
+					sep +
+					rawKeyHint("type", "search"),
 				0,
 				0,
 			),

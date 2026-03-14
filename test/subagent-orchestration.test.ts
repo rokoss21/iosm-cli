@@ -513,6 +513,7 @@ describe("subagent orchestration", () => {
 		expect(observedTools).toContain("write");
 		expect(observedTools).toContain("fetch");
 		expect(observedTools).toContain("git_read");
+		expect(observedTools).toContain("git_write");
 		expect(observedTools).toContain("fs_ops");
 	});
 

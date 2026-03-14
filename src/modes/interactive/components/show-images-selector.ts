@@ -1,6 +1,7 @@
-import { Container, type SelectItem, SelectList } from "@mariozechner/pi-tui";
-import { getSelectListTheme } from "../theme/theme.js";
+import { Container, Spacer, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import { getSelectListTheme, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
+import { keyHint, rawKeyHint } from "./keybinding-hints.js";
 
 /**
  * Component that renders a show images selector with borders
@@ -34,6 +35,11 @@ export class ShowImagesSelectorComponent extends Container {
 		};
 
 		this.addChild(this.selectList);
+		this.addChild(new Spacer(1));
+		const sep = theme.fg("muted", " · ");
+		const controlsHint =
+			rawKeyHint("↑/↓", "navigate") + sep + keyHint("selectConfirm", "apply") + sep + keyHint("selectCancel", "close");
+		this.addChild(new Text(controlsHint, 0, 0));
 
 		// Add bottom border
 		this.addChild(new DynamicBorder());

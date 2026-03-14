@@ -12,6 +12,7 @@ function createConfig(): SettingsConfig {
 		enableSkillCommands: true,
 		steeringMode: "all",
 		followUpMode: "one-at-a-time",
+		streamInputMode: "meta",
 		transport: "auto",
 		thinkingLevel: "medium",
 		availableThinkingLevels: ["off", "minimal", "low", "medium", "high"],
@@ -26,6 +27,16 @@ function createConfig(): SettingsConfig {
 		autocompleteMaxVisible: 10,
 		quietStartup: false,
 		clearOnShrink: false,
+		webSearchEnabled: true,
+		webSearchProviderMode: "auto",
+		webSearchFallbackMode: "searxng_ddg",
+		webSearchSafeSearch: "moderate",
+		webSearchMaxResults: 8,
+		webSearchTimeoutSeconds: 20,
+		webSearchTavilyApiKeyConfigured: false,
+		webSearchSearxngUrlConfigured: false,
+		githubToolsNetworkEnabled: false,
+		githubToolsTokenConfigured: false,
 	};
 }
 
@@ -39,6 +50,7 @@ function createCallbacks(): SettingsCallbacks {
 		onEnableSkillCommandsChange: noop,
 		onSteeringModeChange: noop,
 		onFollowUpModeChange: noop,
+		onStreamInputModeChange: noop,
 		onTransportChange: noop,
 		onThinkingLevelChange: noop,
 		onThemeChange: noop,
@@ -52,6 +64,16 @@ function createCallbacks(): SettingsCallbacks {
 		onAutocompleteMaxVisibleChange: noop,
 		onQuietStartupChange: noop,
 		onClearOnShrinkChange: noop,
+		onWebSearchEnabledChange: noop,
+		onWebSearchProviderModeChange: noop,
+		onWebSearchFallbackModeChange: noop,
+		onWebSearchSafeSearchChange: noop,
+		onWebSearchMaxResultsChange: noop,
+		onWebSearchTimeoutSecondsChange: noop,
+		onWebSearchTavilyApiKeyAction: async () => "not configured",
+		onWebSearchSearxngUrlAction: async () => "not configured",
+		onGithubToolsNetworkEnabledChange: noop,
+		onGithubToolsTokenAction: async () => "not configured",
 		onCancel: noop,
 	};
 }
@@ -66,8 +88,22 @@ describe("SettingsSelectorComponent UI", () => {
 		const output = stripAnsi(component.render(120).join("\n"));
 
 		expect(output).toContain("Settings");
+		expect(output).toMatch(/\d+ options/);
 		expect(output).toContain("search enabled");
 		expect(output).toContain("Enter to edit");
 		expect(output).toContain("Esc to close");
+
+		for (const char of "websearch") {
+			component.getSettingsList().handleInput(char);
+		}
+		const filtered = stripAnsi(component.render(120).join("\n"));
+		expect(filtered).toContain("Web Search Tool");
+
+		const githubComponent = new SettingsSelectorComponent(createConfig(), createCallbacks());
+		for (const char of "github") {
+			githubComponent.getSettingsList().handleInput(char);
+		}
+		const githubFiltered = stripAnsi(githubComponent.render(120).join("\n"));
+		expect(githubFiltered).toContain("Github tools");
 	});
 });

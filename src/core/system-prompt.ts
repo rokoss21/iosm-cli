@@ -26,9 +26,15 @@ const toolDescriptions: Record<string, string> = {
 	sed: "Run sed for stream editing/extraction previews (no in-place edits)",
 	semantic_search:
 		"Semantic embeddings search over the project index (actions: status, index, rebuild, query)",
-	fetch: "Make HTTP requests with bounded response capture and manual redirect handling",
-	git_read: "Structured read-only git introspection (status, diff, log, blame)",
+	fetch: "Make HTTP requests with bounded response capture and manual redirect handling (including GitHub REST/Raw endpoints)",
+	web_search: "Discover relevant pages on the internet (Tavily with SearXNG/DuckDuckGo fallback)",
+	git_read: "Structured read-only git introspection (status, diff, log, blame, show, branch_list, remote_list, rev_parse)",
+	git_write:
+		"Structured git mutation tool for local repository operations (add, restore, reset_index, commit, switch, branch_create, stash_*) plus optional network actions (fetch, pull, push) when enabled",
 	fs_ops: "Structured filesystem mutations (mkdir, move, copy, delete) with recursive/force guards",
+	todo_write:
+		"Create or update persistent task checklist state for the current workspace/session (pending, in_progress, completed)",
+	todo_read: "Read the current persistent task checklist state for the current workspace/session",
 	task: "Run a specialized subagent (supports profile, cwd, lock_key for optional write serialization, run_id/task_id, model override, background mode for detached runs, and agent=<custom name from .iosm/agents>)",
 };
 
@@ -156,8 +162,13 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const hasSed = tools.includes("sed");
 	const hasSemanticSearch = tools.includes("semantic_search");
 	const hasFetch = tools.includes("fetch");
+	const hasWebSearch = tools.includes("web_search");
 	const hasGitRead = tools.includes("git_read");
+	const hasGitWrite = tools.includes("git_write");
 	const hasFsOps = tools.includes("fs_ops");
+	const hasTodoWrite = tools.includes("todo_write");
+	const hasTodoRead = tools.includes("todo_read");
+	const hasTask = tools.includes("task");
 	const hasRead = tools.includes("read");
 
 	// File exploration guidelines
@@ -169,13 +180,67 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	if (hasBash && hasGitRead) {
 		addGuideline("Prefer git_read over bash for git status/diff/log/blame analysis in read-only workflows");
 	}
+	if (hasBash && hasGitWrite) {
+		addGuideline("Prefer git_write over bash for git mutation workflows (add/commit/switch/stash/fetch/pull/push) when available");
+	}
+	if (hasGitRead) {
+		addGuideline(
+			"For repository diagnostics, start with git_read status, then use targeted diff/log/blame/show on affected files or refs instead of broad repository-wide output",
+		);
+	}
+	if (hasGitWrite) {
+		addGuideline(
+			"For git_write mutations, prefer smallest scope first (targeted files, explicit branch/remote/message), and validate resulting state with git_read status/diff",
+		);
+		addGuideline(
+			"For git_write network actions (fetch/pull/push), verify runtime network policy/token availability and specify remote/branch explicitly when known",
+		);
+	}
 	if (hasBash && hasFetch) {
 		addGuideline("Prefer fetch over bash curl/wget for HTTP retrieval when structured request parameters are sufficient");
 	}
-
-	if (hasRg || hasFd || hasAstGrep || hasComby || hasJq || hasYq || hasSemgrep || hasSed || hasSemanticSearch || hasFetch || hasGitRead || hasFsOps) {
+	if (hasFetch) {
 		addGuideline(
-			"Route work to specialized tools first: rg/fd (search/discovery), semantic_search (concept-level retrieval), ast_grep/comby (structural code queries), jq/yq (data/config transforms), semgrep (risk scans), sed (stream extraction), fetch (HTTP retrieval), git_read (git analysis), fs_ops (filesystem mutations)",
+			"For remote repository analysis without a local clone, use fetch against GitHub API/Raw URLs (api.github.com, raw.githubusercontent.com) before falling back to shell-based cloning",
+		);
+		addGuideline(
+			"For fetch against APIs, prefer response_format=json (or auto when content-type is JSON); use text mode for HTML/text pages and narrow requests when output truncates",
+		);
+	}
+	if (hasBash && hasWebSearch) {
+		addGuideline("Prefer web_search over ad-hoc bash web scraping for internet discovery");
+	}
+	if (hasWebSearch) {
+		addGuideline(
+			"For web_search, constrain scope with include_domains/exclude_domains/days/topic when trust, recency, or domain focus matters",
+		);
+		addGuideline("Treat web_search results as candidate leads; verify critical claims by fetching primary sources");
+	}
+	if (hasWebSearch && hasFetch) {
+		addGuideline("Use web_search for discovery and fetch for reading specific pages");
+	}
+
+	if (
+		hasRg ||
+		hasFd ||
+		hasAstGrep ||
+		hasComby ||
+		hasJq ||
+		hasYq ||
+		hasSemgrep ||
+		hasSed ||
+		hasSemanticSearch ||
+		hasWebSearch ||
+		hasFetch ||
+		hasGitRead ||
+		hasGitWrite ||
+		hasFsOps ||
+		hasTask ||
+		hasTodoRead ||
+		hasTodoWrite
+	) {
+		addGuideline(
+			"Route work to specialized tools first: rg/fd (search/discovery), semantic_search (concept-level retrieval), ast_grep/comby (structural code queries), jq/yq (data/config transforms), semgrep (risk scans), sed (stream extraction), web_search (internet discovery), fetch (HTTP retrieval), git_read (git analysis), git_write (git mutations), fs_ops (filesystem mutations), task (delegated execution), todo_read/todo_write (task-state tracking)",
 		);
 	}
 
@@ -189,6 +254,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	if (hasJq || hasYq) {
 		addGuideline("Prefer jq/yq over ad-hoc shell parsing when extracting or transforming JSON/YAML/TOML");
+		addGuideline("Treat jq/yq output as a validated transform preview, then persist final changes via edit/write instead of in-place CLI mutation");
 	}
 
 	if (hasSemgrep) {
@@ -206,12 +272,22 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		addGuideline(
 			"semantic_search query can auto-refresh stale indexes when semantic auto-index is enabled (default); if disabled or if provider/chunk/filter changes require it, run semantic_search index/rebuild explicitly",
 		);
+		addGuideline("When semantic relevance looks off, run semantic_search status first to confirm index freshness/provider before broad query retries");
 	}
 
 	if (hasRg || hasAstGrep || hasComby) {
 		addGuideline(
 			"For rg/ast_grep/comby, pass explicit target paths to avoid cwd ambiguity; if syntax errors occur (especially ast_grep), retry once with version-compatible command forms before concluding no matches",
 		);
+	}
+	if (hasRg) {
+		addGuideline("For rg, include explicit path roots (for example '.') and line-number flags when results need precise follow-up edits");
+	}
+	if (hasFd) {
+		addGuideline("For fd, narrow scope with explicit roots/globs before widening search to avoid noisy full-repository listings");
+	}
+	if (hasGrep || hasFind || hasLs) {
+		addGuideline("For grep/find/ls, set path/glob/context/limit deliberately so exploration stays bounded and outputs remain actionable");
 	}
 
 	if (
@@ -227,6 +303,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	if (hasRead && hasEdit) {
 		addGuideline("Use read to examine files before editing. You must use this tool instead of cat or sed.");
 	}
+	if (hasRead) {
+		addGuideline("For large files, page with read offset/limit and continue from the suggested next offset instead of rereading from the top");
+	}
 
 	// Edit guideline
 	if (hasEdit) {
@@ -239,6 +318,23 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	}
 	if (hasFsOps) {
 		addGuideline("Use fs_ops for mkdir/move/copy/delete workflows instead of broad bash file mutation commands");
+		addGuideline(
+			"For fs_ops safety, use force=true only when replacement/no-op semantics are intended, and require recursive=true before deleting directories",
+		);
+	}
+	if (hasTask) {
+		addGuideline(
+			"Use task for parallelizable or isolated workstreams: keep each task prompt scoped, include expected outputs, and pass profile/cwd/lock_key/run_id/task_id when those constraints are known",
+		);
+		addGuideline("Avoid task fan-out for trivial one-shot requests where direct execution is clearly faster and lower risk");
+	}
+	if (hasTodoWrite || hasTodoRead) {
+		addGuideline("Use todo_read at the start of multi-step turns to recover current task state before planning additional work");
+	}
+	if (hasTodoWrite) {
+		addGuideline(
+			"Maintain task state with todo_write during multi-step execution: keep a single in_progress item when possible and mark completed items promptly",
+		);
 	}
 
 	// Output guideline (only when actually writing or executing)

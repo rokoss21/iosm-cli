@@ -1,22 +1,33 @@
-import { spawn, spawnSync } from "node:child_process";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
 import { resolveToCwd } from "./path-utils.js";
 import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-	formatSize,
-	type TruncationResult,
-	truncateHead,
-} from "./truncate.js";
+	DEFAULT_GIT_TIMEOUT_SECONDS,
+	normalizePositiveInt,
+	normalizeRefLike,
+	requireRefLike,
+	resolveGitCommandOptions,
+	runGitAndFormatOutput,
+	type GitCommandOptions,
+} from "./git-common.js";
+import type { TruncationResult } from "./truncate.js";
 
 const gitReadSchema = Type.Object({
 	action: Type.Union(
-		[Type.Literal("status"), Type.Literal("diff"), Type.Literal("log"), Type.Literal("blame")],
-		{ description: "Git action: status | diff | log | blame." },
+		[
+			Type.Literal("status"),
+			Type.Literal("diff"),
+			Type.Literal("log"),
+			Type.Literal("blame"),
+			Type.Literal("show"),
+			Type.Literal("branch_list"),
+			Type.Literal("remote_list"),
+			Type.Literal("rev_parse"),
+		],
+		{ description: "Git action: status | diff | log | blame | show | branch_list | remote_list | rev_parse." },
 	),
 	path: Type.Optional(Type.String({ description: "Repository working directory (default: current directory)." })),
-	file: Type.Optional(Type.String({ description: "Optional file path for diff/log, required for blame." })),
+	file: Type.Optional(Type.String({ description: "Optional file path for diff/log/show, required for blame." })),
 	base: Type.Optional(Type.String({ description: "Optional base ref/commit for diff." })),
 	head: Type.Optional(Type.String({ description: "Optional head ref/commit for diff (requires base)." })),
 	staged: Type.Optional(Type.Boolean({ description: "For diff action: compare staged changes." })),
@@ -29,28 +40,29 @@ const gitReadSchema = Type.Object({
 	untracked: Type.Optional(Type.Boolean({ description: "For status action: include untracked files (default: true)." })),
 	limit: Type.Optional(Type.Number({ description: "For log action: max entries (default: 20, max: 200)." })),
 	since: Type.Optional(Type.String({ description: "For log action: git --since value (e.g. '2 weeks ago')." })),
-	ref: Type.Optional(Type.String({ description: "For blame action: optional ref/commit." })),
+	ref: Type.Optional(Type.String({ description: "For blame/show action: optional ref/commit (show defaults to HEAD)." })),
 	line_start: Type.Optional(Type.Number({ description: "For blame action: range start line (1-indexed)." })),
 	line_end: Type.Optional(Type.Number({ description: "For blame action: range end line (1-indexed)." })),
+	all: Type.Optional(Type.Boolean({ description: "For branch_list action: include remote branches (default: true)." })),
+	verbose: Type.Optional(
+		Type.Boolean({
+			description: "For branch_list/remote_list action: include verbose output (branch_list default: false, remote_list default: true).",
+		}),
+	),
+	target: Type.Optional(Type.String({ description: "For rev_parse action: ref/commit to resolve (default: HEAD)." })),
+	short: Type.Optional(Type.Boolean({ description: "For rev_parse action: output short hash (default: false)." })),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default: 30)." })),
 });
 
 export type GitReadToolInput = Static<typeof gitReadSchema>;
 
-const DEFAULT_TIMEOUT_SECONDS = 30;
 const DEFAULT_LOG_LIMIT = 20;
 const MAX_LOG_LIMIT = 200;
-const MAX_CAPTURE_BYTES = 512 * 1024;
 
-interface RunCommandResult {
-	stdout: string;
-	stderr: string;
-	exitCode: number;
-	captureTruncated: boolean;
-}
+type GitReadAction = GitReadToolInput["action"];
 
 export interface GitReadToolDetails {
-	action: "status" | "diff" | "log" | "blame";
+	action: GitReadAction;
 	command: string;
 	args: string[];
 	cwd: string;
@@ -59,139 +71,7 @@ export interface GitReadToolDetails {
 	truncation?: TruncationResult;
 }
 
-export interface GitReadToolOptions {
-	commandExists?: (command: string) => boolean;
-	runCommand?: (
-		args: string[],
-		cwd: string,
-		timeoutMs: number,
-		signal?: AbortSignal,
-	) => Promise<RunCommandResult>;
-}
-
-function commandExists(command: string): boolean {
-	try {
-		const result = spawnSync(command, ["--version"], { stdio: "pipe" });
-		const err = result.error as NodeJS.ErrnoException | undefined;
-		return !err || err.code !== "ENOENT";
-	} catch {
-		return false;
-	}
-}
-
-function normalizePositiveInt(raw: number | undefined, fallback: number, field: string): number {
-	if (raw === undefined) return fallback;
-	const value = Math.floor(raw);
-	if (!Number.isFinite(value) || value <= 0) {
-		throw new Error(`${field} must be a positive number.`);
-	}
-	return value;
-}
-
-function runGitCommand(
-	args: string[],
-	cwd: string,
-	timeoutMs: number,
-	signal?: AbortSignal,
-): Promise<RunCommandResult> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Operation aborted"));
-			return;
-		}
-
-		const child = spawn("git", args, {
-			cwd,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-
-		let stdoutChunks: Buffer[] = [];
-		let stderrChunks: Buffer[] = [];
-		let stdoutBytes = 0;
-		let stderrBytes = 0;
-		let captureTruncated = false;
-		let timedOut = false;
-		let aborted = false;
-		let settled = false;
-
-		const settle = (fn: () => void) => {
-			if (!settled) {
-				settled = true;
-				fn();
-			}
-		};
-
-		const captureChunk = (
-			chunk: Buffer,
-			chunks: Buffer[],
-			currentBytes: number,
-		): { nextBytes: number; truncated: boolean } => {
-			if (currentBytes >= MAX_CAPTURE_BYTES) {
-				return { nextBytes: currentBytes, truncated: true };
-			}
-			const remaining = MAX_CAPTURE_BYTES - currentBytes;
-			if (chunk.length <= remaining) {
-				chunks.push(chunk);
-				return { nextBytes: currentBytes + chunk.length, truncated: false };
-			}
-			chunks.push(chunk.subarray(0, remaining));
-			return { nextBytes: MAX_CAPTURE_BYTES, truncated: true };
-		};
-
-		const timeoutHandle = setTimeout(() => {
-			timedOut = true;
-			child.kill("SIGTERM");
-		}, Math.max(1000, timeoutMs));
-
-		const onAbort = () => {
-			aborted = true;
-			child.kill("SIGTERM");
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-
-		const cleanup = () => {
-			clearTimeout(timeoutHandle);
-			signal?.removeEventListener("abort", onAbort);
-		};
-
-		child.stdout.on("data", (chunk: Buffer) => {
-			const captured = captureChunk(chunk, stdoutChunks, stdoutBytes);
-			stdoutBytes = captured.nextBytes;
-			captureTruncated = captureTruncated || captured.truncated;
-		});
-
-		child.stderr.on("data", (chunk: Buffer) => {
-			const captured = captureChunk(chunk, stderrChunks, stderrBytes);
-			stderrBytes = captured.nextBytes;
-			captureTruncated = captureTruncated || captured.truncated;
-		});
-
-		child.on("error", (error) => {
-			cleanup();
-			settle(() => reject(new Error(`Failed to run git: ${error.message}`)));
-		});
-
-		child.on("close", (code) => {
-			cleanup();
-			if (aborted) {
-				settle(() => reject(new Error("Operation aborted")));
-				return;
-			}
-			if (timedOut) {
-				settle(() => reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s`)));
-				return;
-			}
-			settle(() =>
-				resolve({
-					stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
-					stderr: Buffer.concat(stderrChunks).toString("utf-8"),
-					exitCode: code ?? -1,
-					captureTruncated,
-				}),
-			);
-		});
-	});
-}
+export interface GitReadToolOptions extends GitCommandOptions {}
 
 function buildStatusArgs(input: GitReadToolInput): string[] {
 	const porcelain = input.porcelain ?? true;
@@ -211,14 +91,16 @@ function buildDiffArgs(input: GitReadToolInput): string[] {
 		throw new Error("git_read diff requires base when head is provided.");
 	}
 	const context = normalizePositiveInt(input.context, 3, "context");
+	const base = normalizeRefLike(input.base, "base");
+	const head = normalizeRefLike(input.head, "head");
 	const args = ["diff", "--no-color", `--unified=${context}`];
 	if (input.staged) {
 		args.push("--staged");
 	}
-	if (input.base && input.head) {
-		args.push(`${input.base}..${input.head}`);
-	} else if (input.base) {
-		args.push(input.base);
+	if (base && head) {
+		args.push(`${base}..${head}`);
+	} else if (base) {
+		args.push(base);
 	}
 	if (input.file) {
 		args.push("--", input.file);
@@ -254,8 +136,9 @@ function buildBlameArgs(input: GitReadToolInput): string[] {
 		throw new Error("git_read blame requires both line_start and line_end when specifying a range.");
 	}
 	const args = ["blame", "--line-porcelain"];
-	if (input.ref) {
-		args.push(input.ref);
+	const ref = normalizeRefLike(input.ref, "ref");
+	if (ref) {
+		args.push(ref);
 	}
 	if (hasLineStart && hasLineEnd) {
 		const lineStart = normalizePositiveInt(input.line_start, 1, "line_start");
@@ -269,22 +152,78 @@ function buildBlameArgs(input: GitReadToolInput): string[] {
 	return args;
 }
 
-function buildGitArgs(input: GitReadToolInput): string[] {
-	if (input.action === "status") return buildStatusArgs(input);
-	if (input.action === "diff") return buildDiffArgs(input);
-	if (input.action === "log") return buildLogArgs(input);
-	return buildBlameArgs(input);
+function buildShowArgs(input: GitReadToolInput): string[] {
+	const ref = requireRefLike(input.ref ?? "HEAD", "ref");
+	const args = ["show", "--no-color", ref];
+	if (input.file) {
+		args.push("--", input.file);
+	}
+	return args;
+}
+
+function buildBranchListArgs(input: GitReadToolInput): string[] {
+	const includeAll = input.all ?? true;
+	const verbose = input.verbose ?? false;
+	const args = ["branch", "--list"];
+	if (includeAll) {
+		args.push("--all");
+	}
+	if (verbose) {
+		args.push("--verbose");
+	}
+	return args;
+}
+
+function buildRemoteListArgs(input: GitReadToolInput): string[] {
+	const verbose = input.verbose ?? true;
+	const args = ["remote"];
+	if (verbose) {
+		args.push("-v");
+	}
+	return args;
+}
+
+function buildRevParseArgs(input: GitReadToolInput): string[] {
+	const target = requireRefLike(input.target ?? "HEAD", "target");
+	const args = ["rev-parse"];
+	if (input.short) {
+		args.push("--short");
+	}
+	args.push(target);
+	return args;
+}
+
+function buildGitReadArgs(input: GitReadToolInput): string[] {
+	switch (input.action) {
+		case "status":
+			return buildStatusArgs(input);
+		case "diff":
+			return buildDiffArgs(input);
+		case "log":
+			return buildLogArgs(input);
+		case "blame":
+			return buildBlameArgs(input);
+		case "show":
+			return buildShowArgs(input);
+		case "branch_list":
+			return buildBranchListArgs(input);
+		case "remote_list":
+			return buildRemoteListArgs(input);
+		case "rev_parse":
+			return buildRevParseArgs(input);
+		default:
+			throw new Error(`Unsupported git_read action: ${(input as { action: string }).action}`);
+	}
 }
 
 export function createGitReadTool(cwd: string, options?: GitReadToolOptions): AgentTool<typeof gitReadSchema> {
-	const hasCommand = options?.commandExists ?? commandExists;
-	const runCommand = options?.runCommand ?? runGitCommand;
+	const { hasCommand, runCommand } = resolveGitCommandOptions(options);
 
 	return {
 		name: "git_read",
 		label: "git_read",
 		description:
-			"Structured read-only git introspection. Actions: status | diff | log | blame. Uses safe argv execution without shell interpolation.",
+			"Structured read-only git introspection. Actions: status | diff | log | blame | show | branch_list | remote_list | rev_parse. Uses safe argv execution without shell interpolation.",
 		parameters: gitReadSchema,
 		execute: async (_toolCallId: string, input: GitReadToolInput, signal?: AbortSignal) => {
 			if (!hasCommand("git")) {
@@ -292,37 +231,17 @@ export function createGitReadTool(cwd: string, options?: GitReadToolOptions): Ag
 			}
 
 			const repoCwd = resolveToCwd(input.path || ".", cwd);
-			const args = buildGitArgs(input);
-			const timeoutSeconds = normalizePositiveInt(input.timeout, DEFAULT_TIMEOUT_SECONDS, "timeout");
-			const result = await runCommand(args, repoCwd, timeoutSeconds * 1000, signal);
-
-			if (result.exitCode !== 0) {
-				const errorText =
-					result.stderr.trim() || result.stdout.trim() || `git_read ${input.action} failed with exit code ${result.exitCode}`;
-				throw new Error(errorText);
-			}
-
-			let output = result.stdout.trimEnd();
-			if (!output && result.stderr.trim().length > 0) {
-				output = result.stderr.trimEnd();
-			}
-			if (!output) {
-				output = "No output";
-			}
-
-			const truncation = truncateHead(output);
-			let finalOutput = truncation.content;
-			const notices: string[] = [];
-
-			if (truncation.truncated) {
-				notices.push(`${formatSize(DEFAULT_MAX_BYTES)} output limit reached`);
-			}
-			if (result.captureTruncated) {
-				notices.push(`capture limit reached (${formatSize(MAX_CAPTURE_BYTES)})`);
-			}
-			if (notices.length > 0) {
-				finalOutput += `\n\n[${notices.join(". ")} · showing up to ${DEFAULT_MAX_LINES} lines]`;
-			}
+			const args = buildGitReadArgs(input);
+			const timeoutSeconds = normalizePositiveInt(input.timeout, DEFAULT_GIT_TIMEOUT_SECONDS, "timeout");
+			const result = await runGitAndFormatOutput({
+				toolName: "git_read",
+				action: input.action,
+				args,
+				cwd: repoCwd,
+				timeoutSeconds,
+				runCommand,
+				signal,
+			});
 
 			const details: GitReadToolDetails = {
 				action: input.action,
@@ -331,11 +250,11 @@ export function createGitReadTool(cwd: string, options?: GitReadToolOptions): Ag
 				cwd: repoCwd,
 				exitCode: result.exitCode,
 				captureTruncated: result.captureTruncated || undefined,
-				truncation: truncation.truncated ? truncation : undefined,
+				truncation: result.truncation,
 			};
 
 			return {
-				content: [{ type: "text", text: finalOutput }],
+				content: [{ type: "text", text: result.output }],
 				details,
 			};
 		},
