@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`web_search` built-in tool** — added structured web discovery with provider chaining (`Tavily -> SearXNG -> DuckDuckGo`), include/exclude domain filters, recency/topic/depth hints, runtime configuration hooks, and permission-guard integration
 - **`git_write` built-in tool** — added structured git mutation actions (`add`, `restore`, `reset_index`, `commit`, `switch`, `branch_create`, `fetch`, `pull`, `push`, `stash_push`, `stash_pop`, `stash_apply`, `stash_drop`, `stash_list`) with action-specific validation, permission-guard integration, and safe argv execution (no raw shell passthrough)
 - **GitHub tools settings** — added persistent `githubTools` settings block (`networkEnabled`, `token`) and interactive settings submenu for enabling git network actions and managing GitHub token
 - **Expanded `git_read` actions** — added read-only actions `show`, `branch_list`, `remote_list`, and `rev_parse` while preserving backwards compatibility for existing `status`, `diff`, `log`, and `blame` contracts
@@ -18,18 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Shared git tool runtime** — consolidated git process execution/capture/truncation/error handling into a common internal helper used by `git_read` and `git_write`
-- **Profile and mutation policy updates** — enabled `git_write` by default in write-capable profiles (`full`, `meta`, `iosm`) and classified it as mutating in task/shadow-guard policy checks
+- **Profile and mutation policy updates** — enabled `git_write` by default in write-capable profiles (`full`, `meta`, `iosm`), included `web_search` in read-oriented profiles, and updated mutation classification in task/shadow-guard checks
+- **System prompt and tool-routing guidance** — added explicit guidance to prefer `git_write` over ad-hoc git bash mutations and to use `web_search` for discovery plus `fetch` for source validation
+- **CLI/SDK tool surface expansion** — updated tool registry, factories, and exports to include `web_search` and `git_write` in all relevant creation paths and public SDK/index entrypoints
+- **Settings/runtime wiring** — threaded web search runtime config (provider/fallback/safe-search/max-results/timeout/credentials) and GitHub network/token policy from settings into tool execution
 - **Interactive menu hint UX polish** — normalized selector/menu control hints across settings, model/oauth/MCP selectors, tree/session views, and config/model-scoping panels for consistent navigation/action/search/exit guidance
 
 ### Documentation
 
 - Updated README header/version marker to `0.2.8`
-- Updated CLI/config/interactive/development/RPC docs for `git_write` network actions, GitHub tools settings (`networkEnabled`, `token`), and expanded `git_read` action coverage
+- Updated CLI/config/interactive/development/RPC docs for `web_search` behavior, `git_write` network actions, GitHub tools settings (`networkEnabled`, `token`), and expanded `git_read` action coverage
+- Updated help text and tool listings to reflect the new structured git/web workflow (`web_search` + `fetch`, `git_read` + `git_write`)
 
 ### Tests
 
-- Added dedicated `git_write` tool coverage and expanded `git_read` tests for new actions (`show`, `branch_list`, `remote_list`, `rev_parse`)
-- Added UI regression checks for settings/menu hint behavior updates
+- Added dedicated `web_search` and `git_write` tool coverage, plus expanded `git_read` tests for new actions (`show`, `branch_list`, `remote_list`, `rev_parse`)
+- Added/updated regression checks for profile tool membership, SDK defaults, settings manager behavior, system prompt guidance, shadow-guard/task classification, and settings/menu hint behavior
 
 ## [0.2.7] - 2026-03-14
 
