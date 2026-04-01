@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-04-01
+
+### Changed
+
+- **Startup command execution policy** — system prompt guidance now explicitly routes "start/run project", dev-server, and watcher requests to detached `bash` execution (`run_in_background=true`) by default, with foreground mode reserved for immediate-output needs
+- **Subagent runtime capability hint** — delegated task prompts now include the same detached-startup guidance so child agents avoid blocking turns when launching persistent processes
+
+### Documentation
+
+- Updated README usage guidance to document default detached handling for project/server startup requests
+- Updated `docs/cli-reference.md` and `docs/interactive-mode.md` with explicit startup-to-background behavior and `/bg` follow-up flow
+
+### Tests
+
+- Added system-prompt regression asserting explicit startup background guidance (`run_in_background=true`, `/bg status|logs|stop`)
+- Expanded subagent orchestration tests to assert delegated runtime hints include startup/background routing rules
+
 ## [0.2.11] - 2026-04-01
 
 ### Added

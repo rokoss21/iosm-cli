@@ -1596,7 +1596,7 @@ export function createTaskTool(
 						? Math.min(preferredDelegationFloor, effectiveMaxDelegations, effectiveDelegateParallelHint ?? preferredDelegationFloor)
 						: 0;
 				const runtimeCapabilityHints =
-					"Runtime capability: for long-running shell commands that should not block the turn, use bash with run_in_background=true; keep foreground mode when immediate command output is required.";
+					"Runtime capability: for long-running shell commands that should not block the turn (especially start/run-project or dev-server/watch commands), use bash with run_in_background=true and report backgroundTaskId for follow-up monitoring/stop actions; keep foreground mode only when immediate command output is required.";
 				const baseSystemPrompt = withSubagentInstructions(
 					`${customSubagent?.systemPrompt ??
 						systemPromptByProfile[effectiveProfile] ??

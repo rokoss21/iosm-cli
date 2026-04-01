@@ -303,6 +303,7 @@ Best-practice patterns:
 - File mutation: prefer `edit` for surgical changes and `write` for full rewrites; use `fs_ops` for `mkdir/move/copy/delete`, with `force=true` only when replacement/no-op behavior is intentional.
 - Verification: prefer `test_run` / `lint_run` / `typecheck_run` over ad-hoc bash commands for deterministic runner resolution and normalized status reporting.
 - Long-running shell jobs: prefer detached `bash` (`run_in_background=true`) or interactive `! <command> &`, then monitor with `/bg` instead of blocking the foreground turn.
+- Project/server startup requests (for example "run project", "start dev server", watcher modes): default to detached background execution and return/process `backgroundTaskId` for status/log/stop follow-up.
 - DB operations: prefer `db_run` with named profiles; keep read flows in `query/schema/explain` and use `allow_write=true` only for `exec/migrate`.
 - Structured data transforms: use `jq`/`yq` to compute/preview transforms, then persist the final state through `edit`/`write`.
 - Semantic retrieval: use `semantic_search status` first when relevance looks stale, then run `query`; run `index`/`rebuild` when config or index freshness requires it.

@@ -174,6 +174,18 @@ describe("buildSystemPrompt", () => {
 	});
 
 	describe("tool-wide efficiency guidance", () => {
+		test("includes explicit start-project background guidance when bash is enabled", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read", "bash"],
+				contextFiles: [],
+				skills: [],
+			});
+
+			expect(prompt).toContain("start/run a project");
+			expect(prompt).toContain("run_in_background=true");
+			expect(prompt).toContain("/bg status|logs|stop");
+		});
+
 		test("includes bounded read/search guidance when exploration tools are enabled", () => {
 			const prompt = buildSystemPrompt({
 				selectedTools: ["read", "grep", "find", "ls", "rg", "fd"],

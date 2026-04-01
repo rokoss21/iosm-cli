@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.11</h1>
+<h1>IOSM CLI 0.2.12</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -189,6 +189,7 @@ Common tasks:
 - implement or refactor features
 - read, search, and edit files with full shell access
 - run long shell jobs in background (`! npm run dev &`) and inspect with `/bg`
+- treat "start/run project or dev server" requests as detached background jobs by default, then follow with `/bg status|logs|stop`
 - review architecture or explore unfamiliar modules
 - resume previous sessions: `/resume`, `/fork`, `/tree`
 - keep persistent notes: `/memory`

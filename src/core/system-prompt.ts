@@ -389,6 +389,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		addGuideline(
 			"For long-running shell work that should not block the turn, use bash with run_in_background=true and report the returned backgroundTaskId; keep foreground mode for commands whose output is needed immediately",
 		);
+		addGuideline(
+			"When the user asks to start/run a project, dev server, watcher, or other persistent process, default to detached bash (run_in_background=true), then provide monitoring/stop guidance via /bg status|logs|stop using the returned backgroundTaskId",
+		);
 	}
 	if (hasBash && hasGitRead) {
 		addGuideline("Prefer git_read over bash for git status/diff/log/blame analysis in read-only workflows");

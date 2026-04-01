@@ -115,6 +115,7 @@ In `/semantic setup`, the headers step is optional: press `Enter` on empty input
 `/ultrathink` without query reuses the latest meaningful user request from session context.
 If early passes produce no tool evidence, ultrathink injects an internal grounding retry so the agent probes the workspace with read-only tools before continuing.
 Run detached shell jobs with `! <command> &` (example: `! npm run dev &`) and manage them using `/bg`, `/bg status <id>`, `/bg logs <id> [lines]`, `/bg stop <id>`.
+For agent-driven execution, prompts like "start/run project", "start dev server", or watcher startup are treated as detached background jobs by default unless foreground output is explicitly requested.
 `/swarm` enforces `Scopes -> Touches -> Locks -> Gates -> Done`. If effective contract is missing, it blocks execution and opens a bootstrap menu (auto-draft, guided Q&A, or manual `/contract` editor).
 `/orchestrate --parallel` defaults `--max-parallel` to `--agents` when omitted and auto-selects `meta` workers when profiles are not explicitly set (outside read-only host contexts).
 For orchestrate assignments, `delegate_parallel_hint` is carried into child task calls; high hints should trigger nested delegate fan-out or explicit `DELEGATION_IMPOSSIBLE`.

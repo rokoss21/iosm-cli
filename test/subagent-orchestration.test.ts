@@ -178,6 +178,8 @@ describe("subagent orchestration", () => {
 		expect(observed[0]?.prompt).toContain("scan docs");
 		expect(observed[0]?.prompt).toContain("[SHARED_MEMORY]");
 		expect(observed[0]?.systemPrompt).toContain("Background read instructions");
+		expect(observed[0]?.systemPrompt).toContain("start/run-project or dev-server/watch commands");
+		expect(observed[0]?.systemPrompt).toContain("run_in_background=true");
 	});
 
 	it("maps custom agent names passed via profile into agent resolution", async () => {
