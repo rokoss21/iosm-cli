@@ -132,6 +132,9 @@ These commands run inside interactive mode (`iosm`), not as top-level CLI subcom
   - carries compact checkpoint state between iterations (facts, rejected hypotheses, open questions, next checks)
   - auto-injects a grounding retry when early passes return no tool evidence, forcing live workspace probes
   - if query is omitted, reuses latest meaningful user request from session context
+- `/bg [list [limit]|status [id]|logs [id] [lines]|stop [id]]` — interactive background shell process manager:
+  - run detached shell commands with `! <command> &`
+  - inspect process state, log tail, and stop running background jobs
 - `/swarm` — canonical gated execution runtime:
   - `/swarm run <task> [--max-parallel N] [--budget-usd X]`
   - `/swarm from-singular <run-id> --option <1|2|3> [--max-parallel N] [--budget-usd X]`
@@ -265,6 +268,7 @@ iosm --api-key sk-test-123           # Override for this run
 `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `web_search`, `git_read`, `git_write`, `fs_ops`, `test_run`, `lint_run`, `typecheck_run`, `db_run`, `todo_read`, `todo_write`
 
 Tool notes:
+- `bash` supports optional `run_in_background=true` for detached execution; returned details include `backgroundTaskId` and metadata/log paths.
 - `rg`, `fd` are managed by iosm-cli and auto-resolved when missing.
 - `ast_grep`, `comby`, `jq`, `yq`, `semgrep` are optional external CLIs and should be available in `PATH` to use their tools.
 - `sed` tool is preview/extraction-oriented; in-place edits are intentionally blocked.
@@ -298,6 +302,7 @@ Best-practice patterns:
 - File exploration: use bounded reads/searches (`path`, `glob`, `context`, `limit`); for large files, page with `read` using `offset`/`limit` instead of dumping whole files.
 - File mutation: prefer `edit` for surgical changes and `write` for full rewrites; use `fs_ops` for `mkdir/move/copy/delete`, with `force=true` only when replacement/no-op behavior is intentional.
 - Verification: prefer `test_run` / `lint_run` / `typecheck_run` over ad-hoc bash commands for deterministic runner resolution and normalized status reporting.
+- Long-running shell jobs: prefer detached `bash` (`run_in_background=true`) or interactive `! <command> &`, then monitor with `/bg` instead of blocking the foreground turn.
 - DB operations: prefer `db_run` with named profiles; keep read flows in `query/schema/explain` and use `allow_write=true` only for `exec/migrate`.
 - Structured data transforms: use `jq`/`yq` to compute/preview transforms, then persist the final state through `edit`/`write`.
 - Semantic retrieval: use `semantic_search status` first when relevance looks stale, then run `query`; run `index`/`rebuild` when config or index freshness requires it.

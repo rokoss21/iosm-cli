@@ -693,6 +693,80 @@ describe("InteractiveMode interactive command flows", () => {
 		}
 	});
 
+	test("lists background processes via /bg list", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-list-"));
+		try {
+			const { startBackgroundProcess, stopBackgroundProcess } = await import("../src/core/background-processes.js");
+			const record = startBackgroundProcess({
+				rootCwd: cwd,
+				command: "sleep 2; echo bg-list",
+				source: "interactive",
+			});
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+			fakeThis.showExtensionSelector = vi.fn();
+
+			await (InteractiveMode as any).prototype.handleBackgroundProcessesSlashCommand.call(fakeThis, "/bg list 10");
+
+			expect(showCommandTextBlock).toHaveBeenCalledWith(
+				"Background Processes",
+				expect.stringContaining(record.id),
+			);
+			expect(showWarning).not.toHaveBeenCalled();
+			stopBackgroundProcess(cwd, record.id);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("stops background process via /bg stop <id>", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-stop-"));
+		try {
+			const { getBackgroundProcess, startBackgroundProcess } = await import("../src/core/background-processes.js");
+			const record = startBackgroundProcess({
+				rootCwd: cwd,
+				command: "sleep 5; echo bg-stop",
+				source: "interactive",
+			});
+
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+			fakeThis.showExtensionSelector = vi.fn();
+
+			await (InteractiveMode as any).prototype.handleBackgroundProcessesSlashCommand.call(
+				fakeThis,
+				`/bg stop ${record.id}`,
+			);
+
+			const refreshed = getBackgroundProcess(cwd, record.id);
+			expect(refreshed?.requestedStopAt).toBeDefined();
+			expect(showStatus.mock.calls.length + showWarning.mock.calls.length).toBeGreaterThan(0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	test("runs interactive export wizard and confirms overwrite", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "iosm-export-interactive-"));
 		try {
@@ -958,7 +1032,6 @@ describe("InteractiveMode startup model restoration", () => {
 		const restoredModel = { provider: "zai-coding-plan", id: "glm-5" };
 		const setModel = vi.fn();
 		const hydrateProviderModelsFromModelsDev = vi.fn(async () => true);
-		const hasRegisteredProviderModels = vi.fn(() => false);
 		const find = vi.fn(() => restoredModel);
 		const getApiKey = vi.fn(async () => "z-key-123");
 
@@ -976,12 +1049,10 @@ describe("InteractiveMode startup model restoration", () => {
 			},
 		};
 		fakeThis.hydrateProviderModelsFromModelsDev = hydrateProviderModelsFromModelsDev;
-		fakeThis.hasRegisteredProviderModels = hasRegisteredProviderModels;
 
 		await (InteractiveMode as any).prototype.restoreSavedModelSelectionOnStartup.call(fakeThis);
 
-		expect(hasRegisteredProviderModels).toHaveBeenCalledWith("zai-coding-plan");
-		expect(hydrateProviderModelsFromModelsDev).toHaveBeenCalledWith("zai-coding-plan");
+		expect(hydrateProviderModelsFromModelsDev).toHaveBeenCalledWith("zai-coding-plan", { forceRefresh: true });
 		expect(find).toHaveBeenCalledWith("zai-coding-plan", "glm-5");
 		expect(getApiKey).toHaveBeenCalledWith(restoredModel);
 		expect(setModel).toHaveBeenCalledWith(restoredModel);
@@ -3790,5 +3861,91 @@ describe("InteractiveMode.requestToolPermission", () => {
 		expect(first).toBe(true);
 		expect(second).toBe(true);
 		expect(showExtensionSelector).toHaveBeenCalledTimes(1);
+	});
+
+	test("auto mode allows read-only extension tools when strict extension enforcement is enabled", async () => {
+		const fakeThis: any = {
+			permissionDenyRules: [],
+			permissionAllowRules: [],
+			permissionMode: "auto",
+			sessionAllowedToolSignatures: new Set<string>(),
+			shadowGuard: { shouldDenyTool: () => false },
+			settingsManager: { getPermissionExtensionToolEnforcement: () => true },
+			matchesPermissionRule: (InteractiveMode as any).prototype.matchesPermissionRule,
+			getToolPermissionSignature: (InteractiveMode as any).prototype.getToolPermissionSignature,
+			withPermissionDialogLock: async (fn: () => Promise<boolean>) => fn(),
+			showWarning: vi.fn(),
+			showExtensionSelector: vi.fn(),
+		};
+
+		const allowed = await (InteractiveMode as any).prototype.requestToolPermission.call(fakeThis, {
+			toolName: "docs_search",
+			cwd: "/tmp/project",
+			input: { query: "hooks" },
+			summary: "search docs",
+			requiredPermission: "read-only",
+			toolSource: "extension",
+		});
+
+		expect(allowed).toBe(true);
+		expect(fakeThis.showExtensionSelector).not.toHaveBeenCalled();
+		expect(fakeThis.showWarning).not.toHaveBeenCalled();
+	});
+
+	test("auto mode blocks extension tools missing requiredPermission metadata when strict enforcement is enabled", async () => {
+		const fakeThis: any = {
+			permissionDenyRules: [],
+			permissionAllowRules: [],
+			permissionMode: "auto",
+			sessionAllowedToolSignatures: new Set<string>(),
+			shadowGuard: { shouldDenyTool: () => false },
+			settingsManager: { getPermissionExtensionToolEnforcement: () => true },
+			matchesPermissionRule: (InteractiveMode as any).prototype.matchesPermissionRule,
+			getToolPermissionSignature: (InteractiveMode as any).prototype.getToolPermissionSignature,
+			withPermissionDialogLock: async (fn: () => Promise<boolean>) => fn(),
+			showWarning: vi.fn(),
+			showExtensionSelector: vi.fn(),
+		};
+
+		const allowed = await (InteractiveMode as any).prototype.requestToolPermission.call(fakeThis, {
+			toolName: "repo_sync",
+			cwd: "/tmp/project",
+			input: { path: "." },
+			summary: "sync repository metadata",
+			toolSource: "extension",
+		});
+
+		expect(allowed).toBe(false);
+		expect(fakeThis.showWarning).toHaveBeenCalledWith(
+			expect.stringContaining("missing requiredPermission metadata"),
+		);
+		expect(fakeThis.showExtensionSelector).not.toHaveBeenCalled();
+	});
+
+	test("strict extension enforcement does not change legacy built-in auto permissions", async () => {
+		const fakeThis: any = {
+			permissionDenyRules: [],
+			permissionAllowRules: [],
+			permissionMode: "auto",
+			sessionAllowedToolSignatures: new Set<string>(),
+			shadowGuard: { shouldDenyTool: () => false },
+			settingsManager: { getPermissionExtensionToolEnforcement: () => true },
+			matchesPermissionRule: (InteractiveMode as any).prototype.matchesPermissionRule,
+			getToolPermissionSignature: (InteractiveMode as any).prototype.getToolPermissionSignature,
+			withPermissionDialogLock: async (fn: () => Promise<boolean>) => fn(),
+			showWarning: vi.fn(),
+			showExtensionSelector: vi.fn(),
+		};
+
+		const allowed = await (InteractiveMode as any).prototype.requestToolPermission.call(fakeThis, {
+			toolName: "write",
+			cwd: "/tmp/project",
+			input: { path: "README.md" },
+			summary: "write README.md",
+			toolSource: "builtin",
+		});
+
+		expect(allowed).toBe(true);
+		expect(fakeThis.showExtensionSelector).not.toHaveBeenCalled();
 	});
 });

@@ -5,10 +5,10 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { type AssistantMessage, type ImageContent, supportsXhigh } from "@mariozechner/pi-ai";
+import { type Api, type AssistantMessage, type ImageContent, supportsXhigh } from "@mariozechner/pi-ai";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import chalk from "chalk";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "readline";
 import { type Args, parseArgs, printHelp } from "./cli/args.js";
@@ -34,8 +34,9 @@ import { AuthStorage } from "./core/auth-storage.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import type { LoadExtensionsResult } from "./core/extensions/index.js";
 import { KeybindingsManager } from "./core/keybindings.js";
-import { ModelRegistry } from "./core/model-registry.js";
+import { type ProviderConfigInput, ModelRegistry } from "./core/model-registry.js";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.js";
+import { loadModelsDevProviderCatalog, type ModelsDevProviderCatalogInfo } from "./core/models-dev-provider-catalog.js";
 import {
 	getMcpCommandHelp,
 	getMergedServerByName,
@@ -107,6 +108,87 @@ async function readPipedStdin(): Promise<string | undefined> {
 		});
 		process.stdin.resume();
 	});
+}
+
+function resolveModelsDevApi(modelNpm?: string): Api {
+	const npm = modelNpm?.toLowerCase() ?? "";
+	if (npm.includes("anthropic")) return "anthropic-messages";
+	if (npm.includes("google-vertex")) return "google-vertex";
+	if (npm.includes("google")) return "google-generative-ai";
+	if (npm.includes("amazon-bedrock")) return "bedrock-converse-stream";
+	if (npm.includes("mistral")) return "mistral-conversations";
+	if (npm.includes("@ai-sdk/openai") && !npm.includes("compatible")) return "openai-responses";
+	return "openai-completions";
+}
+
+function buildModelsDevProviderConfig(providerInfo: ModelsDevProviderCatalogInfo): ProviderConfigInput | undefined {
+	const baseUrl = providerInfo.api ?? providerInfo.models.find((model) => !!model.api)?.api;
+	if (!baseUrl) return undefined;
+	if (providerInfo.models.length === 0) return undefined;
+
+	const models: NonNullable<ProviderConfigInput["models"]> = providerInfo.models.map((model) => ({
+		id: model.id,
+		name: model.name,
+		api: resolveModelsDevApi(model.npm ?? providerInfo.npm),
+		reasoning: model.reasoning,
+		input: [...model.input],
+		cost: model.cost,
+		contextWindow: model.contextWindow,
+		maxTokens: model.maxTokens,
+		headers: Object.keys(model.headers).length > 0 ? model.headers : undefined,
+	}));
+
+	return {
+		baseUrl,
+		models,
+	};
+}
+
+function isProviderConfiguredInModelsJson(providerId: string, modelsPath: string): boolean {
+	if (!existsSync(modelsPath)) return false;
+	try {
+		const parsed = JSON.parse(readFileSync(modelsPath, "utf-8")) as { providers?: unknown };
+		const providers = parsed?.providers;
+		if (!providers || typeof providers !== "object" || Array.isArray(providers)) return false;
+		return Object.prototype.hasOwnProperty.call(providers, providerId);
+	} catch {
+		return false;
+	}
+}
+
+async function hydrateAuthenticatedProviderModelsOnStartup(modelRegistry: ModelRegistry): Promise<void> {
+	if (isTruthyEnvFlag(process.env[ENV_OFFLINE]) || isTruthyEnvFlag(process.env.PI_OFFLINE)) return;
+
+	const providersToRefresh = new Set<string>(modelRegistry.authStorage.list());
+	for (const model of modelRegistry.getAll()) {
+		if (modelRegistry.authStorage.hasAuth(model.provider)) {
+			providersToRefresh.add(model.provider);
+		}
+	}
+	if (providersToRefresh.size === 0) return;
+
+	const modelsPath = getModelsPath();
+	let catalog: ReadonlyMap<string, ModelsDevProviderCatalogInfo>;
+	try {
+		catalog = await loadModelsDevProviderCatalog();
+	} catch {
+		return;
+	}
+
+	for (const providerId of providersToRefresh) {
+		if (isProviderConfiguredInModelsJson(providerId, modelsPath)) {
+			continue;
+		}
+		const providerInfo = catalog.get(providerId);
+		if (!providerInfo) continue;
+		const config = buildModelsDevProviderConfig(providerInfo);
+		if (!config) continue;
+		try {
+			modelRegistry.registerProvider(providerId, config);
+		} catch {
+			// Best effort only.
+		}
+	}
 }
 
 function reportSettingsErrors(settingsManager: SettingsManager, context: string): void {
@@ -435,6 +517,7 @@ async function runIosmInitAgentVerification(
 	reportSettingsErrors(settingsManager, "iosm init verify");
 	const authStorage = AuthStorage.create();
 	const modelRegistry = new ModelRegistry(authStorage, getModelsPath());
+	await hydrateAuthenticatedProviderModelsOnStartup(modelRegistry);
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: targetDir,
 		agentDir,
@@ -1675,6 +1758,7 @@ export async function main(args: string[]) {
 	reportSettingsErrors(settingsManager, "startup");
 	const authStorage = AuthStorage.create();
 	const modelRegistry = new ModelRegistry(authStorage, getModelsPath());
+	await hydrateAuthenticatedProviderModelsOnStartup(modelRegistry);
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,

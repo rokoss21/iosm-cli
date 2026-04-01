@@ -2,13 +2,202 @@
  * System prompt construction and project context loading
  */
 
+import { createHash } from "node:crypto";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
+
+const DEFAULT_CONTEXT_MAX_CHARS_PER_FILE = 4000;
+const DEFAULT_CONTEXT_MAX_TOTAL_CHARS = 12000;
+
+export interface PromptContextProcessingOptions {
+	enableContextDedupe?: boolean;
+	maxContextCharsPerFile?: number;
+	maxTotalContextChars?: number;
+	enableGitSnapshotContext?: boolean;
+}
+
+export interface PromptContextStats {
+	contextBeforeChars: number;
+	contextAfterChars: number;
+	dedupeHits: number;
+	truncatedFiles: string[];
+	droppedFiles: number;
+	totalFiles: number;
+	includedFiles: number;
+	gitSnapshotIncluded: boolean;
+}
+
+interface ResolvedPromptContextProcessingOptions {
+	enableContextDedupe: boolean;
+	maxContextCharsPerFile: number;
+	maxTotalContextChars: number;
+	enableGitSnapshotContext: boolean;
+}
+
+interface PromptContextEntry {
+	path: string;
+	content: string;
+}
+
+function normalizeContextContent(content: string): string {
+	return content.replace(/\r\n?/g, "\n").trim();
+}
+
+function normalizeContextPath(pathValue: string): string {
+	return pathValue.replace(/\\/g, "/").trim();
+}
+
+function normalizePositiveLimit(value: number | undefined, fallback: number): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+	const integer = Math.floor(value);
+	return integer > 0 ? integer : fallback;
+}
+
+function resolveContextOptions(
+	options: PromptContextProcessingOptions | undefined,
+): ResolvedPromptContextProcessingOptions {
+	return {
+		enableContextDedupe: options?.enableContextDedupe !== false,
+		maxContextCharsPerFile: normalizePositiveLimit(
+			options?.maxContextCharsPerFile,
+			DEFAULT_CONTEXT_MAX_CHARS_PER_FILE,
+		),
+		maxTotalContextChars: normalizePositiveLimit(options?.maxTotalContextChars, DEFAULT_CONTEXT_MAX_TOTAL_CHARS),
+		enableGitSnapshotContext: options?.enableGitSnapshotContext === true,
+	};
+}
+
+function hashContextForDedupe(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+function buildContextSection(
+	contextFiles: Array<{ path: string; content: string }>,
+	options: PromptContextProcessingOptions | undefined,
+	gitSnapshotContext: { path?: string; content: string } | undefined,
+): { section: string; stats: PromptContextStats } {
+	const resolved = resolveContextOptions(options);
+	const entries: PromptContextEntry[] = contextFiles.map((entry) => ({
+		path: normalizeContextPath(entry.path),
+		content: normalizeContextContent(entry.content),
+	}));
+	let gitSnapshotIncluded = false;
+	if (
+		resolved.enableGitSnapshotContext &&
+		typeof gitSnapshotContext?.content === "string" &&
+		gitSnapshotContext.content.trim().length > 0
+	) {
+		gitSnapshotIncluded = true;
+		entries.push({
+			path: normalizeContextPath(gitSnapshotContext.path ?? "[git-snapshot]"),
+			content: normalizeContextContent(gitSnapshotContext.content),
+		});
+	}
+
+	const stats: PromptContextStats = {
+		contextBeforeChars: entries.reduce((sum, entry) => sum + entry.content.length, 0),
+		contextAfterChars: 0,
+		dedupeHits: 0,
+		truncatedFiles: [],
+		droppedFiles: 0,
+		totalFiles: entries.length,
+		includedFiles: 0,
+		gitSnapshotIncluded,
+	};
+
+	if (entries.length === 0) {
+		return { section: "", stats };
+	}
+
+	const seenHashes = new Set<string>();
+	const truncated = new Set<string>();
+	const deduped: PromptContextEntry[] = [];
+	for (const entry of entries) {
+		if (!entry.content) {
+			continue;
+		}
+		if (resolved.enableContextDedupe) {
+			const hash = hashContextForDedupe(entry.content);
+			if (seenHashes.has(hash)) {
+				stats.dedupeHits += 1;
+				continue;
+			}
+			seenHashes.add(hash);
+		}
+		deduped.push(entry);
+	}
+
+	let remainingTotalChars = resolved.maxTotalContextChars;
+	const processed: PromptContextEntry[] = [];
+	for (const entry of deduped) {
+		let content = entry.content;
+		if (content.length > resolved.maxContextCharsPerFile) {
+			content = content.slice(0, resolved.maxContextCharsPerFile).trimEnd();
+			truncated.add(entry.path);
+		}
+
+		if (remainingTotalChars <= 0) {
+			stats.droppedFiles += 1;
+			truncated.add(entry.path);
+			continue;
+		}
+
+		if (content.length > remainingTotalChars) {
+			content = content.slice(0, remainingTotalChars).trimEnd();
+			truncated.add(entry.path);
+		}
+
+		if (content.length === 0) {
+			stats.droppedFiles += 1;
+			continue;
+		}
+
+		processed.push({ path: entry.path, content });
+		remainingTotalChars = Math.max(0, remainingTotalChars - content.length);
+	}
+
+	stats.contextAfterChars = processed.reduce((sum, entry) => sum + entry.content.length, 0);
+	stats.includedFiles = processed.length;
+	stats.truncatedFiles = Array.from(truncated.values());
+
+	if (processed.length === 0) {
+		const metadata: string[] = [];
+		if (stats.dedupeHits > 0) metadata.push(`- dedupe_hits: ${stats.dedupeHits}`);
+		if (stats.truncatedFiles.length > 0) metadata.push(`- truncated_files: ${stats.truncatedFiles.length}`);
+		if (stats.droppedFiles > 0) metadata.push(`- dropped_files: ${stats.droppedFiles}`);
+		const metadataBlock = metadata.length > 0 ? `${metadata.join("\n")}\n\n` : "";
+		return {
+			section: `\n\n# Project Context\n\nProject-specific instructions and guidelines:\n\n${metadataBlock}(context omitted after preprocessing budget)\n\n`,
+			stats,
+		};
+	}
+
+	const metadataLines: string[] = [];
+	if (stats.dedupeHits > 0) metadataLines.push(`- dedupe_hits: ${stats.dedupeHits}`);
+	if (stats.truncatedFiles.length > 0) {
+		const preview = stats.truncatedFiles.slice(0, 8).join(", ");
+		const suffix = stats.truncatedFiles.length > 8 ? ` (+${stats.truncatedFiles.length - 8} more)` : "";
+		metadataLines.push(`- truncated_files: ${stats.truncatedFiles.length} (${preview}${suffix})`);
+	}
+	if (stats.droppedFiles > 0) metadataLines.push(`- dropped_files: ${stats.droppedFiles}`);
+	if (stats.gitSnapshotIncluded) metadataLines.push("- git_snapshot_context: enabled");
+
+	let section = "\n\n# Project Context\n\n";
+	section += "Project-specific instructions and guidelines:\n\n";
+	if (metadataLines.length > 0) {
+		section += `${metadataLines.join("\n")}\n\n`;
+	}
+	for (const entry of processed) {
+		section += `## ${entry.path}\n\n${entry.content}\n\n`;
+	}
+
+	return { section, stats };
+}
 
 /** Tool descriptions for system prompt */
 const toolDescriptions: Record<string, string> = {
 	read: "Read file contents",
-	bash: "Execute bash commands (ls, grep, find, etc.)",
+	bash: "Execute bash commands (ls, grep, find, etc.); supports detached mode via run_in_background",
 	edit: "Make surgical edits to files (find exact text and replace)",
 	write: "Create or overwrite files",
 	grep: "Search file contents for patterns (respects .gitignore)",
@@ -61,6 +250,12 @@ export interface BuildSystemPromptOptions {
 	cwd?: string;
 	/** Pre-loaded context files. */
 	contextFiles?: Array<{ path: string; content: string }>;
+	/** Optional git snapshot context block (plumbing; included only when enabled via contextProcessing). */
+	gitSnapshotContext?: { path?: string; content: string };
+	/** Context processing controls (dedupe + budgets). */
+	contextProcessing?: PromptContextProcessingOptions;
+	/** Optional callback for context processing diagnostics/tracing. */
+	onContextProcessed?: (stats: PromptContextStats) => void;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
 }
@@ -75,6 +270,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		appendSystemPrompt,
 		cwd,
 		contextFiles: providedContextFiles,
+		gitSnapshotContext,
+		contextProcessing,
+		onContextProcessed,
 		skills: providedSkills,
 	} = options;
 	const resolvedCwd = cwd ?? process.cwd();
@@ -95,6 +293,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const contextSectionResult = buildContextSection(contextFiles, contextProcessing, gitSnapshotContext);
+	onContextProcessed?.(contextSectionResult.stats);
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -104,12 +304,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		}
 
 		// Append project context files
-		if (contextFiles.length > 0) {
-			prompt += "\n\n# Project Context\n\n";
-			prompt += "Project-specific instructions and guidelines:\n\n";
-			for (const { path: filePath, content } of contextFiles) {
-				prompt += `## ${filePath}\n\n${content}\n\n`;
-			}
+		if (contextSectionResult.section) {
+			prompt += contextSectionResult.section;
 		}
 
 		// Append skills section (only if read tool is available)
@@ -188,6 +384,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		addGuideline("Use bash for file operations like ls, rg, find; prefer rg for targeted search when available");
 	} else if (hasBash && (hasGrep || hasFind || hasLs || hasRg || hasFd)) {
 		addGuideline("Prefer grep/find/ls/rg/fd tools over bash for codebase exploration (faster and less noisy)");
+	}
+	if (hasBash) {
+		addGuideline(
+			"For long-running shell work that should not block the turn, use bash with run_in_background=true and report the returned backgroundTaskId; keep foreground mode for commands whose output is needed immediately",
+		);
 	}
 	if (hasBash && hasGitRead) {
 		addGuideline("Prefer git_read over bash for git status/diff/log/blame analysis in read-only workflows");
@@ -470,12 +671,8 @@ iosm-cli reference docs (use when needed):
 	}
 
 	// Append project context files
-	if (contextFiles.length > 0) {
-		prompt += "\n\n# Project Context\n\n";
-		prompt += "Project-specific instructions and guidelines:\n\n";
-		for (const { path: filePath, content } of contextFiles) {
-			prompt += `## ${filePath}\n\n${content}\n\n`;
-		}
+	if (contextSectionResult.section) {
+		prompt += contextSectionResult.section;
 	}
 
 	// Append skills section (only if read tool is available)

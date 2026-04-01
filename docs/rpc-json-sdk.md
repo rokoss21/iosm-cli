@@ -129,6 +129,20 @@ agent.stdout.on("data", (data) => {
 });
 ```
 
+### Detached Bash via Tool Parameters
+
+When the `bash` tool is available, callers can request detached execution with `run_in_background: true`.
+The result details include `backgroundTaskId` plus paths to metadata/log files.
+
+```typescript
+const result = await bashTool.execute("bg-1", {
+  command: "npm run dev",
+  run_in_background: true,
+});
+
+console.log(result.details?.backgroundTaskId);
+```
+
 ### RPC Extension UI
 
 Extensions can expose UI elements through RPC mode. See [rpc-extension-ui.ts](../examples/rpc-extension-ui.ts) for a complete example of using `confirm`, `select`, `notify`, and other UI methods over RPC.

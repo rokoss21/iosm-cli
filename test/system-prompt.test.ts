@@ -253,4 +253,76 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("mode=check by default");
 		});
 	});
+
+	describe("context processing", () => {
+		test("deduplicates context files by normalized content hash", () => {
+			let stats: any;
+			const prompt = buildSystemPrompt({
+				contextFiles: [
+					{ path: "/tmp/a.md", content: "Same content\nline" },
+					{ path: "/tmp/b.md", content: "Same content\nline" },
+				],
+				contextProcessing: {
+					enableContextDedupe: true,
+					maxContextCharsPerFile: 4000,
+					maxTotalContextChars: 12000,
+				},
+				onContextProcessed: (result) => {
+					stats = result;
+				},
+				skills: [],
+			});
+
+			expect(prompt).toContain("## /tmp/a.md");
+			expect(prompt).not.toContain("## /tmp/b.md");
+			expect(prompt).toContain("- dedupe_hits: 1");
+			expect(stats?.dedupeHits).toBe(1);
+		});
+
+		test("respects per-file and total context budgets with truncation metadata", () => {
+			let stats: any;
+			const prompt = buildSystemPrompt({
+				contextFiles: [
+					{ path: "/tmp/a.md", content: "A".repeat(80) },
+					{ path: "/tmp/b.md", content: "B".repeat(80) },
+					{ path: "/tmp/c.md", content: "C".repeat(80) },
+				],
+				contextProcessing: {
+					enableContextDedupe: false,
+					maxContextCharsPerFile: 60,
+					maxTotalContextChars: 100,
+				},
+				onContextProcessed: (result) => {
+					stats = result;
+				},
+				skills: [],
+			});
+
+			expect(prompt).toContain("## /tmp/a.md");
+			expect(prompt).toContain("## /tmp/b.md");
+			expect(prompt).not.toContain("## /tmp/c.md");
+			expect(prompt).toContain("- truncated_files:");
+			expect(prompt).toContain("- dropped_files:");
+			expect(stats?.contextAfterChars).toBeLessThanOrEqual(100);
+			expect(stats?.truncatedFiles.length).toBeGreaterThan(0);
+		});
+
+		test("keeps duplicate content when dedupe is disabled", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [
+					{ path: "/tmp/a.md", content: "dup content" },
+					{ path: "/tmp/b.md", content: "dup content" },
+				],
+				contextProcessing: {
+					enableContextDedupe: false,
+					maxContextCharsPerFile: 4000,
+					maxTotalContextChars: 12000,
+				},
+				skills: [],
+			});
+
+			expect(prompt).toContain("## /tmp/a.md");
+			expect(prompt).toContain("## /tmp/b.md");
+		});
+	});
 });

@@ -78,6 +78,17 @@ export interface DbToolsSettings {
 	connections?: Record<string, DbToolsConnectionSettings>;
 }
 
+export interface PromptContextSettings {
+	enableContextDedupe?: boolean; // default: true
+	maxContextCharsPerFile?: number; // default: 4000
+	maxTotalContextChars?: number; // default: 12000
+	enableGitSnapshotContext?: boolean; // default: false
+}
+
+export interface PermissionsSettings {
+	extensionToolEnforcement?: boolean; // default: false
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -135,6 +146,8 @@ export interface Settings {
 	webSearch?: WebSearchSettings;
 	githubTools?: GithubToolsSettings;
 	dbTools?: DbToolsSettings;
+	promptContext?: PromptContextSettings;
+	permissions?: PermissionsSettings;
 }
 
 const WEB_SEARCH_PROVIDER_MODES = ["auto", "tavily"] as const;
@@ -762,6 +775,19 @@ export class SettingsManager {
 		return [...(this.settings.permissionAllow ?? [])];
 	}
 
+	getPermissionExtensionToolEnforcement(): boolean {
+		return this.settings.permissions?.extensionToolEnforcement ?? false;
+	}
+
+	setPermissionExtensionToolEnforcement(enabled: boolean): void {
+		if (!this.globalSettings.permissions) {
+			this.globalSettings.permissions = {};
+		}
+		this.globalSettings.permissions.extensionToolEnforcement = enabled;
+		this.markModified("permissions", "extensionToolEnforcement");
+		this.save();
+	}
+
 	setPermissionDenyRules(rules: string[]): void {
 		this.globalSettings.permissionDeny = [...rules];
 		this.markModified("permissionDeny");
@@ -772,6 +798,26 @@ export class SettingsManager {
 		this.globalSettings.permissionAllow = [...rules];
 		this.markModified("permissionAllow");
 		this.save();
+	}
+
+	getPromptContextEnableDedupe(): boolean {
+		return this.settings.promptContext?.enableContextDedupe ?? true;
+	}
+
+	getPromptContextMaxCharsPerFile(): number {
+		const value = this.settings.promptContext?.maxContextCharsPerFile;
+		if (typeof value !== "number" || !Number.isFinite(value)) return 4000;
+		return Math.max(1, Math.floor(value));
+	}
+
+	getPromptContextMaxTotalChars(): number {
+		const value = this.settings.promptContext?.maxTotalContextChars;
+		if (typeof value !== "number" || !Number.isFinite(value)) return 12000;
+		return Math.max(1, Math.floor(value));
+	}
+
+	getPromptContextEnableGitSnapshotContext(): boolean {
+		return this.settings.promptContext?.enableGitSnapshotContext ?? false;
 	}
 
 	getShellCommandPrefix(): string | undefined {

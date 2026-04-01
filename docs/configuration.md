@@ -101,8 +101,15 @@ Settings are merged in this order (later wins):
       }
     }
   },
+  "promptContext": {
+    "enableContextDedupe": true,
+    "maxContextCharsPerFile": 4000,
+    "maxTotalContextChars": 12000,
+    "enableGitSnapshotContext": false
+  },
   "permissions": {
-    "autoApprove": false
+    "autoApprove": false,
+    "extensionToolEnforcement": false
   }
 }
 ```
@@ -110,6 +117,8 @@ Settings are merged in this order (later wins):
 `githubTools.networkEnabled` controls whether `git_write` network actions (`fetch`, `pull`, `push`) are allowed.  
 `githubTools.token` is optional and, when set, is injected for GitHub HTTPS authentication during network git actions.
 `dbTools` defines named DB connection profiles consumed by `db_run`; for network adapters (`postgres`, `mysql`, `mongodb`, `redis`) use `dsnEnv` so secrets stay in environment variables instead of tool input.
+`promptContext` controls system prompt context compaction before model call: dedupe by normalized content hash, per-file char budget, total char budget, and optional git snapshot context inclusion.
+`permissions.extensionToolEnforcement` enables strict runtime permission tier checks for extension tools (off by default).
 
 ### `db_run` Setup (Recommended)
 
@@ -388,6 +397,53 @@ Permissions control tool execution approval behavior.
 - **File writes**: Whether `edit` and `write` tools require approval
 - **Shell commands**: Whether `bash` executions require approval
 - **Destructive actions**: Special handling for `rm`, `sudo`, etc.
+
+### Extension Tool Permission Tiers
+
+Extension tools can declare one of the runtime tiers:
+
+- `read-only`
+- `workspace-write`
+- `danger-full-access`
+
+When `permissions.extensionToolEnforcement=true`, interactive mode enforces stricter behavior for extension tools:
+
+- in `auto` mode, extension tools marked `read-only` are allowed automatically
+- extension tools missing `requiredPermission` metadata are blocked in `auto` mode (with warning)
+- `ask` and `yolo` modes keep their expected approval semantics
+
+Example:
+
+```json
+{
+  "permissions": {
+    "extensionToolEnforcement": true
+  }
+}
+```
+
+### Prompt Context Budgets
+
+`promptContext` applies deterministic preprocessing to loaded context files before they are appended to the system prompt:
+
+- normalize line endings and trim
+- optional dedupe by normalized-content hash
+- per-file cap (`maxContextCharsPerFile`)
+- total cap (`maxTotalContextChars`)
+- optional git snapshot context (`enableGitSnapshotContext`)
+
+Default values:
+
+```json
+{
+  "promptContext": {
+    "enableContextDedupe": true,
+    "maxContextCharsPerFile": 4000,
+    "maxTotalContextChars": 12000,
+    "enableGitSnapshotContext": false
+  }
+}
+```
 
 ### Safety Defaults
 

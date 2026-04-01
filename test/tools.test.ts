@@ -1,7 +1,8 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getBackgroundProcess, stopBackgroundProcess } from "../src/core/background-processes.js";
 import { bashTool, createBashTool } from "../src/core/tools/bash.js";
 import { editTool } from "../src/core/tools/edit.js";
 import { findTool } from "../src/core/tools/find.js";
@@ -351,6 +352,43 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result).trim()).toBe("red");
 			expect(getTextOutput(result)).not.toContain("\u001b[31m");
+		});
+
+		it("should support detached background execution and return metadata", async () => {
+			const bashWithBackground = createBashTool(testDir);
+			const result = await bashWithBackground.execute("test-call-14", {
+				command: "sleep 5; echo background",
+				run_in_background: true,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).toContain("Started background process");
+			expect(result.details?.backgroundTaskId).toBeDefined();
+			expect(result.details?.backgroundStatusPath).toBeDefined();
+			expect(result.details?.backgroundLogPath).toBeDefined();
+			expect(existsSync(result.details?.backgroundStatusPath ?? "")).toBe(true);
+			expect(existsSync(result.details?.backgroundLogPath ?? "")).toBe(true);
+
+			const id = result.details?.backgroundTaskId;
+			expect(id).toBeDefined();
+			const record = getBackgroundProcess(testDir, id ?? "");
+			expect(record?.id).toBe(id);
+			if (id) stopBackgroundProcess(testDir, id);
+		});
+
+		it("should reject run_in_background when custom operations are provided", async () => {
+			const bashWithCustomOps = createBashTool(testDir, {
+				operations: {
+					exec: async () => ({ exitCode: 0 }),
+				},
+			});
+
+			await expect(
+				bashWithCustomOps.execute("test-call-15", {
+					command: "echo custom-ops",
+					run_in_background: true,
+				}),
+			).rejects.toThrow(/not supported with custom execution operations/i);
 		});
 	});
 

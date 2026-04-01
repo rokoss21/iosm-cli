@@ -5,20 +5,58 @@
 import type { AgentTool, AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import type { ExtensionRunner } from "./runner.js";
 import type { RegisteredTool, ToolCallEventResult } from "./types.js";
+import type { ToolPermissionGuard, ToolPermissionRequest, ToolRequiredPermission } from "../tools/permissions.js";
+
+type RegisteredToolSource = "extension" | "custom";
+
+export interface ExtensionToolPermissionPolicy {
+	enabled: boolean;
+	guard?: ToolPermissionGuard;
+	createRequest: (input: {
+		toolName: string;
+		params: Record<string, unknown>;
+		requiredPermission?: ToolRequiredPermission;
+		toolSource: RegisteredToolSource;
+	}) => ToolPermissionRequest;
+}
+
+export interface WrapRegisteredToolOptions {
+	toolSource?: RegisteredToolSource;
+	permissionPolicy?: ExtensionToolPermissionPolicy;
+}
 
 /**
  * Wrap a RegisteredTool into an AgentTool.
  * Uses the runner's createContext() for consistent context across tools and event handlers.
  */
-export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: ExtensionRunner): AgentTool {
+export function wrapRegisteredTool(
+	registeredTool: RegisteredTool,
+	runner: ExtensionRunner,
+	options?: WrapRegisteredToolOptions,
+): AgentTool {
 	const { definition } = registeredTool;
+	const toolSource = options?.toolSource ?? "extension";
+	const permissionPolicy = options?.permissionPolicy;
 	return {
 		name: definition.name,
 		label: definition.label,
 		description: definition.description,
 		parameters: definition.parameters,
-		execute: (toolCallId, params, signal, onUpdate) =>
-			definition.execute(toolCallId, params, signal, onUpdate, runner.createContext()),
+		execute: async (toolCallId, params, signal, onUpdate) => {
+			if (permissionPolicy?.enabled && permissionPolicy.guard) {
+				const request = permissionPolicy.createRequest({
+					toolName: definition.name,
+					params: params as Record<string, unknown>,
+					requiredPermission: definition.requiredPermission,
+					toolSource,
+				});
+				const allowed = await permissionPolicy.guard(request);
+				if (!allowed) {
+					throw new Error(`Permission denied for tool ${definition.name}`);
+				}
+			}
+			return definition.execute(toolCallId, params, signal, onUpdate, runner.createContext());
+		},
 	};
 }
 
@@ -26,8 +64,17 @@ export function wrapRegisteredTool(registeredTool: RegisteredTool, runner: Exten
  * Wrap all registered tools into AgentTools.
  * Uses the runner's createContext() for consistent context across tools and event handlers.
  */
-export function wrapRegisteredTools(registeredTools: RegisteredTool[], runner: ExtensionRunner): AgentTool[] {
-	return registeredTools.map((rt) => wrapRegisteredTool(rt, runner));
+export function wrapRegisteredTools(
+	registeredTools: RegisteredTool[],
+	runner: ExtensionRunner,
+	options?:
+		| WrapRegisteredToolOptions
+		| ((registeredTool: RegisteredTool) => WrapRegisteredToolOptions | undefined),
+): AgentTool[] {
+	return registeredTools.map((rt) => {
+		const resolvedOptions = typeof options === "function" ? options(rt) : options;
+		return wrapRegisteredTool(rt, runner, resolvedOptions);
+	});
 }
 
 /**

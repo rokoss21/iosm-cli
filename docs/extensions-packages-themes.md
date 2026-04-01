@@ -47,6 +47,7 @@ export default function (pi: ExtensionAPI) {
     name: "weather",
     label: "Weather",
     description: "Get current weather for a city",
+    requiredPermission: "read-only",
     parameters: Type.Object({
       city: Type.String({ description: "City name" }),
     }),
@@ -67,6 +68,32 @@ export default function (pi: ExtensionAPI) {
 > import { StringEnum } from "@mariozechner/pi-ai";
 > action: StringEnum(["add", "remove", "list"] as const)
 > ```
+
+### Extension Tool Permission Metadata
+
+Custom tools can declare `requiredPermission` to participate in runtime permission tier policies:
+
+- `read-only`
+- `workspace-write`
+- `danger-full-access`
+
+Example for mutating tool:
+
+```typescript
+pi.registerTool({
+  name: "repo_sync",
+  label: "Repo Sync",
+  description: "Synchronize local repository metadata cache",
+  requiredPermission: "workspace-write",
+  parameters: Type.Object({ force: Type.Optional(Type.Boolean()) }),
+  async execute(_toolCallId, params) {
+    // ...
+    return { content: [{ type: "text", text: "ok" }] };
+  },
+});
+```
+
+When runtime setting `permissions.extensionToolEnforcement` is enabled, these tiers are used in interactive permission flow.
 
 ### Registering Commands
 

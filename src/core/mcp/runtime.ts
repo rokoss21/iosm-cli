@@ -327,6 +327,8 @@ export class McpRuntime {
 								cwd: this.cwd,
 								input: (params as Record<string, unknown>) ?? {},
 								summary,
+								requiredPermission: "read-only",
+								toolSource: "mcp",
 							};
 							const allowed = await this.permissionGuard(request);
 							if (!allowed) {

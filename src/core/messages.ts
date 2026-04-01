@@ -9,7 +9,8 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
 import { TASK_PLAN_CUSTOM_TYPE } from "./task-plan.js";
 
-export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary.
+Continue from the current state and do not repeat a full recap unless the user explicitly asks for it:
 
 <summary>
 `;

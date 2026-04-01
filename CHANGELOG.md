@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-04-01
+
+### Added
+
+- **Prompt context preprocessing controls** — added deterministic `promptContext` pipeline (`normalize -> dedupe -> per-file cap -> total cap`) with optional git snapshot plumbing and context preprocessing trace metrics
+- **Background shell process runtime** — added persistent detached process manager with metadata/log tracking under `.iosm/background/processes`
+- **Interactive background command surface** — added `/bg` command family (`list`, `status`, `logs`, `stop`) and detached shell submission syntax via `! <command> &`
+- **Bash detached execution parameter** — added `run_in_background` support in built-in `bash` tool and session-level bash execution path with returned `backgroundTaskId`/status/log metadata
+- **Extension tool permission tiers** — added optional `requiredPermission` metadata (`read-only`, `workspace-write`, `danger-full-access`) for extension tools and runtime propagation through permission flow
+- **Subagent tool-name normalization** — added normalization/filtering for custom agent `tools` and `disallowed_tools` (lowercase, `-` -> `_`, unknown removal with diagnostics)
+
+### Changed
+
+- **Permission flow unification** — consolidated tool permission evaluation for built-ins and extensions with tier/source-aware request metadata and stricter extension enforcement branch behind `permissions.extensionToolEnforcement` (default off)
+- **Compaction continuation framing** — compaction summary prefix now explicitly instructs continuation from current state without full recap unless user asks
+- **System prompt guidance updates** — bash guidance now includes detached execution usage (`run_in_background`) for long-running non-blocking commands
+
+### Documentation
+
+- Updated README header/version marker to `0.2.11`
+- Updated interactive/CLI/configuration/session-trace/orchestration docs with:
+  - background process workflow (`! ... &`, `/bg`)
+  - `promptContext` settings and defaults
+  - extension permission tier semantics and `permissions.extensionToolEnforcement`
+  - subagent frontmatter tool normalization behavior
+- Updated extension authoring docs with `requiredPermission` examples for `registerTool`
+
+### Tests
+
+- Added `test/background-processes.test.ts` coverage for start/list/log-tail/stop lifecycle
+- Added interactive `/bg` coverage in `test/interactive-mode-status.test.ts`
+- Added `run_in_background` coverage for `bash` in `test/tools.test.ts`
+- Expanded regressions for context preprocessing, extension permission-tier behavior, compaction continuation framing, and subagent tool normalization
+
 ## [0.2.10] - 2026-03-18
 
 ### Added

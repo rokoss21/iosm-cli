@@ -756,7 +756,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		: undefined;
 
 	let sessionRef: AgentSession | undefined;
-	const initialCustomSubagents = loadCustomSubagents({ cwd, agentDir });
+	const getKnownSubagentToolNames = (): string[] => {
+		const known = new Set<string>(Object.keys(allTools));
+		for (const extension of resourceLoader.getExtensions().extensions) {
+			for (const toolName of extension.tools.keys()) {
+				known.add(toolName);
+			}
+		}
+		for (const tool of options.customTools ?? []) {
+			known.add(tool.name);
+		}
+		known.add("task");
+		known.add("ask_user");
+		if (sessionRef) {
+			for (const tool of sessionRef.getAllTools()) {
+				known.add(tool.name);
+			}
+		}
+		return Array.from(known.values());
+	};
+	const initialCustomSubagents = loadCustomSubagents({
+		cwd,
+		agentDir,
+		knownToolNames: getKnownSubagentToolNames(),
+	});
 	for (const diagnostic of initialCustomSubagents.diagnostics) {
 		console.warn(`Warning: invalid subagent ${diagnostic.path}: ${diagnostic.message}`);
 	}
@@ -765,7 +788,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				resolveCustomSubagent: (name) => {
 					// Resolve against live on-disk definitions so newly created agents
 					// are immediately callable in the same interactive session.
-					const current = loadCustomSubagents({ cwd, agentDir });
+					const current = loadCustomSubagents({
+						cwd,
+						agentDir,
+						knownToolNames: getKnownSubagentToolNames(),
+					});
 					const resolvedName = resolveCustomSubagentReference(name, current.agents);
 					return resolvedName ? current.agents.find((agent) => agent.name === resolvedName) : undefined;
 				},
@@ -774,6 +801,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					name: agent.name,
 					description: agent.description,
 				})),
+				getAvailableToolNames: () =>
+					sessionRef ? sessionRef.getAllTools().map((tool) => tool.name) : getKnownSubagentToolNames(),
 				getMetaMessages: () => sessionRef?.getMetaMessages() ?? [],
 				hostProfileName: profile?.name,
 				getHostProfileName: () => sessionRef?.profileName ?? profile?.name,

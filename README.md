@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.10</h1>
+<h1>IOSM CLI 0.2.11</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -60,6 +60,7 @@ It is not a chat interface. It is a runtime.
 | **Complex changes** | `/contract` → `/singular` → `/swarm` — deterministic execution with locks and gates |
 | **Codebase understanding** | Semantic search, repository-scale indexing, project memory |
 | **Multi-agent work** | Parallel subagents with shared memory and consistency model |
+| **Background execution** | Detached shell runs (`! <command> &`) with `/bg` process management |
 | **Methodology** | IOSM cycles: measurable improvement with metrics, evidence, and artifact history |
 | **Integrations** | Interactive TUI, print mode, JSON event stream, JSON-RPC server, TypeScript SDK |
 | **Extensibility** | MCP servers, TypeScript extensions, Markdown skills, prompt templates, themes |
@@ -187,6 +188,7 @@ iosm
 Common tasks:
 - implement or refactor features
 - read, search, and edit files with full shell access
+- run long shell jobs in background (`! npm run dev &`) and inspect with `/bg`
 - review architecture or explore unfamiliar modules
 - resume previous sessions: `/resume`, `/fork`, `/tree`
 - keep persistent notes: `/memory`
@@ -439,8 +441,15 @@ Settings merge in priority order: **CLI flags** > **project** `.iosm/settings.js
     "autoCompact": true,
     "compactThreshold": 100000
   },
+  "promptContext": {
+    "enableContextDedupe": true,
+    "maxContextCharsPerFile": 4000,
+    "maxTotalContextChars": 12000,
+    "enableGitSnapshotContext": false
+  },
   "permissions": {
-    "autoApprove": false
+    "autoApprove": false,
+    "extensionToolEnforcement": false
   }
 }
 ```

@@ -1501,6 +1501,61 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedFailed).toBe(0);
 	});
 
+	it("normalizes delegated custom agent tool names and filters unknown values", async () => {
+		const cwd = makeTempDir();
+		const calls: Array<{ prompt: string; tools: string[]; profileName?: string }> = [];
+		const tool = createTaskTool(
+			cwd,
+			async (options) => {
+				calls.push({ prompt: options.prompt, tools: [...options.tools], profileName: options.profileName });
+				if (options.prompt.includes("root-task")) {
+					return {
+						output:
+							'Root analysis complete.\n<delegate_task profile="security_reviewer" description="Security deep dive">scan module</delegate_task>',
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				if (options.prompt.includes("scan module")) {
+					return {
+						output: "Security review complete.",
+						stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+					};
+				}
+				return { output: "unexpected" };
+			},
+			{
+				resolveCustomSubagent: (name) =>
+					name === "security_reviewer"
+						? {
+								name: "security_reviewer",
+								description: "Security reviewer",
+								sourcePath: "fixture",
+								profile: "plan",
+								instructions: "Security-focused reviewer.",
+								tools: [" READ ", "WEB-SEARCH", "unknown-tool"],
+								disallowedTools: ["web-search"],
+							}
+						: undefined,
+				availableCustomSubagents: ["security_reviewer"],
+			},
+		);
+
+		const result = await tool.execute("call_delegate_custom_agent_normalized_tools", {
+			description: "delegate custom agent normalized tools",
+			prompt: "root-task",
+			profile: "full",
+		});
+
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.profileName).toBe("plan");
+		expect(calls[1]?.tools).toEqual(["read"]);
+		expect(text).toContain("security_reviewer/plan");
+		expect(result.details?.delegatedTasks).toBe(1);
+		expect(result.details?.delegatedSucceeded).toBe(1);
+		expect(result.details?.delegatedFailed).toBe(0);
+	});
+
 	it("emits delegate mini-list progress updates", async () => {
 		const cwd = makeTempDir();
 		const tool = createTaskTool(cwd, async (options) => {

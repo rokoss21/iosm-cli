@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseFrontmatter } from "../utils/frontmatter.js";
-import { isValidProfileName, type AgentProfileName } from "./agent-profiles.js";
+import { AGENT_PROFILES, isValidProfileName, type AgentProfileName } from "./agent-profiles.js";
 
 export type CustomSubagentSourceScope = "builtin" | "global" | "project";
 
@@ -268,6 +268,43 @@ const BUILTIN_SUBAGENTS: CustomSubagentDefinition[] = [
 	},
 ];
 
+const EXTRA_KNOWN_TOOLS = ["task", "todo_write", "todo_read", "ask_user", "git_read"];
+
+export function normalizeToolName(value: string): string {
+	return value.trim().toLowerCase().replace(/-/g, "_");
+}
+
+export function getDefaultKnownToolNames(): string[] {
+	const fromProfiles = Object.values(AGENT_PROFILES).flatMap((profile) => profile.tools);
+	return Array.from(
+		new Set([...fromProfiles, ...EXTRA_KNOWN_TOOLS].map((name) => normalizeToolName(name)).filter(Boolean)),
+	).sort((left, right) => left.localeCompare(right));
+}
+
+export function normalizeAndFilterToolNames(
+	values: readonly string[] | undefined,
+	knownToolNames?: ReadonlySet<string>,
+): { normalized: string[]; unknown: string[] } {
+	if (!values || values.length === 0) {
+		return { normalized: [], unknown: [] };
+	}
+
+	const seen = new Set<string>();
+	const normalized: string[] = [];
+	const unknown: string[] = [];
+	for (const value of values) {
+		const next = normalizeToolName(value);
+		if (!next || seen.has(next)) continue;
+		seen.add(next);
+		if (knownToolNames && knownToolNames.size > 0 && !knownToolNames.has(next)) {
+			unknown.push(next);
+			continue;
+		}
+		normalized.push(next);
+	}
+	return { normalized, unknown };
+}
+
 function trimWrappingChars(value: string): string {
 	let next = value.trim();
 	next = next.replace(/^@+/, "");
@@ -407,13 +444,20 @@ function asStringArray(value: unknown): string[] | undefined {
 	return undefined;
 }
 
-function parseSubagentFile(filePath: string, cwd: string): { agent?: CustomSubagentDefinition; diagnostic?: SubagentDiagnostic } {
+function parseSubagentFile(
+	filePath: string,
+	cwd: string,
+	knownToolNames: ReadonlySet<string>,
+): { agent?: CustomSubagentDefinition; diagnostics: SubagentDiagnostic[] } {
+	const diagnostics: SubagentDiagnostic[] = [];
 	let content: string;
 	try {
 		content = readFileSync(filePath, "utf8");
 	} catch (error) {
 		return {
-			diagnostic: { path: filePath, message: `Failed to read file: ${error instanceof Error ? error.message : String(error)}` },
+			diagnostics: [
+				{ path: filePath, message: `Failed to read file: ${error instanceof Error ? error.message : String(error)}` },
+			],
 		};
 	}
 
@@ -425,16 +469,32 @@ function parseSubagentFile(filePath: string, cwd: string): { agent?: CustomSubag
 	const profileRaw = typeof frontmatter.profile === "string" ? frontmatter.profile.trim() : "";
 	if (profileRaw.length > 0 && !isValidProfileName(profileRaw.toLowerCase())) {
 		return {
-			diagnostic: {
-				path: filePath,
-				message: `Invalid profile "${profileRaw}". Valid profiles: explore, plan, iosm, iosm_analyst, iosm_verifier, cycle_planner, meta, full.`,
-			},
+			diagnostics: [
+				{
+					path: filePath,
+					message: `Invalid profile "${profileRaw}". Valid profiles: explore, plan, iosm, iosm_analyst, iosm_verifier, cycle_planner, meta, full.`,
+				},
+			],
 		};
 	}
 	const profile =
 		profileRaw.length > 0 ? (profileRaw.toLowerCase() as AgentProfileName) : undefined;
-	const tools = asStringArray(frontmatter.tools);
-	const disallowedTools = asStringArray(frontmatter.disallowed_tools);
+	const parsedTools = normalizeAndFilterToolNames(asStringArray(frontmatter.tools), knownToolNames);
+	const parsedDisallowedTools = normalizeAndFilterToolNames(asStringArray(frontmatter.disallowed_tools), knownToolNames);
+	if (parsedTools.unknown.length > 0) {
+		diagnostics.push({
+			path: filePath,
+			message: `Unknown tools were removed from "tools": ${parsedTools.unknown.join(", ")}.`,
+		});
+	}
+	if (parsedDisallowedTools.unknown.length > 0) {
+		diagnostics.push({
+			path: filePath,
+			message: `Unknown tools were removed from "disallowed_tools": ${parsedDisallowedTools.unknown.join(", ")}.`,
+		});
+	}
+	const tools = parsedTools.normalized.length > 0 ? parsedTools.normalized : undefined;
+	const disallowedTools = parsedDisallowedTools.normalized.length > 0 ? parsedDisallowedTools.normalized : undefined;
 	const systemPrompt =
 		typeof frontmatter.system_prompt === "string" && frontmatter.system_prompt.trim().length > 0
 			? frontmatter.system_prompt.trim()
@@ -447,19 +507,20 @@ function parseSubagentFile(filePath: string, cwd: string): { agent?: CustomSubag
 	if (configuredCwd) {
 		try {
 			if (!existsSync(configuredCwd) || !statSync(configuredCwd).isDirectory()) {
-				return { diagnostic: { path: filePath, message: `Configured cwd is invalid: ${configuredCwd}` } };
+				return { diagnostics: [{ path: filePath, message: `Configured cwd is invalid: ${configuredCwd}` }] };
 			}
 		} catch {
-			return { diagnostic: { path: filePath, message: `Configured cwd is invalid: ${configuredCwd}` } };
+			return { diagnostics: [{ path: filePath, message: `Configured cwd is invalid: ${configuredCwd}` }] };
 		}
 	}
 
 	const instructions = body.trim();
 	if (!instructions) {
-		return { diagnostic: { path: filePath, message: "Subagent instructions are empty." } };
+		return { diagnostics: [{ path: filePath, message: "Subagent instructions are empty." }] };
 	}
 
 	return {
+		diagnostics,
 		agent: {
 			name,
 			description: description || `Custom subagent ${name}`,
@@ -476,11 +537,22 @@ function parseSubagentFile(filePath: string, cwd: string): { agent?: CustomSubag
 	};
 }
 
-export function loadCustomSubagents(options: { cwd: string; agentDir: string }): LoadCustomSubagentsResult {
+export interface LoadCustomSubagentsOptions {
+	cwd: string;
+	agentDir: string;
+	knownToolNames?: string[];
+}
+
+export function loadCustomSubagents(options: LoadCustomSubagentsOptions): LoadCustomSubagentsResult {
 	const roots: Array<{ path: string; scope: CustomSubagentSourceScope; priority: number }> = [
 		{ path: join(options.agentDir, "agents"), scope: "global", priority: 0 },
 		{ path: join(options.cwd, ".iosm", "agents"), scope: "project", priority: 1 },
 	];
+	const normalizedKnownToolNames = new Set(
+		(options.knownToolNames && options.knownToolNames.length > 0 ? options.knownToolNames : getDefaultKnownToolNames())
+			.map((name) => normalizeToolName(name))
+			.filter(Boolean),
+	);
 	const diagnostics: SubagentDiagnostic[] = [];
 	const overrides: SubagentOverrideInfo[] = [];
 	const allAgents: CustomSubagentEntry[] = [];
@@ -546,11 +618,8 @@ export function loadCustomSubagents(options: { cwd: string; agentDir: string }):
 
 	for (const root of roots) {
 		for (const file of readMarkdownFilesRecursive(root.path)) {
-			const parsed = parseSubagentFile(file, options.cwd);
-			if (parsed.diagnostic) {
-				diagnostics.push(parsed.diagnostic);
-				continue;
-			}
+			const parsed = parseSubagentFile(file, options.cwd, normalizedKnownToolNames);
+			if (parsed.diagnostics.length > 0) diagnostics.push(...parsed.diagnostics);
 			if (!parsed.agent) continue;
 			const entry: CustomSubagentEntry = {
 				...parsed.agent,

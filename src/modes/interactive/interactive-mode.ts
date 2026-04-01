@@ -184,6 +184,12 @@ import {
 	type CustomSubagentEntry,
 } from "../../core/subagents.js";
 import { getSubagentRun, listSubagentRuns } from "../../core/subagent-runs.js";
+import {
+	getBackgroundProcess,
+	listBackgroundProcesses,
+	readBackgroundProcessLogTail,
+	stopBackgroundProcess,
+} from "../../core/background-processes.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { SettingsManager } from "../../core/settings-manager.js";
@@ -1399,6 +1405,13 @@ type SwarmSubagentProgress = {
 	delegateItems?: SubagentDelegateItem[];
 };
 
+function getKnownSubagentToolNamesFromSession(session: unknown): string[] | undefined {
+	if (!session || typeof session !== "object") return undefined;
+	const maybeSession = session as { getAllTools?: () => Array<{ name: string }> };
+	if (typeof maybeSession.getAllTools !== "function") return undefined;
+	return maybeSession.getAllTools().map((tool) => tool.name);
+}
+
 export class InteractiveMode {
 	private session: AgentSession;
 	private ui: TUI;
@@ -1677,6 +1690,11 @@ export class InteractiveMode {
 	}
 
 	private async requestToolPermission(request: ToolPermissionRequest): Promise<boolean> {
+		const strictExtensionToolEnforcement =
+			typeof this.settingsManager?.getPermissionExtensionToolEnforcement === "function"
+				? this.settingsManager.getPermissionExtensionToolEnforcement()
+				: false;
+
 		if (
 			this.activeProfileName === "meta" &&
 			!this.currentTurnSawTaskToolCall &&
@@ -1711,6 +1729,20 @@ export class InteractiveMode {
 			}
 		}
 
+		if (strictExtensionToolEnforcement && request.toolSource === "extension") {
+			if (this.permissionMode === "auto") {
+				if (request.requiredPermission === "read-only") {
+					return true;
+				}
+				if (!request.requiredPermission) {
+					this.showWarning(
+						`Extension tool ${request.toolName} is missing requiredPermission metadata. Add an allow rule or switch to ask/yolo mode.`,
+					);
+					return false;
+				}
+			}
+		}
+
 		if (this.permissionMode === "yolo") {
 			return true;
 		}
@@ -1731,7 +1763,9 @@ export class InteractiveMode {
 			if (this.permissionMode === "yolo") return true;
 			if (this.sessionAllowedToolSignatures.has(signature)) return true;
 
-			const label = `${request.toolName}: ${request.summary}`;
+			const tierLabel = request.requiredPermission ? ` [${request.requiredPermission}]` : "";
+			const sourceLabel = request.toolSource === "extension" ? " extension" : "";
+			const label = `${request.toolName}${tierLabel}${sourceLabel}: ${request.summary}`;
 			const choice = await this.showExtensionSelector("Permission required", [
 				"Allow once",
 				"Deny",
@@ -2401,7 +2435,11 @@ export class InteractiveMode {
 
 		const customAgentMentionItems = (() => {
 			const cwd = this.sessionManager.getCwd();
-			const loaded = loadCustomSubagents({ cwd, agentDir: getAgentDir() });
+			const loaded = loadCustomSubagents({
+				cwd,
+				agentDir: getAgentDir(),
+				knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+			});
 			return loaded.agents.map((agent) => ({
 				name: agent.name,
 				value: `@${agent.name} `,
@@ -2487,6 +2525,10 @@ export class InteractiveMode {
 		// Both are needed: fd for autocomplete, rg for grep tool and bash commands
 		const [fdPath] = await Promise.all([ensureTool("fd"), ensureTool("rg")]);
 		this.fdPath = fdPath;
+
+		// Refresh provider model catalogs on startup for all authenticated providers.
+		// Skip providers explicitly configured in models.json to preserve manual overrides.
+		await this.hydrateMissingProviderModelsForSavedAuth({ forceRefresh: true });
 
 		// Restore saved default model early so startup header/session are consistent after restart.
 		await this.restoreSavedModelSelectionOnStartup();
@@ -4214,6 +4256,11 @@ export class InteractiveMode {
 				await this.handleSubagentResumeSlashCommand(text);
 				return;
 			}
+			if (text === "/bg" || text.startsWith("/bg ")) {
+				this.editor.setText("");
+				await this.handleBackgroundProcessesSlashCommand(text);
+				return;
+			}
 			if (text === "/team-runs" || text.startsWith("/team-runs ")) {
 				this.editor.setText("");
 				this.handleTeamRunsSlashCommand(text);
@@ -4414,15 +4461,16 @@ export class InteractiveMode {
 			// Handle bash command (! for normal, !! for excluded from context)
 			if (text.startsWith("!")) {
 				const isExcluded = text.startsWith("!!");
-				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+				const rawCommand = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
+				const { command, runInBackground } = this.parseBashSubmission(rawCommand);
 				if (command) {
-					if (this.session.isBashRunning) {
+					if (!runInBackground && this.session.isBashRunning) {
 						this.showWarning("A bash command is already running. Press Esc to cancel it first.");
 						this.editor.setText(text);
 						return;
 					}
 					this.editor.addToHistory?.(text);
-					await this.handleBashCommand(command, isExcluded);
+					await this.handleBashCommand(command, isExcluded, runInBackground);
 					this.isBashMode = false;
 					this.updateEditorBorderColor();
 					return;
@@ -7152,7 +7200,7 @@ export class InteractiveMode {
 	}
 
 	private async showModelProviderSelector(preferredProvider?: string): Promise<void> {
-		await this.hydrateMissingProviderModelsForSavedAuth();
+		await this.hydrateMissingProviderModelsForSavedAuth({ forceRefresh: true });
 		this.session.modelRegistry.refresh();
 		let models: Model<any>[] = [];
 		try {
@@ -7774,10 +7822,32 @@ export class InteractiveMode {
 		return registry.getAll().some((model) => model.provider === providerId);
 	}
 
-	private async hydrateProviderModelsFromModelsDev(providerId: string): Promise<boolean> {
-		if (this.hasRegisteredProviderModels(providerId)) return true;
+	private isProviderConfiguredInModelsJson(providerId: string): boolean {
+		const modelsPath = getModelsPath();
+		if (!fs.existsSync(modelsPath)) return false;
+		try {
+			const parsed = JSON.parse(fs.readFileSync(modelsPath, "utf-8")) as { providers?: unknown };
+			const providers = parsed?.providers;
+			if (!providers || typeof providers !== "object" || Array.isArray(providers)) return false;
+			return Object.prototype.hasOwnProperty.call(providers, providerId);
+		} catch {
+			return false;
+		}
+	}
 
-		await this.refreshModelsDevProviderCatalog();
+	private async hydrateProviderModelsFromModelsDev(
+		providerId: string,
+		options?: { forceRefresh?: boolean; skipCatalogRefresh?: boolean },
+	): Promise<boolean> {
+		const forceRefresh = options?.forceRefresh === true;
+		if (!forceRefresh && this.hasRegisteredProviderModels(providerId)) return true;
+		if (forceRefresh && this.isProviderConfiguredInModelsJson(providerId)) {
+			return this.hasRegisteredProviderModels(providerId);
+		}
+
+		if (!options?.skipCatalogRefresh) {
+			await this.refreshModelsDevProviderCatalog();
+		}
 		const providerInfo = this.modelsDevProviderCatalogById.get(providerId);
 		if (!providerInfo) return false;
 
@@ -7792,13 +7862,17 @@ export class InteractiveMode {
 		}
 	}
 
-	private async hydrateMissingProviderModelsForSavedAuth(): Promise<void> {
+	private async hydrateMissingProviderModelsForSavedAuth(options?: { forceRefresh?: boolean }): Promise<void> {
 		const savedProviders = this.session.modelRegistry.authStorage.list();
 		if (savedProviders.length === 0) return;
 
+		await this.refreshModelsDevProviderCatalog();
+		const forceRefresh = options?.forceRefresh === true;
 		for (const providerId of savedProviders) {
-			if (this.hasRegisteredProviderModels(providerId)) continue;
-			await this.hydrateProviderModelsFromModelsDev(providerId);
+			await this.hydrateProviderModelsFromModelsDev(providerId, {
+				forceRefresh,
+				skipCatalogRefresh: true,
+			});
 		}
 	}
 
@@ -7809,9 +7883,7 @@ export class InteractiveMode {
 		const defaultModelId = this.settingsManager.getDefaultModel();
 		if (!defaultProvider || !defaultModelId) return;
 
-		if (!this.hasRegisteredProviderModels(defaultProvider)) {
-			await this.hydrateProviderModelsFromModelsDev(defaultProvider);
-		}
+		await this.hydrateProviderModelsFromModelsDev(defaultProvider, { forceRefresh: true });
 
 		const model = this.session.modelRegistry.find(defaultProvider, defaultModelId);
 		if (!model) return;
@@ -7911,9 +7983,9 @@ export class InteractiveMode {
 		}
 
 		this.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
-		let hasProviderModels = this.hasRegisteredProviderModels(providerId);
+		let hasProviderModels = await this.hydrateProviderModelsFromModelsDev(providerId, { forceRefresh: true });
 		if (!hasProviderModels) {
-			hasProviderModels = await this.hydrateProviderModelsFromModelsDev(providerId);
+			hasProviderModels = this.hasRegisteredProviderModels(providerId);
 		}
 		await this.updateAvailableProviderCount();
 		this.showStatus(`${providerName} API key saved to ${getAuthPath()}`);
@@ -11417,7 +11489,11 @@ export class InteractiveMode {
 
 	private resolveMentionedAgent(text: string): string | undefined {
 		const cwd = this.sessionManager.getCwd();
-		const loaded = loadCustomSubagents({ cwd, agentDir: getAgentDir() });
+		const loaded = loadCustomSubagents({
+			cwd,
+			agentDir: getAgentDir(),
+			knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+		});
 		if (loaded.agents.length === 0) return undefined;
 		const matches = text.matchAll(/(?:^|\s)@([^\s]+)/g);
 		for (const match of matches) {
@@ -11510,7 +11586,7 @@ export class InteractiveMode {
 	}
 
 	private async selectModelForImmediateRetry(preferredProvider?: string): Promise<Model<any> | undefined> {
-		await this.hydrateMissingProviderModelsForSavedAuth();
+		await this.hydrateMissingProviderModelsForSavedAuth({ forceRefresh: true });
 		this.session.modelRegistry.refresh();
 		let models: Model<any>[] = [];
 		try {
@@ -11626,7 +11702,11 @@ export class InteractiveMode {
 			const cleaned = userInput.replace(/(?:^|\s)@[^\s]+/g, " ").trim();
 			if (this.isCapabilityQuery(cleaned)) {
 				const cwd = this.sessionManager.getCwd();
-				const loaded = loadCustomSubagents({ cwd, agentDir: getAgentDir() });
+				const loaded = loadCustomSubagents({
+					cwd,
+					agentDir: getAgentDir(),
+					knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+				});
 				const agent = loaded.agents.find((item) => item.name === mentionedAgent);
 				if (agent) {
 					const capabilityPrompt = [
@@ -14044,7 +14124,11 @@ export class InteractiveMode {
 		const args = this.parseSlashArgs(text).slice(1);
 		const asJson = args.includes("--json");
 		const cwd = this.sessionManager.getCwd();
-		const loaded = loadCustomSubagents({ cwd, agentDir: getAgentDir() });
+		const loaded = loadCustomSubagents({
+			cwd,
+			agentDir: getAgentDir(),
+			knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+		});
 		const profiles = getProfileNames().map((name) => getAgentProfile(name));
 
 		if (asJson) {
@@ -14643,6 +14727,148 @@ export class InteractiveMode {
 			expandPromptTemplates: false,
 			source: "interactive",
 		});
+	}
+
+	private formatBackgroundProcessOptionLabel(
+		record: ReturnType<typeof listBackgroundProcesses>[number],
+		index: number,
+	): string {
+		const status = `status=${record.status}`;
+		const pid = `pid=${record.pid}`;
+		const created = record.createdAt ? `created=${record.createdAt}` : "";
+		const commandPreview =
+			record.command.length > 64 ? `${record.command.slice(0, 61)}...` : record.command;
+		return `${index + 1}. ${record.id} · ${status} · ${pid}${created ? ` · ${created}` : ""} · ${commandPreview}`;
+	}
+
+	private async pickBackgroundProcessId(cwd: string, actionLabel: string): Promise<string | undefined> {
+		const records = listBackgroundProcesses(cwd, 30);
+		if (records.length === 0) {
+			this.showStatus("No background processes found.");
+			return undefined;
+		}
+		const options = records.map((record, index) => this.formatBackgroundProcessOptionLabel(record, index));
+		const selected = await this.showExtensionSelector(`/bg ${actionLabel}: select process`, options);
+		if (!selected) {
+			this.showStatus(`/bg ${actionLabel} cancelled.`);
+			return undefined;
+		}
+		const selectedIndex = options.indexOf(selected);
+		return selectedIndex >= 0 ? records[selectedIndex]?.id : undefined;
+	}
+
+	private async handleBackgroundProcessesSlashCommand(text: string): Promise<void> {
+		const args = this.parseSlashArgs(text).slice(1);
+		const cwd = this.sessionManager.getCwd();
+		const firstArg = (args[0] ?? "").toLowerCase();
+		const subcommand = firstArg || "list";
+
+		if (subcommand === "list" || /^\d+$/.test(subcommand)) {
+			const limitRaw = subcommand === "list" ? args[1] : subcommand;
+			const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 20;
+			if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+				this.showWarning("Usage: /bg [list [limit: 1..200]] | /bg status [id] | /bg logs [id] [lines] | /bg stop [id]");
+				return;
+			}
+			const records = listBackgroundProcesses(cwd, limit);
+			if (records.length === 0) {
+				this.showStatus("No background processes found.");
+				return;
+			}
+			const lines = records.map((record, index) => {
+				const status = `status=${record.status}`;
+				const pid = `pid=${record.pid}`;
+				const created = record.createdAt ? ` · ${record.createdAt}` : "";
+				const finished = record.finishedAt ? ` · finished=${record.finishedAt}` : "";
+				const exitCode = typeof record.exitCode === "number" ? ` · exit=${record.exitCode}` : "";
+				return `${index + 1}. ${record.id} · ${status} · ${pid}${created}${finished}${exitCode}\n  ${record.command}`;
+			});
+			this.showCommandTextBlock("Background Processes", lines.join("\n"));
+			return;
+		}
+
+		if (subcommand === "status") {
+			let id: string | undefined = args[1];
+			if (!id) {
+				id = await this.pickBackgroundProcessId(cwd, "status");
+			}
+			if (!id) return;
+			const record = getBackgroundProcess(cwd, id);
+			if (!record) {
+				this.showWarning(`Background process not found: ${id}`);
+				return;
+			}
+			const lines = [
+				`ID: ${record.id}`,
+				`Status: ${record.status}`,
+				`PID: ${record.pid}`,
+				`Created: ${record.createdAt}`,
+				`Started: ${record.startedAt}`,
+				`Finished: ${record.finishedAt ?? "-"}`,
+				`Exit code: ${typeof record.exitCode === "number" ? record.exitCode : "-"}`,
+				`Cwd: ${record.cwd}`,
+				`Source: ${record.source ?? "-"}`,
+				`Requested stop: ${record.requestedStopAt ?? "-"}`,
+				`Status file: ${record.metaPath}`,
+				`Log file: ${record.logPath}`,
+				"",
+				"Command:",
+				record.command,
+			];
+			this.showCommandTextBlock("Background Status", lines.join("\n"));
+			return;
+		}
+
+		if (subcommand === "logs") {
+			let id: string | undefined = args[1];
+			if (!id) {
+				id = await this.pickBackgroundProcessId(cwd, "logs");
+			}
+			if (!id) return;
+			const linesRaw = args[2];
+			const tailLines = linesRaw ? Number.parseInt(linesRaw, 10) : 120;
+			if (!Number.isInteger(tailLines) || tailLines < 1 || tailLines > 1000) {
+				this.showWarning("Usage: /bg logs [id] [lines: 1..1000]");
+				return;
+			}
+			const record = getBackgroundProcess(cwd, id);
+			if (!record) {
+				this.showWarning(`Background process not found: ${id}`);
+				return;
+			}
+			const tail = readBackgroundProcessLogTail(cwd, id, tailLines);
+			if (tail === undefined) {
+				this.showWarning(`Background process not found: ${id}`);
+				return;
+			}
+			const body = tail.trim().length > 0 ? tail : "(no output yet)";
+			this.showCommandTextBlock(
+				"Background Logs",
+				[`ID: ${record.id} · status=${record.status} · tail=${tailLines} lines`, "", body].join("\n"),
+			);
+			return;
+		}
+
+		if (subcommand === "stop" || subcommand === "kill" || subcommand === "cancel") {
+			let id: string | undefined = args[1];
+			if (!id) {
+				id = await this.pickBackgroundProcessId(cwd, "stop");
+			}
+			if (!id) return;
+			const record = stopBackgroundProcess(cwd, id);
+			if (!record) {
+				this.showWarning(`Background process not found: ${id}`);
+				return;
+			}
+			if (record.status === "running") {
+				this.showWarning(`Stop signal sent to ${record.id}, but process still appears running.`);
+			} else {
+				this.showStatus(`Background process ${record.id} stopped (${record.status}).`);
+			}
+			return;
+		}
+
+		this.showWarning("Usage: /bg [list [limit: 1..200]] | /bg status [id] | /bg logs [id] [lines] | /bg stop [id]");
 	}
 
 	private handleTeamRunsSlashCommand(text: string): void {
@@ -16329,7 +16555,26 @@ The agent will automatically receive IOSM context on every turn.`;
 		}
 	}
 
-	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
+	private parseBashSubmission(command: string): { command: string; runInBackground: boolean } {
+		const trimmed = command.trim();
+		if (!trimmed) return { command: "", runInBackground: false };
+		const hasTrailingBackgroundFlag =
+			trimmed.endsWith("&") && !trimmed.endsWith("&&") && !trimmed.endsWith("|&") && !trimmed.endsWith("\\&");
+		if (!hasTrailingBackgroundFlag) {
+			return { command: trimmed, runInBackground: false };
+		}
+		const withoutFlag = trimmed.slice(0, -1).trim();
+		return {
+			command: withoutFlag,
+			runInBackground: withoutFlag.length > 0,
+		};
+	}
+
+	private async handleBashCommand(
+		command: string,
+		excludeFromContext = false,
+		runInBackground = false,
+	): Promise<void> {
 		if (isReadOnlyProfileName(this.activeProfileName)) {
 			this.showWarning(
 				`Bash is disabled in ${this.activeProfileName} profile. Switch to full/meta/iosm (Shift+Tab).`,
@@ -16348,6 +16593,10 @@ The agent will automatically receive IOSM context on every turn.`;
 				cwd: process.cwd(),
 			})
 			: undefined;
+		const effectiveRunInBackground = runInBackground && !eventResult?.operations;
+		if (runInBackground && eventResult?.operations) {
+			this.showWarning("Background bash is not supported with extension custom execution. Running in foreground.");
+		}
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {
@@ -16403,10 +16652,17 @@ The agent will automatically receive IOSM context on every turn.`;
 						this.ui.requestRender();
 					}
 				},
-				{ excludeFromContext, operations: eventResult?.operations },
+				{
+					excludeFromContext,
+					operations: eventResult?.operations,
+					runInBackground: effectiveRunInBackground,
+				},
 			);
 
 			if (this.bashComponent) {
+				if (result.backgroundTaskId && result.output) {
+					this.bashComponent.appendOutput(result.output);
+				}
 				this.bashComponent.setComplete(
 					result.exitCode,
 					result.cancelled,

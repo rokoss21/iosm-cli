@@ -40,6 +40,12 @@ export interface BashResult {
 	truncated: boolean;
 	/** Path to temp file containing full output (if output exceeded truncation threshold) */
 	fullOutputPath?: string;
+	/** Background process id (present only for detached background execution). */
+	backgroundTaskId?: string;
+	/** Path to JSON status metadata for a background process. */
+	backgroundStatusPath?: string;
+	/** Path to log file for a background process. */
+	backgroundLogPath?: string;
 }
 
 // ============================================================================

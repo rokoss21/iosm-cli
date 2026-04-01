@@ -41,6 +41,10 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		name: "subagent-resume",
 		description: "Resume from prior subagent output: /subagent-resume [run-id] [extra instructions] (picker when omitted)",
 	},
+	{
+		name: "bg",
+		description: "Background shell process manager: /bg [list|status|logs|stop] ... (works with ! <command> &)",
+	},
 	{ name: "team-runs", description: "List recent team orchestration runs from .iosm/subagents/teams" },
 	{ name: "team-status", description: "Show a team run status: /team-status [team-run-id] (picker when omitted)" },
 	{ name: "cycle-list", description: "List IOSM cycles" },

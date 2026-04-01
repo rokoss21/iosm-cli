@@ -78,6 +78,7 @@ import {
 import { INTERNAL_UI_META_CUSTOM_TYPE, type BashExecutionMessage, type CustomMessage } from "./messages.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
+import { startBackgroundProcess } from "./background-processes.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
 import type { BranchSummaryEntry, CompactionEntry, SessionManager } from "./session-manager.js";
 import { getLatestCompactionEntry } from "./session-manager.js";
@@ -103,7 +104,7 @@ import {
 } from "./task-plan.js";
 import type { BashOperations } from "./tools/bash.js";
 import { createAllTools, getAllowedFetchMethodsForProfile } from "./tools/index.js";
-import type { ToolPermissionRequest } from "./tools/index.js";
+import type { ToolPermissionRequest, ToolRequiredPermission } from "./tools/index.js";
 import {
 	ULTRATHINK_CHECKPOINT_COMPRESSION_SYSTEM_PROMPT,
 	ULTRATHINK_MAX_CHECKPOINT_CHARS,
@@ -513,6 +514,17 @@ const MAX_PROMPT_PROTOCOL_AUTO_REPAIR_ATTEMPTS = 2;
 /** Thinking levels including xhigh (for supported models) */
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+const BUILTIN_TOOL_REQUIRED_PERMISSIONS: Record<string, ToolRequiredPermission> = {
+	bash: "danger-full-access",
+	edit: "workspace-write",
+	write: "workspace-write",
+	fetch: "read-only",
+	web_search: "read-only",
+	git_write: "workspace-write",
+	fs_ops: "workspace-write",
+	db_run: "workspace-write",
+};
+
 // ============================================================================
 // AgentSession Class
 // ============================================================================
@@ -582,6 +594,7 @@ export class AgentSession {
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	private _toolRequiredPermissions: Map<string, ToolRequiredPermission | undefined> = new Map();
 	private _subagentStartMeta = new Map<
 		string,
 		{
@@ -1396,6 +1409,34 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
+	private _summarizeToolPermissionInput(input: Record<string, unknown>): string {
+		let preview = "{}";
+		try {
+			preview = JSON.stringify(input);
+		} catch {
+			preview = "{...}";
+		}
+		if (preview.length > 200) {
+			preview = `${preview.slice(0, 197)}...`;
+		}
+		return preview;
+	}
+
+	private async _evaluateToolPermission(request: ToolPermissionRequest): Promise<boolean> {
+		const normalizedRequest: ToolPermissionRequest = {
+			...request,
+			requiredPermission:
+				request.requiredPermission ?? this._toolRequiredPermissions.get(request.toolName) ?? undefined,
+			toolSource: request.toolSource ?? "builtin",
+		};
+		const hookResult = applyPreToolUseHooks(this._hooksConfig, normalizedRequest);
+		this._queueHookNotices("PreToolUse", hookResult.notices);
+		if (!hookResult.allowed) {
+			throw new Error(hookResult.message ?? "Tool blocked by PreToolUse hook.");
+		}
+		return this._toolPermissionHandler ? this._toolPermissionHandler(normalizedRequest) : true;
+	}
+
 	private _rebuildSystemPrompt(toolNames: string[]): string {
 		const validToolNames = toolNames.filter((name) => this._toolRegistry.has(name));
 		const toolSnippets: Record<string, string> = {};
@@ -1428,15 +1469,36 @@ export class AgentSession {
 				return this._iosmAutopilotEnabled ? isIosmPlaybook : isAgentsPlaybook;
 			});
 
+		const promptContextOptions = {
+			enableContextDedupe: this.settingsManager.getPromptContextEnableDedupe(),
+			maxContextCharsPerFile: this.settingsManager.getPromptContextMaxCharsPerFile(),
+			maxTotalContextChars: this.settingsManager.getPromptContextMaxTotalChars(),
+			enableGitSnapshotContext: this.settingsManager.getPromptContextEnableGitSnapshotContext(),
+		};
+
 		return buildSystemPrompt({
 			cwd: this._cwd,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
+			contextProcessing: promptContextOptions,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			onContextProcessed: (stats) => {
+				this._appendSessionTrace({
+					type: "system_prompt_context_compose",
+					context_before_chars: stats.contextBeforeChars,
+					context_after_chars: stats.contextAfterChars,
+					dedupe_hits: stats.dedupeHits,
+					truncated_files: stats.truncatedFiles,
+					dropped_files: stats.droppedFiles,
+					included_files: stats.includedFiles,
+					total_files: stats.totalFiles,
+					git_snapshot_included: stats.gitSnapshotIncluded,
+				});
+			},
 		});
 	}
 
@@ -3438,12 +3500,24 @@ export class AgentSession {
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
 		const previousActiveToolNames = this.getActiveToolNames();
+		const enforceExtensionToolPermissions = this.settingsManager.getPermissionExtensionToolEnforcement();
 
 		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
 		const allCustomTools = [
 			...registeredTools,
 			...this._customTools.map((def) => ({ definition: def, extensionPath: "<sdk>" })),
 		];
+		const requiredPermissionEntries = Object.entries(BUILTIN_TOOL_REQUIRED_PERMISSIONS).map(
+			([name, permission]) => [name, permission] as const,
+		);
+		this._toolRequiredPermissions = new Map(requiredPermissionEntries);
+		for (const registeredTool of allCustomTools) {
+			const existing = this._toolRequiredPermissions.get(registeredTool.definition.name);
+			this._toolRequiredPermissions.set(
+				registeredTool.definition.name,
+				registeredTool.definition.requiredPermission ?? existing,
+			);
+		}
 		this._toolPromptSnippets = new Map(
 			allCustomTools
 				.map((registeredTool) => {
@@ -3463,7 +3537,24 @@ export class AgentSession {
 				.filter((entry): entry is readonly [string, string[]] => entry !== undefined),
 		);
 		const wrappedExtensionTools = this._extensionRunner
-			? wrapRegisteredTools(allCustomTools, this._extensionRunner)
+			? wrapRegisteredTools(allCustomTools, this._extensionRunner, (registeredTool) => {
+					const toolSource = registeredTool.extensionPath === "<sdk>" ? "custom" : "extension";
+					return {
+						toolSource,
+						permissionPolicy: {
+							enabled: enforceExtensionToolPermissions && toolSource === "extension",
+							guard: async (request) => this._evaluateToolPermission(request),
+							createRequest: ({ toolName, params, requiredPermission, toolSource: source }) => ({
+								toolName,
+								cwd: this._cwd,
+								input: params,
+								summary: `Extension tool ${toolName} ${this._summarizeToolPermissionInput(params)}`,
+								requiredPermission,
+								toolSource: source,
+							}),
+						},
+					};
+				})
 			: [];
 
 		const toolRegistry = new Map(this._baseToolRegistry);
@@ -3504,46 +3595,26 @@ export class AgentSession {
 	}): void {
 		const autoResizeImages = this.settingsManager.getImageAutoResize();
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
-		const evaluatePreToolHooks = (request: ToolPermissionRequest): boolean => {
-			const hookResult = applyPreToolUseHooks(this._hooksConfig, request);
-			this._queueHookNotices("PreToolUse", hookResult.notices);
-			if (!hookResult.allowed) {
-				throw new Error(hookResult.message ?? "Tool blocked by PreToolUse hook.");
-			}
-			return true;
-		};
 		const baseTools = this._baseToolsOverride
 			? this._baseToolsOverride
 				: createAllTools(this._cwd, {
 					read: { autoResizeImages },
 					bash: {
 						commandPrefix: shellCommandPrefix,
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					edit: {
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					write: {
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					semantic: {
 						authStorage: this._modelRegistry.authStorage,
 					},
 					fetch: {
 						resolveAllowedMethods: () => getAllowedFetchMethodsForProfile(this._profileName),
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					webSearch: {
 						resolveRuntimeConfig: () => ({
@@ -3556,33 +3627,21 @@ export class AgentSession {
 						}),
 						resolveTavilyApiKey: () => this.settingsManager.getWebSearchTavilyApiKey(),
 						resolveSearxngBaseUrl: () => this.settingsManager.getWebSearchSearxngUrl(),
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					gitWrite: {
 						resolveRuntimeConfig: () => ({
 							networkEnabled: this.settingsManager.getGithubToolsNetworkEnabled(),
 						}),
 						resolveGithubToken: () => this.settingsManager.getGithubToolsToken(),
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					fsOps: {
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 					dbRun: {
 						resolveRuntimeConfig: () => this.settingsManager.getDbToolsSettings(),
-						permissionGuard: async (request) => {
-							evaluatePreToolHooks(request);
-							return this._toolPermissionHandler ? this._toolPermissionHandler(request) : true;
-						},
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
 				});
 
@@ -3810,7 +3869,7 @@ export class AgentSession {
 	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; operations?: BashOperations },
+		options?: { excludeFromContext?: boolean; operations?: BashOperations; runInBackground?: boolean },
 	): Promise<BashResult> {
 		if (isReadOnlyProfileName(this._profileName)) {
 			throw new Error(
@@ -3829,16 +3888,38 @@ export class AgentSession {
 		const resolvedCommand = prefix ? `${prefix}\n${command}` : command;
 
 		try {
-			const result = options?.operations
-				? await executeBashWithOperations(resolvedCommand, this._cwd, options.operations, {
-						onChunk,
-						signal: this._bashAbortController.signal,
-					})
-				: await executeBashCommand(resolvedCommand, {
-						cwd: this._cwd,
-						onChunk,
-						signal: this._bashAbortController.signal,
-					});
+			let result: BashResult;
+			if (options?.runInBackground) {
+				if (options.operations) {
+					throw new Error("Background bash is not supported with custom execution operations.");
+				}
+				const background = startBackgroundProcess({
+					rootCwd: this._cwd,
+					cwd: this._cwd,
+					command: resolvedCommand,
+					source: "interactive",
+				});
+				result = {
+					output: `Started background process ${background.id} (pid ${background.pid}). Use /bg status ${background.id}, /bg logs ${background.id}, or /bg stop ${background.id}.`,
+					exitCode: undefined,
+					cancelled: false,
+					truncated: false,
+					backgroundTaskId: background.id,
+					backgroundStatusPath: background.metaPath,
+					backgroundLogPath: background.logPath,
+				};
+			} else {
+				result = options?.operations
+					? await executeBashWithOperations(resolvedCommand, this._cwd, options.operations, {
+							onChunk,
+							signal: this._bashAbortController.signal,
+						})
+					: await executeBashCommand(resolvedCommand, {
+							cwd: this._cwd,
+							onChunk,
+							signal: this._bashAbortController.signal,
+						});
+			}
 
 			this.recordBashResult(command, result, options);
 			this._appendSessionTrace({
@@ -3847,6 +3928,7 @@ export class AgentSession {
 				exitCode: result.exitCode,
 				cancelled: result.cancelled,
 				truncated: result.truncated,
+				backgroundTaskId: result.backgroundTaskId ?? null,
 			});
 			return result;
 		} finally {

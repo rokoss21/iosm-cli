@@ -30,7 +30,7 @@ import {
 	summarizeSharedMemoryUsage,
 	writeSharedMemory,
 } from "../shared-memory.js";
-import type { CustomSubagentDefinition } from "../subagents.js";
+import { normalizeAndFilterToolNames, normalizeToolName, type CustomSubagentDefinition } from "../subagents.js";
 
 /**
  * Callback type passed in from sdk.ts to avoid circular imports.
@@ -219,6 +219,8 @@ export interface TaskToolOptions {
 	resolveCustomSubagent?: (name: string) => CustomSubagentDefinition | undefined;
 	availableCustomSubagents?: string[];
 	availableCustomSubagentHints?: Array<{ name: string; description: string }>;
+	/** Returns currently known runtime tool names (built-ins + extensions) for subagent tool normalization. */
+	getAvailableToolNames?: () => readonly string[];
 	/** Returns pending live meta updates entered during an active run. */
 	getMetaMessages?: () => readonly string[];
 	/** Active profile of the host session that is invoking the task tool (static fallback). */
@@ -263,6 +265,35 @@ const backgroundSafeProfiles = (Object.keys(toolsByProfile) as AgentProfileName[
 	toolsByProfile[profileName].every((tool) => !backgroundUnsafeTools.has(tool)),
 );
 const delegationTagName = "delegate_task";
+
+function resolveKnownRuntimeToolNames(options?: TaskToolOptions): Set<string> {
+	const known = new Set<string>();
+	for (const profileTools of Object.values(toolsByProfile)) {
+		for (const tool of profileTools) known.add(normalizeToolName(tool));
+	}
+	const runtimeTools = options?.getAvailableToolNames?.() ?? [];
+	for (const tool of runtimeTools) {
+		const normalized = normalizeToolName(tool);
+		if (normalized) known.add(normalized);
+	}
+	return known;
+}
+
+function resolveEffectiveToolset(input: {
+	tools?: string[];
+	disallowedTools?: string[];
+	fallbackTools: string[];
+	knownToolNames: ReadonlySet<string>;
+}): string[] {
+	const normalizedFallback = normalizeAndFilterToolNames(input.fallbackTools, input.knownToolNames).normalized;
+	const normalizedTools = input.tools
+		? normalizeAndFilterToolNames(input.tools, input.knownToolNames).normalized
+		: normalizedFallback;
+	const normalizedDisallowed = normalizeAndFilterToolNames(input.disallowedTools, input.knownToolNames).normalized;
+	if (normalizedDisallowed.length === 0) return normalizedTools;
+	const blocked = new Set(normalizedDisallowed);
+	return normalizedTools.filter((tool) => !blocked.has(tool));
+}
 
 type DelegationRequest = {
 	description: string;
@@ -1493,13 +1524,13 @@ export function createTaskTool(
 					);
 				}
 					const effectiveProfile = effectiveProfileCandidate as AgentProfileName;
-				let tools = customSubagent?.tools
-					? [...customSubagent.tools]
-					: [...toolsByProfile[effectiveProfile]];
-				if (customSubagent?.disallowedTools?.length) {
-					const blocked = new Set(customSubagent.disallowedTools);
-					tools = tools.filter((tool) => !blocked.has(tool));
-				}
+				const knownRuntimeToolNames = resolveKnownRuntimeToolNames(options);
+				const tools = resolveEffectiveToolset({
+					tools: customSubagent?.tools,
+					disallowedTools: customSubagent?.disallowedTools,
+					fallbackTools: toolsByProfile[effectiveProfile],
+					knownToolNames: knownRuntimeToolNames,
+				});
 					if (isReadOnlyProfileName(normalizedHostProfile) && tools.some((tool) => writeCapableTools.has(tool))) {
 						throw new Error(
 							`Host profile "${normalizedHostProfile}" is read-only. Switch to full/meta/iosm to launch write-capable subtasks.`,
@@ -1564,12 +1595,14 @@ export function createTaskTool(
 					(effectiveDelegateParallelHint ?? 0) >= 2 && effectiveMaxDelegations >= 2
 						? Math.min(preferredDelegationFloor, effectiveMaxDelegations, effectiveDelegateParallelHint ?? preferredDelegationFloor)
 						: 0;
-			const baseSystemPrompt = withSubagentInstructions(
-				customSubagent?.systemPrompt ??
-					systemPromptByProfile[effectiveProfile] ??
-					systemPromptByProfile.full,
-				customSubagent?.instructions,
-			);
+				const runtimeCapabilityHints =
+					"Runtime capability: for long-running shell commands that should not block the turn, use bash with run_in_background=true; keep foreground mode when immediate command output is required.";
+				const baseSystemPrompt = withSubagentInstructions(
+					`${customSubagent?.systemPrompt ??
+						systemPromptByProfile[effectiveProfile] ??
+						systemPromptByProfile.full}\n\n${runtimeCapabilityHints}`,
+					customSubagent?.instructions,
+				);
 			const systemPrompt = withDelegationPrompt(
 				baseSystemPrompt,
 				effectiveDelegationDepth,
@@ -2315,13 +2348,12 @@ export function createTaskTool(
 									const nestedProfileLabel = nestedCustomSubagent?.name
 										? `${nestedCustomSubagent.name}/${nestedProfile}`
 										: nestedProfile;
-									let nestedTools = nestedCustomSubagent?.tools
-										? [...nestedCustomSubagent.tools]
-										: [...toolsByProfile[nestedProfile]];
-									if (nestedCustomSubagent?.disallowedTools?.length) {
-										const blocked = new Set(nestedCustomSubagent.disallowedTools);
-										nestedTools = nestedTools.filter((tool) => !blocked.has(tool));
-									}
+									const nestedTools = resolveEffectiveToolset({
+										tools: nestedCustomSubagent?.tools,
+										disallowedTools: nestedCustomSubagent?.disallowedTools,
+										fallbackTools: toolsByProfile[nestedProfile],
+										knownToolNames: knownRuntimeToolNames,
+									});
 									const nestedBaseSystemPrompt = withSubagentInstructions(
 										nestedCustomSubagent?.systemPrompt ??
 											systemPromptByProfile[nestedProfile] ??
@@ -2608,13 +2640,12 @@ export function createTaskTool(
 								delegateItems,
 							});
 
-							let childTools = childCustomSubagent?.tools
-								? [...childCustomSubagent.tools]
-								: [...toolsByProfile[childProfile]];
-							if (childCustomSubagent?.disallowedTools?.length) {
-								const blocked = new Set(childCustomSubagent.disallowedTools);
-								childTools = childTools.filter((tool) => !blocked.has(tool));
-							}
+							const childTools = resolveEffectiveToolset({
+								tools: childCustomSubagent?.tools,
+								disallowedTools: childCustomSubagent?.disallowedTools,
+								fallbackTools: toolsByProfile[childProfile],
+								knownToolNames: knownRuntimeToolNames,
+							});
 							const childBaseSystemPrompt = withSubagentInstructions(
 								childCustomSubagent?.systemPrompt ??
 									systemPromptByProfile[childProfile] ??

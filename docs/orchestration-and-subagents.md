@@ -165,6 +165,11 @@ Create markdown files in `.iosm/agents/`:
 ---
 name: security-auditor
 description: Specialized security vulnerability analysis
+tools:
+  - read
+  - git-read
+disallowed_tools:
+  - write
 ---
 
 You are a security auditor specializing in web application security.
@@ -193,6 +198,17 @@ Always provide:
 ```
 
 Built-in system agents remain available; inspect via `/agents`.
+
+### Tool List Normalization in Agent Frontmatter
+
+For custom agent frontmatter fields `tools` and `disallowed_tools`, runtime applies compatibility normalization:
+
+- trims whitespace
+- lowercases names
+- converts `-` to `_` (for example `git-read` -> `git_read`)
+- drops unknown tool names and records diagnostics
+
+This keeps old/frontmatter variants compatible while preventing invalid tool names from breaking delegation.
 
 ---
 

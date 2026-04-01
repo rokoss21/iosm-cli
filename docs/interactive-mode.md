@@ -83,6 +83,7 @@ iosm --continue
 | `/agents` | Inspect custom/system agents | `/agents` |
 | `/subagent-runs` | List subagent run history | `/subagent-runs` |
 | `/subagent-resume` | Resume a subagent run | `/subagent-resume run-123` |
+| `/bg` | Background shell process manager (`list/status/logs/stop`) | `/bg status bg_...` |
 | `/team-runs` | List team orchestration runs | `/team-runs` |
 | `/team-status` | Check team run status | `/team-status team-456` |
 
@@ -113,11 +114,13 @@ In `/semantic setup`, the headers step is optional: press `Enter` on empty input
 `/ultrathink [-q N|--iterations N] [query]` runs `N` root-agent analysis passes in strict read-only mode (`N` defaults to `5`, max `12`), carries a compact checkpoint between passes, and emits concise per-iteration summaries with a final synthesis.
 `/ultrathink` without query reuses the latest meaningful user request from session context.
 If early passes produce no tool evidence, ultrathink injects an internal grounding retry so the agent probes the workspace with read-only tools before continuing.
+Run detached shell jobs with `! <command> &` (example: `! npm run dev &`) and manage them using `/bg`, `/bg status <id>`, `/bg logs <id> [lines]`, `/bg stop <id>`.
 `/swarm` enforces `Scopes -> Touches -> Locks -> Gates -> Done`. If effective contract is missing, it blocks execution and opens a bootstrap menu (auto-draft, guided Q&A, or manual `/contract` editor).
 `/orchestrate --parallel` defaults `--max-parallel` to `--agents` when omitted and auto-selects `meta` workers when profiles are not explicitly set (outside read-only host contexts).
 For orchestrate assignments, `delegate_parallel_hint` is carried into child task calls; high hints should trigger nested delegate fan-out or explicit `DELEGATION_IMPOSSIBLE`.
 If a model emits raw pseudo markup like `<tool_call>`, `<function=...>`, or `<delegate_task>` instead of real tool calls, interactive mode injects bounded protocol-recovery retries.
 If a model returns a silent `stop` (no visible text and no tool call), interactive mode injects bounded stall-recovery retries.
+After `/compact`, compaction summaries carry a continuation hint to proceed from current state without repeating a full recap unless user explicitly asks.
 `/blast` and `/shadow` are removed from active interactive workflow.
 
 ### `/contract` Detailed Guide

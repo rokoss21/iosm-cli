@@ -38,6 +38,7 @@ iosm-cli/
 │   │   ├── skills.ts             # Skill discovery and loading
 │   │   ├── prompt-templates.ts   # Prompt template system
 │   │   ├── bash-executor.ts      # Shell command execution
+│   │   ├── background-processes.ts # Detached background process runtime
 │   │   ├── tools/                # Built-in tools
 │   │   │   ├── read.ts           # File reading
 │   │   │   ├── bash.ts           # Shell execution
@@ -70,7 +71,7 @@ iosm-cli/
 │       ├── clipboard.ts          # Clipboard access
 │       ├── image-resize.ts       # Image processing
 │       └── ...
-├── test/                         # Vitest test suite (73 files)
+├── test/                         # Vitest test suite (74 files)
 ├── examples/
 │   ├── extensions/               # 66 extension examples
 │   └── sdk/                      # 12 SDK examples
@@ -157,7 +158,7 @@ Tests are organized by feature area:
 
 | Area | Test Files | Coverage |
 |------|-----------|----------|
-| **Tools** | `tools.test.ts` | Built-in tools (`read`, `bash`, `edit`, `write`, `git_write`, `fs_ops`, `test_run`, `lint_run`, `typecheck_run`, `db_run`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `web_search`, `git_read`) |
+| **Tools** | `tools.test.ts`, `background-processes.test.ts` | Built-in tools (`read`, `bash`, `edit`, `write`, `git_write`, `fs_ops`, `test_run`, `lint_run`, `typecheck_run`, `db_run`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `web_search`, `git_read`) + detached background process lifecycle |
 | **Session** | `session-manager/`, `session-*.test.ts` | Persistence, branching, migration |
 | **Extensions** | `extensions-*.test.ts` | Discovery, running, hooks, input events |
 | **Compaction** | `compaction*.test.ts` | Context summarization |

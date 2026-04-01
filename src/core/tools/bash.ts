@@ -7,6 +7,7 @@ import { type Static, Type } from "@sinclair/typebox";
 import { spawn } from "child_process";
 import stripAnsi from "strip-ansi";
 import { getShellConfig, getShellEnv, killProcessTree, sanitizeBinaryOutput } from "../../utils/shell.js";
+import { startBackgroundProcess } from "../background-processes.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
 import type { ToolPermissionGuard } from "./permissions.js";
 
@@ -21,6 +22,9 @@ function getTempFilePath(): string {
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	run_in_background: Type.Optional(
+		Type.Boolean({ description: "Run command in detached background mode and return task id immediately" }),
+	),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -28,6 +32,9 @@ export type BashToolInput = Static<typeof bashSchema>;
 export interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
+	backgroundTaskId?: string;
+	backgroundStatusPath?: string;
+	backgroundLogPath?: string;
 }
 
 /**
@@ -197,7 +204,7 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 		parameters: bashSchema,
 		execute: async (
 			_toolCallId: string,
-			{ command, timeout }: { command: string; timeout?: number },
+			{ command, timeout, run_in_background }: { command: string; timeout?: number; run_in_background?: boolean },
 			signal?: AbortSignal,
 			onUpdate?,
 		) => {
@@ -205,7 +212,7 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 				const allowed = await permissionGuard({
 					toolName: "bash",
 					cwd,
-					input: { command, timeout },
+					input: { command, timeout, run_in_background },
 					summary: command.trim().slice(0, 200),
 				});
 				if (!allowed) {
@@ -216,6 +223,30 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 			// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
+			if (run_in_background) {
+				if (ops !== defaultBashOperations) {
+					throw new Error("Background bash is not supported with custom execution operations.");
+				}
+				const background = startBackgroundProcess({
+					rootCwd: cwd,
+					cwd: spawnContext.cwd,
+					command: spawnContext.command,
+					source: "tool",
+				});
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Started background process ${background.id} (pid ${background.pid}). Use /bg status ${background.id}, /bg logs ${background.id}, or /bg stop ${background.id}.`,
+						},
+					],
+					details: {
+						backgroundTaskId: background.id,
+						backgroundStatusPath: background.metaPath,
+						backgroundLogPath: background.logPath,
+					},
+				};
+			}
 
 			return new Promise((resolve, reject) => {
 				// We'll stream to a temp file if output gets large

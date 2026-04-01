@@ -129,11 +129,18 @@ Traces are stored as `<session-id>.jsonl` files. Each line is a JSON event:
 ```jsonl
 {"type":"session_start","timestamp":"2026-03-09T15:42:00Z","sessionId":"abc123"}
 {"type":"user_message","timestamp":"2026-03-09T15:42:05Z","content":"Analyze the project"}
+{"type":"system_prompt_context_compose","timestamp":"2026-03-09T15:42:05Z","context_before_chars":16422,"context_after_chars":11998,"dedupe_hits":2,"truncated_files":["README.md"],"dropped_files":1}
 {"type":"tool_call","timestamp":"2026-03-09T15:42:06Z","tool":"ls","input":{"path":"."}}
 {"type":"tool_result","timestamp":"2026-03-09T15:42:06Z","tool":"ls","output":"..."}
+{"type":"bash_end","timestamp":"2026-03-09T15:42:07Z","command":"npm run dev","backgroundTaskId":"bg_1770000000000_ab12cd34"}
 {"type":"assistant_message","timestamp":"2026-03-09T15:42:10Z","content":"Here's my analysis..."}
 {"type":"turn_end","timestamp":"2026-03-09T15:42:10Z","usage":{"totalTokens":1500}}
 ```
+
+Notable runtime events:
+
+- `system_prompt_context_compose` shows prompt-context preprocessing stats (before/after chars, dedupe hits, truncation, dropped files).
+- `bash_end.backgroundTaskId` is populated when a shell command was started in detached background mode.
 
 ### Analyzing Traces
 

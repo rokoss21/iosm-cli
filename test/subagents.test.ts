@@ -243,4 +243,84 @@ describe("loadCustomSubagents", () => {
 		expect(loaded.diagnostics.some((item) => item.path.includes("bad_profile.md"))).toBe(true);
 		expect(loaded.diagnostics.some((item) => item.message.includes("Invalid profile"))).toBe(true);
 	});
+
+	it("normalizes and filters tools/disallowed_tools with diagnostics", () => {
+		const root = makeTempDir();
+		const cwd = join(root, "workspace");
+		const agentDir = join(root, "agent-home");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+
+		writeAgentFile(
+			join(cwd, ".iosm", "agents", "normalizer.md"),
+			[
+				"---",
+				'name: "normalizer"',
+				'description: "Normalization test"',
+				"tools:",
+				'  - " Read "',
+				'  - "BASH"',
+				'  - "web-search"',
+				'  - "web_search"',
+				'  - "unknown-tool"',
+				"disallowed_tools:",
+				'  - " WEB-SEARCH "',
+				'  - "unknown-block"',
+				"---",
+				"",
+				"Normalize my tool set.",
+				"",
+			].join("\n"),
+		);
+
+		const loaded = loadCustomSubagents({ cwd, agentDir });
+		const agent = loaded.agents.find((item) => item.name === "normalizer");
+
+		expect(agent?.tools).toEqual(["read", "bash", "web_search"]);
+		expect(agent?.disallowedTools).toEqual(["web_search"]);
+		expect(
+			loaded.diagnostics.some((item) =>
+				item.message.includes('Unknown tools were removed from "tools": unknown_tool.'),
+			),
+		).toBe(true);
+		expect(
+			loaded.diagnostics.some((item) =>
+				item.message.includes('Unknown tools were removed from "disallowed_tools": unknown_block.'),
+			),
+		).toBe(true);
+	});
+
+	it("accepts normalized knownToolNames overrides for custom extension tools", () => {
+		const root = makeTempDir();
+		const cwd = join(root, "workspace");
+		const agentDir = join(root, "agent-home");
+		mkdirSync(cwd, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+
+		writeAgentFile(
+			join(cwd, ".iosm", "agents", "custom_ext.md"),
+			[
+				"---",
+				'name: "custom_ext"',
+				'description: "Custom extension tool test"',
+				"tools:",
+				'  - "Custom-Extension-Tool"',
+				'  - "READ"',
+				"---",
+				"",
+				"Use extension tools.",
+				"",
+			].join("\n"),
+		);
+
+		const loaded = loadCustomSubagents({
+			cwd,
+			agentDir,
+			knownToolNames: ["read", "custom-extension-tool"],
+		});
+		const agent = loaded.agents.find((item) => item.name === "custom_ext");
+
+		expect(agent?.tools).toEqual(["custom_extension_tool", "read"]);
+		expect(loaded.diagnostics.some((item) => item.path.includes("custom_ext.md"))).toBe(false);
+	});
 });

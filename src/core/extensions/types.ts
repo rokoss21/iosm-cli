@@ -71,6 +71,7 @@ import type {
 	ReadToolInput,
 	WriteToolInput,
 } from "../tools/index.js";
+import type { ToolRequiredPermission } from "../tools/permissions.js";
 
 export type { ExecOptions, ExecResult } from "../exec.js";
 export type { AgentToolResult, AgentToolUpdateCallback };
@@ -343,6 +344,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	promptSnippet?: string;
 	/** Optional guideline bullets appended to the default system prompt Guidelines section when this tool is active. */
 	promptGuidelines?: string[];
+	/** Optional required permission tier enforced by runtime policies when enabled. */
+	requiredPermission?: ToolRequiredPermission;
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;
 

@@ -188,7 +188,11 @@ export {
 	type WriteToolOptions,
 	writeTool,
 } from "./write.js";
-export { type ToolPermissionGuard, type ToolPermissionRequest } from "./permissions.js";
+export {
+	type ToolPermissionGuard,
+	type ToolPermissionRequest,
+	type ToolRequiredPermission,
+} from "./permissions.js";
 export {
 	createTodoWriteTool,
 	createTodoReadTool,

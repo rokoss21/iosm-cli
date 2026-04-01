@@ -24,6 +24,7 @@ import {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "../src/core/session-manager.js";
+import { convertToLlm } from "../src/core/messages.js";
 
 // ============================================================================
 // Test fixtures
@@ -355,6 +356,27 @@ describe("buildSessionContext", () => {
 		// model_change is later overwritten by assistant message's model info
 		expect(loaded.model).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4-5" });
 		expect(loaded.thinkingLevel).toBe("high");
+	});
+
+	it("adds continuation guidance to compaction summary prompt framing", () => {
+		const llm = convertToLlm([
+			{
+				role: "compactionSummary",
+				summary: "Summary of recent work",
+				tokensBefore: 10_000,
+				timestamp: Date.now(),
+			},
+		] as AgentMessage[]);
+
+		expect(llm).toHaveLength(1);
+		expect(llm[0]?.role).toBe("user");
+		const text = (llm[0]?.content?.[0] as { type: "text"; text: string }).text;
+		expect(text).toContain(
+			"Continue from the current state and do not repeat a full recap unless the user explicitly asks for it",
+		);
+		expect(text).toContain("<summary>");
+		expect(text).toContain("Summary of recent work");
+		expect(text).toContain("</summary>");
 	});
 });
 
