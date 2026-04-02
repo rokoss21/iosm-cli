@@ -730,6 +730,47 @@ describe("InteractiveMode interactive command flows", () => {
 		}
 	});
 
+	test("opens /bg interactive menu and runs selected action", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-menu-"));
+		try {
+			const { startBackgroundProcess, stopBackgroundProcess } = await import("../src/core/background-processes.js");
+			const record = startBackgroundProcess({
+				rootCwd: cwd,
+				command: "sleep 2; echo bg-menu",
+				source: "interactive",
+			});
+
+			const showExtensionSelector = vi.fn(async () => "List running only");
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.ui = {};
+			fakeThis.editorContainer = {};
+			fakeThis.showExtensionSelector = showExtensionSelector;
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+
+			await (InteractiveMode as any).prototype.handleBackgroundProcessesSlashCommand.call(fakeThis, "/bg");
+
+			expect(showExtensionSelector).toHaveBeenCalled();
+			expect(showCommandTextBlock).toHaveBeenCalledWith(
+				"Background Processes",
+				expect.stringContaining(record.id),
+			);
+			stopBackgroundProcess(cwd, record.id);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	test("stops background process via /bg stop <id>", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-stop-"));
 		try {
@@ -765,6 +806,202 @@ describe("InteractiveMode interactive command flows", () => {
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
+	});
+
+	test("stops all running background processes via /bg stop-all", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-stop-all-"));
+		try {
+			const { getBackgroundProcess, startBackgroundProcess } = await import("../src/core/background-processes.js");
+			const first = startBackgroundProcess({
+				rootCwd: cwd,
+				command: "sleep 5; echo bg-stop-all-1",
+				source: "interactive",
+			});
+			const second = startBackgroundProcess({
+				rootCwd: cwd,
+				command: "sleep 5; echo bg-stop-all-2",
+				source: "interactive",
+			});
+
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+			const showExtensionSelector = vi.fn();
+			const showExtensionConfirm = vi.fn(async () => true);
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.ui = {};
+			fakeThis.editorContainer = {};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+			fakeThis.showExtensionSelector = showExtensionSelector;
+			fakeThis.showExtensionConfirm = showExtensionConfirm;
+
+			await (InteractiveMode as any).prototype.handleBackgroundProcessesSlashCommand.call(fakeThis, "/bg stop-all");
+
+			expect(showExtensionConfirm).toHaveBeenCalled();
+			expect(showCommandTextBlock).toHaveBeenCalledWith(
+				"Background Stop-All",
+				expect.stringContaining("Stop-all requested"),
+			);
+			expect(getBackgroundProcess(cwd, first.id)?.requestedStopAt).toBeDefined();
+			expect(getBackgroundProcess(cwd, second.id)?.requestedStopAt).toBeDefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("prunes old completed background records via /bg prune", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-prune-"));
+		try {
+			const { getBackgroundProcess, startBackgroundProcess } = await import("../src/core/background-processes.js");
+			const record = startBackgroundProcess({
+				rootCwd: cwd,
+				command: "echo bg-prune",
+				source: "interactive",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			const meta = JSON.parse(readFileSync(record.metaPath, "utf8")) as Record<string, unknown>;
+			meta.createdAt = "2000-01-01T00:00:00.000Z";
+			writeFileSync(record.metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+			fakeThis.showExtensionSelector = vi.fn();
+
+			await (InteractiveMode as any).prototype.handleBackgroundProcessesSlashCommand.call(fakeThis, "/bg prune 1");
+
+			expect(showCommandTextBlock).toHaveBeenCalledWith(
+				"Background Prune",
+				expect.stringContaining("Removed: 1"),
+			);
+			expect(getBackgroundProcess(cwd, record.id)).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("installs extension source via /extensions install", async () => {
+		const install = vi.fn(async () => { });
+		const addSourceToSettings = vi.fn(() => true);
+		const update = vi.fn(async () => { });
+		const remove = vi.fn(async () => { });
+		const removeSourceFromSettings = vi.fn(() => true);
+		const settingsManager = {
+			getProjectSettings: () => ({}),
+			getGlobalSettings: () => ({}),
+		};
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		fakeThis.session = { sessionManager: { getCwd: () => process.cwd() }, settingsManager };
+		fakeThis.createInteractivePackageManager = vi.fn(() => ({
+			install,
+			addSourceToSettings,
+			update,
+			remove,
+			removeSourceFromSettings,
+			resolve: vi.fn(async () => ({ extensions: [] })),
+		}));
+		fakeThis.reloadAfterMemoryMutation = vi.fn(async () => { });
+		fakeThis.showWarning = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showCommandTextBlock = vi.fn();
+
+		await (InteractiveMode as any).prototype.handleExtensionsSlashCommand.call(
+			fakeThis,
+			"/extensions install npm:@demo/ext",
+		);
+
+		expect(install).toHaveBeenCalledWith("npm:@demo/ext", { local: true });
+		expect(addSourceToSettings).toHaveBeenCalledWith("npm:@demo/ext", { local: true });
+		expect(fakeThis.reloadAfterMemoryMutation).toHaveBeenCalled();
+		expect(fakeThis.showWarning).not.toHaveBeenCalled();
+	});
+
+	test("disables package-backed extension source via /ext disable --global", async () => {
+		let globalPackages: any[] = ["npm:@demo/ext"];
+		const settingsManager = {
+			getProjectSettings: () => ({}),
+			getGlobalSettings: () => ({ packages: globalPackages }),
+			setPackages: (next: any[]) => {
+				globalPackages = next;
+			},
+			setProjectPackages: vi.fn(),
+			setProjectExtensionPaths: vi.fn(),
+			setExtensionPaths: vi.fn(),
+		};
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		fakeThis.session = { sessionManager: { getCwd: () => process.cwd() }, settingsManager };
+		fakeThis.createInteractivePackageManager = vi.fn(() => ({
+			install: vi.fn(),
+			addSourceToSettings: vi.fn(),
+			update: vi.fn(async () => { }),
+			remove: vi.fn(),
+			removeSourceFromSettings: vi.fn(),
+			resolve: vi.fn(async () => ({ extensions: [] })),
+		}));
+		fakeThis.reloadAfterMemoryMutation = vi.fn(async () => { });
+		fakeThis.showWarning = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showCommandTextBlock = vi.fn();
+
+		await (InteractiveMode as any).prototype.handleExtensionsSlashCommand.call(
+			fakeThis,
+			"/ext disable npm:@demo/ext --global",
+		);
+
+		expect(globalPackages).toEqual([{ source: "npm:@demo/ext", extensions: [] }]);
+		expect(fakeThis.reloadAfterMemoryMutation).toHaveBeenCalled();
+	});
+
+	test("enables extension path via project override when package source does not match", async () => {
+		let projectExtensions: string[] = [];
+		const settingsManager = {
+			getProjectSettings: () => ({ extensions: projectExtensions }),
+			getGlobalSettings: () => ({ packages: [] }),
+			setProjectExtensionPaths: (next: string[]) => {
+				projectExtensions = next;
+			},
+			setExtensionPaths: vi.fn(),
+			setProjectPackages: vi.fn(),
+			setPackages: vi.fn(),
+		};
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		fakeThis.session = { sessionManager: { getCwd: () => process.cwd() }, settingsManager };
+		fakeThis.createInteractivePackageManager = vi.fn(() => ({
+			install: vi.fn(),
+			addSourceToSettings: vi.fn(),
+			update: vi.fn(async () => { }),
+			remove: vi.fn(),
+			removeSourceFromSettings: vi.fn(),
+			resolve: vi.fn(async () => ({ extensions: [] })),
+		}));
+		fakeThis.reloadAfterMemoryMutation = vi.fn(async () => { });
+		fakeThis.showWarning = vi.fn();
+		fakeThis.showStatus = vi.fn();
+		fakeThis.showCommandTextBlock = vi.fn();
+
+		await (InteractiveMode as any).prototype.handleExtensionsSlashCommand.call(
+			fakeThis,
+			"/extensions enable my-extension.ts",
+		);
+
+		expect(projectExtensions).toContain("+extensions/my-extension.ts");
+		expect(fakeThis.reloadAfterMemoryMutation).toHaveBeenCalled();
 	});
 
 	test("runs interactive export wizard and confirms overwrite", async () => {
@@ -1024,6 +1261,118 @@ describe("InteractiveMode models.dev API-key provider hydration", () => {
 		expect(showWarning).not.toHaveBeenCalled();
 		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("API key saved"));
 		expect(authStorage.get("zai-coding-plan")).toEqual({ type: "api_key", key: "z-key-123" });
+	});
+
+	test("prefers OpenRouter live catalog hydration before models.dev fallback", async () => {
+		const hydrateOpenRouterModelsFromApi = vi.fn(async () => true);
+		const refreshModelsDevProviderCatalog = vi.fn(async () => { });
+
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		fakeThis.hasRegisteredProviderModels = vi.fn(() => false);
+		fakeThis.isProviderConfiguredInModelsJson = vi.fn(() => false);
+		fakeThis.hydrateOpenRouterModelsFromApi = hydrateOpenRouterModelsFromApi;
+		fakeThis.refreshModelsDevProviderCatalog = refreshModelsDevProviderCatalog;
+		fakeThis.modelsDevProviderCatalogById = new Map();
+
+		const result = await (InteractiveMode as any).prototype.hydrateProviderModelsFromModelsDev.call(
+			fakeThis,
+			"openrouter",
+			{ forceRefresh: true },
+		);
+
+		expect(result).toBe(true);
+		expect(hydrateOpenRouterModelsFromApi).toHaveBeenCalledWith({ forceRefresh: true });
+		expect(refreshModelsDevProviderCatalog).not.toHaveBeenCalled();
+	});
+
+	test("falls back to models.dev when OpenRouter live hydration fails", async () => {
+		let hasRegisteredModels = false;
+		const registerProvider = vi.fn(() => {
+			hasRegisteredModels = true;
+		});
+		const hydrateOpenRouterModelsFromApi = vi.fn(async () => false);
+		const refreshModelsDevProviderCatalog = vi.fn(async () => { });
+
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		fakeThis.session = {
+			modelRegistry: {
+				registerProvider,
+			},
+		};
+		fakeThis.hasRegisteredProviderModels = vi.fn(() => hasRegisteredModels);
+		fakeThis.isProviderConfiguredInModelsJson = vi.fn(() => false);
+		fakeThis.hydrateOpenRouterModelsFromApi = hydrateOpenRouterModelsFromApi;
+		fakeThis.refreshModelsDevProviderCatalog = refreshModelsDevProviderCatalog;
+		fakeThis.modelsDevProviderCatalogById = new Map([
+			[
+				"openrouter",
+				{
+					id: "openrouter",
+					name: "OpenRouter",
+					env: ["OPENROUTER_API_KEY"],
+					api: "https://openrouter.ai/api/v1",
+					npm: "@ai-sdk/openai-compatible",
+					models: [
+						{
+							id: "openai/gpt-4.1",
+							name: "GPT-4.1",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128000,
+							maxTokens: 16384,
+							headers: {},
+							api: "https://openrouter.ai/api/v1",
+							npm: "@ai-sdk/openai-compatible",
+						},
+					],
+				},
+			],
+		]);
+
+		const result = await (InteractiveMode as any).prototype.hydrateProviderModelsFromModelsDev.call(
+			fakeThis,
+			"openrouter",
+			{ forceRefresh: true },
+		);
+
+		expect(result).toBe(true);
+		expect(hydrateOpenRouterModelsFromApi).toHaveBeenCalledWith({ forceRefresh: true });
+		expect(refreshModelsDevProviderCatalog).toHaveBeenCalledTimes(1);
+		expect(registerProvider).toHaveBeenCalledWith(
+			"openrouter",
+			expect.objectContaining({
+				baseUrl: "https://openrouter.ai/api/v1",
+				models: [expect.objectContaining({ id: "openai/gpt-4.1" })],
+			}),
+		);
+	});
+
+	test("hydrates OpenRouter even when key comes from env/runtime auth resolution", async () => {
+		const hydrateProviderModelsFromModelsDev = vi.fn(async () => true);
+		const refreshModelsDevProviderCatalog = vi.fn(async () => { });
+
+		const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+		fakeThis.session = {
+			modelRegistry: {
+				authStorage: {
+					list: () => [],
+					hasAuth: (providerId: string) => providerId === "openrouter",
+				},
+			},
+		};
+		fakeThis.refreshModelsDevProviderCatalog = refreshModelsDevProviderCatalog;
+		fakeThis.hydrateProviderModelsFromModelsDev = hydrateProviderModelsFromModelsDev;
+
+		await (InteractiveMode as any).prototype.hydrateMissingProviderModelsForSavedAuth.call(fakeThis, {
+			forceRefresh: true,
+		});
+
+		expect(refreshModelsDevProviderCatalog).toHaveBeenCalledTimes(1);
+		expect(hydrateProviderModelsFromModelsDev).toHaveBeenCalledWith("openrouter", {
+			forceRefresh: true,
+			skipCatalogRefresh: true,
+		});
 	});
 });
 

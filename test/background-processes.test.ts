@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	getBackgroundProcess,
 	listBackgroundProcesses,
+	pruneBackgroundProcesses,
 	readBackgroundProcessLogTail,
 	startBackgroundProcess,
 	stopBackgroundProcess,
@@ -101,5 +102,49 @@ describe("background process manager", () => {
 		expect(ids).toContain(first.id);
 		expect(ids).toContain(second.id);
 	});
-});
 
+	it("writes completion markers even when command enables set -e and fails", async () => {
+		const root = makeTempDir();
+		const record = startBackgroundProcess({
+			rootCwd: root,
+			command: "set -e\nfalse\necho should-not-run",
+			source: "tool",
+		});
+
+		const finalStatus = await waitForStatus(root, record.id, ["error"], 5000);
+		expect(finalStatus).toBe("error");
+
+		const refreshed = getBackgroundProcess(root, record.id);
+		expect(refreshed?.finishedAt).toBeDefined();
+		expect(refreshed?.exitCode).toBe(1);
+	});
+
+	it("prunes old completed background records and keeps running ones", async () => {
+		const root = makeTempDir();
+		const doneRecord = startBackgroundProcess({
+			rootCwd: root,
+			command: "echo prune-me",
+			source: "tool",
+		});
+		await waitForStatus(root, doneRecord.id, ["done", "error"], 4000);
+		const doneMeta = JSON.parse(readFileSync(doneRecord.metaPath, "utf8")) as Record<string, unknown>;
+		doneMeta.createdAt = "2000-01-01T00:00:00.000Z";
+		writeFileSync(doneRecord.metaPath, `${JSON.stringify(doneMeta, null, 2)}\n`, "utf8");
+
+		const runningRecord = startBackgroundProcess({
+			rootCwd: root,
+			command: "sleep 5; echo keep-running",
+			source: "tool",
+		});
+		await waitForStatus(root, runningRecord.id, ["running"], 4000);
+
+		const result = pruneBackgroundProcesses(root, { maxAgeHours: 1 });
+		expect(result.removed).toBeGreaterThanOrEqual(1);
+		expect(result.removedIds).toContain(doneRecord.id);
+		expect(result.skippedRunning).toBeGreaterThanOrEqual(1);
+		expect(getBackgroundProcess(root, doneRecord.id)).toBeUndefined();
+		expect(getBackgroundProcess(root, runningRecord.id)?.status).toBe("running");
+
+		stopBackgroundProcess(root, runningRecord.id);
+	});
+});

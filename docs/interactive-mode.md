@@ -83,7 +83,8 @@ iosm --continue
 | `/agents` | Inspect custom/system agents | `/agents` |
 | `/subagent-runs` | List subagent run history | `/subagent-runs` |
 | `/subagent-resume` | Resume a subagent run | `/subagent-resume run-123` |
-| `/bg` | Background shell process manager (`list/status/logs/stop`) | `/bg status bg_...` |
+| `/bg` | Background shell process manager (interactive menu + `list/running/status/logs/stop/stop-all/prune`) | `/bg` |
+| `/extensions` | Extension lifecycle manager (`/ext` alias) | `/extensions list` |
 | `/team-runs` | List team orchestration runs | `/team-runs` |
 | `/team-status` | Check team run status | `/team-status team-456` |
 
@@ -114,7 +115,19 @@ In `/semantic setup`, the headers step is optional: press `Enter` on empty input
 `/ultrathink [-q N|--iterations N] [query]` runs `N` root-agent analysis passes in strict read-only mode (`N` defaults to `5`, max `12`), carries a compact checkpoint between passes, and emits concise per-iteration summaries with a final synthesis.
 `/ultrathink` without query reuses the latest meaningful user request from session context.
 If early passes produce no tool evidence, ultrathink injects an internal grounding retry so the agent probes the workspace with read-only tools before continuing.
-Run detached shell jobs with `! <command> &` (example: `! npm run dev &`) and manage them using `/bg`, `/bg status <id>`, `/bg logs <id> [lines]`, `/bg stop <id>`.
+Run detached shell jobs with `! <command> &` (example: `! npm run dev &`) and manage them via `/bg` interactive menu or direct commands:
+- `/bg list` or `/bg running`
+- `/bg status <id>`
+- `/bg logs <id> [lines]`
+- `/bg stop <id>` or `/bg stop-all`
+- `/bg prune [hours]` (remove old completed records; keeps running jobs)
+Manage extension lifecycle from interactive mode:
+- `/extensions list` (or `/extensions list --global`)
+- `/extensions install <source> [--global]`
+- `/extensions update [source]`
+- `/extensions remove <source> [--global]`
+- `/extensions enable <target> [--global]`
+- `/extensions disable <target> [--global]`
 For agent-driven execution, prompts like "start/run project", "start dev server", or watcher startup are treated as detached background jobs by default unless foreground output is explicitly requested.
 `/swarm` enforces `Scopes -> Touches -> Locks -> Gates -> Done`. If effective contract is missing, it blocks execution and opens a bootstrap menu (auto-draft, guided Q&A, or manual `/contract` editor).
 `/orchestrate --parallel` defaults `--max-parallel` to `--agents` when omitted and auto-selects `meta` workers when profiles are not explicitly set (outside read-only host contexts).

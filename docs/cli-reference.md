@@ -132,9 +132,17 @@ These commands run inside interactive mode (`iosm`), not as top-level CLI subcom
   - carries compact checkpoint state between iterations (facts, rejected hypotheses, open questions, next checks)
   - auto-injects a grounding retry when early passes return no tool evidence, forcing live workspace probes
   - if query is omitted, reuses latest meaningful user request from session context
-- `/bg [list [limit]|status [id]|logs [id] [lines]|stop [id]]` — interactive background shell process manager:
+- `/bg` — interactive background shell process menu
+- `/bg [list [limit]|running [limit]|status [id]|logs [id] [lines]|stop [id]|stop-all|prune [hours]]` — direct background shell process commands:
   - run detached shell commands with `! <command> &`
-  - inspect process state, log tail, and stop running background jobs
+  - inspect process state, log tail, stop individual jobs, stop all running jobs, and prune old completed records
+- `/extensions` (`/ext`) — extension lifecycle manager:
+  - `/extensions list [--global]`
+  - `/extensions install <source> [--global]`
+  - `/extensions update [source]`
+  - `/extensions remove <source> [--global]`
+  - `/extensions enable <target> [--global]`
+  - `/extensions disable <target> [--global]`
 - `/swarm` — canonical gated execution runtime:
   - `/swarm run <task> [--max-parallel N] [--budget-usd X]`
   - `/swarm from-singular <run-id> --option <1|2|3> [--max-parallel N] [--budget-usd X]`

@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-04-02
+
+### Added
+
+- **Interactive extension lifecycle commands** — added `/extensions` with `/ext` alias for `list`, `install`, `update`, `remove`, `enable`, `disable`, and `help` flows in interactive mode
+- **Background prune command** — added safe cleanup support for old completed background process records via `/bg prune [hours]`
+- **Git snapshot runtime context capture** — added bounded git snapshot composition (`status`, `diff --stat`, `diff --cached --stat`) wired into prompt context when enabled
+- **Prompt-context setting for git snapshot size** — added `promptContext.gitSnapshotMaxChars` (default `2000`)
+
+### Changed
+
+- **Prompt context telemetry** — `system_prompt_context_compose` trace events now include git snapshot diagnostics (`git_snapshot_chars_before`, `git_snapshot_chars_after`, `git_snapshot_truncated`, `git_snapshot_max_chars`)
+- **Background command UX** — `/bg` usage/help/menu now includes prune flow and clearer cleanup guidance
+- **System prompt guidance** — root-agent guidance now includes explicit `/extensions` lifecycle routing for extension management requests
+
+### Documentation
+
+- Updated README version marker to `0.2.13`
+- Updated `docs/interactive-mode.md` and `docs/cli-reference.md` with `/extensions` (`/ext`) and `/bg prune` command coverage
+- Updated `docs/configuration.md` for `promptContext.gitSnapshotMaxChars` and bounded git snapshot behavior
+- Updated `docs/sessions-traces-export.md` with expanded prompt-context trace event fields
+- Refreshed `task.md` and `improvement-checklist.md` with v2 execution status and risky-feature rollout policy
+
+### Tests
+
+- Added git snapshot context tests in `test/system-prompt.test.ts`
+- Added background prune coverage in `test/background-processes.test.ts`
+- Added interactive command coverage for `/bg prune` and `/extensions` lifecycle paths in `test/interactive-mode-status.test.ts`
+
 ## [0.2.12] - 2026-04-01
 
 ### Changed

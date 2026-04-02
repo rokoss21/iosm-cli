@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.12</h1>
+<h1>IOSM CLI 0.2.13</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -188,8 +188,9 @@ iosm
 Common tasks:
 - implement or refactor features
 - read, search, and edit files with full shell access
-- run long shell jobs in background (`! npm run dev &`) and inspect with `/bg`
+- run long shell jobs in background (`! npm run dev &`) and manage them through `/bg` interactive menu (`list/running/status/logs/stop/stop-all/prune`)
 - treat "start/run project or dev server" requests as detached background jobs by default, then follow with `/bg status|logs|stop`
+- manage extension lifecycle from chat with `/extensions` (`/ext`) for `list/install/update/remove/enable/disable`
 - review architecture or explore unfamiliar modules
 - resume previous sessions: `/resume`, `/fork`, `/tree`
 - keep persistent notes: `/memory`
@@ -446,7 +447,8 @@ Settings merge in priority order: **CLI flags** > **project** `.iosm/settings.js
     "enableContextDedupe": true,
     "maxContextCharsPerFile": 4000,
     "maxTotalContextChars": 12000,
-    "enableGitSnapshotContext": false
+    "enableGitSnapshotContext": false,
+    "gitSnapshotMaxChars": 2000
   },
   "permissions": {
     "autoApprove": false,

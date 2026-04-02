@@ -105,7 +105,8 @@ Settings are merged in this order (later wins):
     "enableContextDedupe": true,
     "maxContextCharsPerFile": 4000,
     "maxTotalContextChars": 12000,
-    "enableGitSnapshotContext": false
+    "enableGitSnapshotContext": false,
+    "gitSnapshotMaxChars": 2000
   },
   "permissions": {
     "autoApprove": false,
@@ -117,7 +118,7 @@ Settings are merged in this order (later wins):
 `githubTools.networkEnabled` controls whether `git_write` network actions (`fetch`, `pull`, `push`) are allowed.  
 `githubTools.token` is optional and, when set, is injected for GitHub HTTPS authentication during network git actions.
 `dbTools` defines named DB connection profiles consumed by `db_run`; for network adapters (`postgres`, `mysql`, `mongodb`, `redis`) use `dsnEnv` so secrets stay in environment variables instead of tool input.
-`promptContext` controls system prompt context compaction before model call: dedupe by normalized content hash, per-file char budget, total char budget, and optional git snapshot context inclusion.
+`promptContext` controls system prompt context compaction before model call: dedupe by normalized content hash, per-file char budget, total char budget, optional git snapshot context inclusion, and bounded git snapshot size.
 `permissions.extensionToolEnforcement` enables strict runtime permission tier checks for extension tools (off by default).
 
 ### `db_run` Setup (Recommended)
@@ -431,6 +432,7 @@ Example:
 - per-file cap (`maxContextCharsPerFile`)
 - total cap (`maxTotalContextChars`)
 - optional git snapshot context (`enableGitSnapshotContext`)
+- git snapshot cap (`gitSnapshotMaxChars`, default `2000`)
 
 Default values:
 
@@ -440,7 +442,8 @@ Default values:
     "enableContextDedupe": true,
     "maxContextCharsPerFile": 4000,
     "maxTotalContextChars": 12000,
-    "enableGitSnapshotContext": false
+    "enableGitSnapshotContext": false,
+    "gitSnapshotMaxChars": 2000
   }
 }
 ```

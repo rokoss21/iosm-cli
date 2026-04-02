@@ -43,7 +43,17 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	},
 	{
 		name: "bg",
-		description: "Background shell process manager: /bg [list|status|logs|stop] ... (works with ! <command> &)",
+		description:
+			"Background shell process manager: /bg (interactive menu) or /bg [list|running|status|logs|stop|stop-all|prune] ... (works with ! <command> &)",
+	},
+	{
+		name: "extensions",
+		description:
+			"Extension lifecycle manager: /extensions or /ext [list|install|update|remove|enable|disable|help] ...",
+	},
+	{
+		name: "ext",
+		description: "Alias for /extensions",
 	},
 	{ name: "team-runs", description: "List recent team orchestration runs from .iosm/subagents/teams" },
 	{ name: "team-status", description: "Show a team run status: /team-status [team-run-id] (picker when omitted)" },

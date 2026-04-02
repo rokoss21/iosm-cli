@@ -15,6 +15,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import type {
 	Agent,
 	AgentEvent,
@@ -105,6 +106,7 @@ import {
 import type { BashOperations } from "./tools/bash.js";
 import { createAllTools, getAllowedFetchMethodsForProfile } from "./tools/index.js";
 import type { ToolPermissionRequest, ToolRequiredPermission } from "./tools/index.js";
+import { resolveAssistantCostWithOpenRouterFallback } from "./usage-cost.js";
 import {
 	ULTRATHINK_CHECKPOINT_COMPRESSION_SYSTEM_PROMPT,
 	ULTRATHINK_MAX_CHECKPOINT_CHARS,
@@ -169,6 +171,15 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
+}
+
+const GIT_SNAPSHOT_CAPTURE_MAX_BUFFER = 512 * 1024;
+
+interface GitSnapshotContextDiagnostics {
+	beforeChars: number;
+	afterChars: number;
+	truncated: boolean;
+	included: boolean;
 }
 
 function parseOrchestrateBlock(text: string):
@@ -1422,6 +1433,74 @@ export class AgentSession {
 		return preview;
 	}
 
+	private _captureGitSnapshotCommand(args: string[]): string | undefined {
+		const result = spawnSync("git", ["-C", this._cwd, ...args], {
+			encoding: "utf8",
+			maxBuffer: GIT_SNAPSHOT_CAPTURE_MAX_BUFFER,
+		});
+		if (result.status !== 0) return undefined;
+		const output = typeof result.stdout === "string" ? result.stdout.trim() : "";
+		return output.length > 0 ? output : undefined;
+	}
+
+	private _buildGitSnapshotContext(maxChars: number): {
+		gitSnapshotContext: { path?: string; content: string } | undefined;
+		diagnostics: GitSnapshotContextDiagnostics;
+	} {
+		const diagnostics: GitSnapshotContextDiagnostics = {
+			beforeChars: 0,
+			afterChars: 0,
+			truncated: false,
+			included: false,
+		};
+
+		const sections: string[] = [];
+		const status = this._captureGitSnapshotCommand(["status", "--porcelain=v1", "--branch"]);
+		if (status) {
+			sections.push(`### git status --porcelain --branch\n${status}`);
+		}
+		const diffStat = this._captureGitSnapshotCommand(["diff", "--stat", "--no-color"]);
+		if (diffStat) {
+			sections.push(`### git diff --stat\n${diffStat}`);
+		}
+		const stagedDiffStat = this._captureGitSnapshotCommand(["diff", "--cached", "--stat", "--no-color"]);
+		if (stagedDiffStat) {
+			sections.push(`### git diff --cached --stat\n${stagedDiffStat}`);
+		}
+
+		if (sections.length === 0) {
+			return {
+				gitSnapshotContext: undefined,
+				diagnostics,
+			};
+		}
+
+		const combined = sections.join("\n\n").trim();
+		diagnostics.beforeChars = combined.length;
+
+		let content = combined;
+		if (content.length > maxChars) {
+			const marker = "\n\n...[git snapshot truncated]...";
+			const safeBudget = Math.max(0, maxChars - marker.length);
+			const sliced = content.slice(0, safeBudget).trimEnd();
+			content = `${sliced}${marker}`;
+			diagnostics.truncated = true;
+		}
+		content = content.trim();
+		diagnostics.afterChars = content.length;
+		diagnostics.included = content.length > 0;
+
+		return {
+			gitSnapshotContext: diagnostics.included
+				? {
+						path: "[git-snapshot]",
+						content,
+					}
+				: undefined,
+			diagnostics,
+		};
+	}
+
 	private async _evaluateToolPermission(request: ToolPermissionRequest): Promise<boolean> {
 		const normalizedRequest: ToolPermissionRequest = {
 			...request,
@@ -1475,11 +1554,24 @@ export class AgentSession {
 			maxTotalContextChars: this.settingsManager.getPromptContextMaxTotalChars(),
 			enableGitSnapshotContext: this.settingsManager.getPromptContextEnableGitSnapshotContext(),
 		};
+		const gitSnapshotMaxChars = this.settingsManager.getPromptContextGitSnapshotMaxChars();
+		const gitSnapshotResult = promptContextOptions.enableGitSnapshotContext
+			? this._buildGitSnapshotContext(gitSnapshotMaxChars)
+			: {
+					gitSnapshotContext: undefined,
+					diagnostics: {
+						beforeChars: 0,
+						afterChars: 0,
+						truncated: false,
+						included: false,
+					} as GitSnapshotContextDiagnostics,
+				};
 
 		return buildSystemPrompt({
 			cwd: this._cwd,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
+			gitSnapshotContext: gitSnapshotResult.gitSnapshotContext,
 			contextProcessing: promptContextOptions,
 			customPrompt: loaderSystemPrompt,
 			appendSystemPrompt,
@@ -1497,6 +1589,10 @@ export class AgentSession {
 					included_files: stats.includedFiles,
 					total_files: stats.totalFiles,
 					git_snapshot_included: stats.gitSnapshotIncluded,
+					git_snapshot_chars_before: gitSnapshotResult.diagnostics.beforeChars,
+					git_snapshot_chars_after: gitSnapshotResult.diagnostics.afterChars,
+					git_snapshot_truncated: gitSnapshotResult.diagnostics.truncated,
+					git_snapshot_max_chars: gitSnapshotMaxChars,
 				});
 			},
 		});
@@ -4433,7 +4529,9 @@ export class AgentSession {
 				totalOutput += assistantMsg.usage.output;
 				totalCacheRead += assistantMsg.usage.cacheRead;
 				totalCacheWrite += assistantMsg.usage.cacheWrite;
-				totalCost += assistantMsg.usage.cost.total;
+				totalCost += resolveAssistantCostWithOpenRouterFallback(assistantMsg, (provider, modelId) =>
+					this.modelRegistry.find(provider, modelId),
+				);
 			}
 		}
 

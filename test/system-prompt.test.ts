@@ -336,5 +336,50 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("## /tmp/a.md");
 			expect(prompt).toContain("## /tmp/b.md");
 		});
+
+		test("includes git snapshot context when enabled", () => {
+			let stats: any;
+			const prompt = buildSystemPrompt({
+				contextFiles: [{ path: "/tmp/a.md", content: "main context" }],
+				gitSnapshotContext: {
+					path: "[git-snapshot]",
+					content: "### git status --porcelain --branch\n## main...origin/main",
+				},
+				contextProcessing: {
+					enableContextDedupe: true,
+					maxContextCharsPerFile: 4000,
+					maxTotalContextChars: 12000,
+					enableGitSnapshotContext: true,
+				},
+				onContextProcessed: (result) => {
+					stats = result;
+				},
+				skills: [],
+			});
+
+			expect(prompt).toContain("## [git-snapshot]");
+			expect(prompt).toContain("git_snapshot_context: enabled");
+			expect(stats?.gitSnapshotIncluded).toBe(true);
+		});
+
+		test("ignores git snapshot context when feature is disabled", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [{ path: "/tmp/a.md", content: "main context" }],
+				gitSnapshotContext: {
+					path: "[git-snapshot]",
+					content: "### git status --porcelain --branch\n## main...origin/main",
+				},
+				contextProcessing: {
+					enableContextDedupe: true,
+					maxContextCharsPerFile: 4000,
+					maxTotalContextChars: 12000,
+					enableGitSnapshotContext: false,
+				},
+				skills: [],
+			});
+
+			expect(prompt).not.toContain("## [git-snapshot]");
+			expect(prompt).not.toContain("git_snapshot_context: enabled");
+		});
 	});
 });

@@ -1,8 +1,10 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { AgentSession } from "../../../core/agent-session.js";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.js";
+import { resolveAssistantCostWithOpenRouterFallback } from "../../../core/usage-cost.js";
 import { theme } from "../theme/theme.js";
 
 /**
@@ -123,11 +125,14 @@ export class FooterComponent implements Component {
 
 		for (const entry of this.session.sessionManager.getEntries()) {
 			if (entry.type === "message" && entry.message.role === "assistant") {
-				totalInput += entry.message.usage.input;
-				totalOutput += entry.message.usage.output;
-				totalCacheRead += entry.message.usage.cacheRead;
-				totalCacheWrite += entry.message.usage.cacheWrite;
-				totalCost += entry.message.usage.cost.total;
+				const assistantMessage = entry.message as AssistantMessage;
+				totalInput += assistantMessage.usage.input;
+				totalOutput += assistantMessage.usage.output;
+				totalCacheRead += assistantMessage.usage.cacheRead;
+				totalCacheWrite += assistantMessage.usage.cacheWrite;
+				totalCost += resolveAssistantCostWithOpenRouterFallback(assistantMessage, (provider, modelId) =>
+					this.session.modelRegistry.find(provider, modelId),
+				);
 			}
 		}
 

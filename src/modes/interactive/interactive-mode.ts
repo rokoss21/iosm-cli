@@ -96,6 +96,7 @@ import {
 } from "../../core/models-dev-provider-catalog.js";
 import { ModelRegistry, type ProviderConfigInput } from "../../core/model-registry.js";
 import { MODELS_DEV_PROVIDERS, type ModelsDevProviderInfo } from "../../core/models-dev-providers.js";
+import { loadOpenRouterProviderConfig } from "../../core/openrouter-model-catalog.js";
 import { resolveModelScope } from "../../core/model-resolver.js";
 import {
 	getMcpCommandHelp,
@@ -164,6 +165,7 @@ import {
 	type SemanticStatusResult,
 } from "../../core/semantic/index.js";
 import { DefaultResourceLoader } from "../../core/resource-loader.js";
+import { DefaultPackageManager } from "../../core/package-manager.js";
 import { createAgentSession } from "../../core/sdk.js";
 import { createTeamRun, getTeamRun, listTeamRuns } from "../../core/agent-teams.js";
 import {
@@ -187,12 +189,15 @@ import { getSubagentRun, listSubagentRuns } from "../../core/subagent-runs.js";
 import {
 	getBackgroundProcess,
 	listBackgroundProcesses,
+	pruneBackgroundProcesses,
 	readBackgroundProcessLogTail,
 	stopBackgroundProcess,
+	type BackgroundProcessRecord,
+	type BackgroundProcessStatus,
 } from "../../core/background-processes.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
-import { SettingsManager } from "../../core/settings-manager.js";
+import { SettingsManager, type PackageSource } from "../../core/settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { ToolPermissionRequest } from "../../core/tools/index.js";
 import { isTaskPlanSnapshot, TASK_PLAN_CUSTOM_TYPE, type TaskPlanSnapshot } from "../../core/task-plan.js";
@@ -1552,6 +1557,7 @@ export class InteractiveMode {
 		]),
 	);
 	private modelsDevProviderCatalogRefreshPromise: Promise<void> | undefined = undefined;
+	private openRouterModelCatalogRefreshPromise: Promise<boolean> | undefined = undefined;
 
 	// Custom header from extension (undefined = use built-in header)
 	private customHeader: (Component & { dispose?(): void }) | undefined = undefined;
@@ -4259,6 +4265,11 @@ export class InteractiveMode {
 			if (text === "/bg" || text.startsWith("/bg ")) {
 				this.editor.setText("");
 				await this.handleBackgroundProcessesSlashCommand(text);
+				return;
+			}
+			if (text === "/extensions" || text.startsWith("/extensions ") || text === "/ext" || text.startsWith("/ext ")) {
+				this.editor.setText("");
+				await this.handleExtensionsSlashCommand(text);
 				return;
 			}
 			if (text === "/team-runs" || text.startsWith("/team-runs ")) {
@@ -7835,6 +7846,36 @@ export class InteractiveMode {
 		}
 	}
 
+	private async hydrateOpenRouterModelsFromApi(options?: { forceRefresh?: boolean }): Promise<boolean> {
+		const forceRefresh = options?.forceRefresh === true;
+		if (!forceRefresh && this.hasRegisteredProviderModels(OPENROUTER_PROVIDER_ID)) return true;
+		if (forceRefresh && this.isProviderConfiguredInModelsJson(OPENROUTER_PROVIDER_ID)) {
+			return this.hasRegisteredProviderModels(OPENROUTER_PROVIDER_ID);
+		}
+		if (this.openRouterModelCatalogRefreshPromise) {
+			return this.openRouterModelCatalogRefreshPromise;
+		}
+
+		this.openRouterModelCatalogRefreshPromise = (async () => {
+			const apiKey = await this.session.modelRegistry.authStorage
+				.getApiKey(OPENROUTER_PROVIDER_ID)
+				.catch(() => undefined);
+			const config = await loadOpenRouterProviderConfig({ apiKey });
+			if (!config || !config.models || config.models.length === 0) return false;
+
+			try {
+				this.session.modelRegistry.registerProvider(OPENROUTER_PROVIDER_ID, config);
+				return this.hasRegisteredProviderModels(OPENROUTER_PROVIDER_ID);
+			} catch {
+				return false;
+			}
+		})().finally(() => {
+			this.openRouterModelCatalogRefreshPromise = undefined;
+		});
+
+		return this.openRouterModelCatalogRefreshPromise;
+	}
+
 	private async hydrateProviderModelsFromModelsDev(
 		providerId: string,
 		options?: { forceRefresh?: boolean; skipCatalogRefresh?: boolean },
@@ -7843,6 +7884,11 @@ export class InteractiveMode {
 		if (!forceRefresh && this.hasRegisteredProviderModels(providerId)) return true;
 		if (forceRefresh && this.isProviderConfiguredInModelsJson(providerId)) {
 			return this.hasRegisteredProviderModels(providerId);
+		}
+
+		if (providerId === OPENROUTER_PROVIDER_ID) {
+			const hydratedFromOpenRouter = await this.hydrateOpenRouterModelsFromApi({ forceRefresh });
+			if (hydratedFromOpenRouter) return true;
 		}
 
 		if (!options?.skipCatalogRefresh) {
@@ -7863,8 +7909,11 @@ export class InteractiveMode {
 	}
 
 	private async hydrateMissingProviderModelsForSavedAuth(options?: { forceRefresh?: boolean }): Promise<void> {
-		const savedProviders = this.session.modelRegistry.authStorage.list();
-		if (savedProviders.length === 0) return;
+		const savedProviders = new Set(this.session.modelRegistry.authStorage.list());
+		if (this.session.modelRegistry.authStorage.hasAuth(OPENROUTER_PROVIDER_ID)) {
+			savedProviders.add(OPENROUTER_PROVIDER_ID);
+		}
+		if (savedProviders.size === 0) return;
 
 		await this.refreshModelsDevProviderCatalog();
 		const forceRefresh = options?.forceRefresh === true;
@@ -14729,61 +14778,294 @@ export class InteractiveMode {
 		});
 	}
 
-	private formatBackgroundProcessOptionLabel(
-		record: ReturnType<typeof listBackgroundProcesses>[number],
-		index: number,
-	): string {
-		const status = `status=${record.status}`;
-		const pid = `pid=${record.pid}`;
-		const created = record.createdAt ? `created=${record.createdAt}` : "";
-		const commandPreview =
-			record.command.length > 64 ? `${record.command.slice(0, 61)}...` : record.command;
-		return `${index + 1}. ${record.id} · ${status} · ${pid}${created ? ` · ${created}` : ""} · ${commandPreview}`;
+	private getBackgroundCommandUsage(): string {
+		return "/bg [list|running|done|error|terminated|unknown] [limit: 1..200] | /bg status [id] | /bg logs [id] [lines: 1..1000] | /bg stop [id] | /bg stop-all | /bg prune [hours: 1..2160]";
 	}
 
-	private async pickBackgroundProcessId(cwd: string, actionLabel: string): Promise<string | undefined> {
-		const records = listBackgroundProcesses(cwd, 30);
+	private canUseInteractiveSelectors(): boolean {
+		return !!this.ui && !!this.editorContainer;
+	}
+
+	private getBackgroundStatusWeight(status: BackgroundProcessStatus): number {
+		switch (status) {
+			case "running":
+				return 0;
+			case "unknown":
+				return 1;
+			case "error":
+				return 2;
+			case "done":
+				return 3;
+			case "terminated":
+				return 4;
+			default:
+				return 5;
+		}
+	}
+
+	private formatBackgroundStatusLabel(status: BackgroundProcessStatus): string {
+		switch (status) {
+			case "running":
+				return "RUNNING";
+			case "done":
+				return "DONE";
+			case "error":
+				return "ERROR";
+			case "terminated":
+				return "TERMINATED";
+			case "unknown":
+				return "UNKNOWN";
+			default:
+				return "UNKNOWN";
+		}
+	}
+
+	private formatRelativeTime(timestamp: string | undefined): string {
+		if (!timestamp) return "-";
+		const parsed = Date.parse(timestamp);
+		if (!Number.isFinite(parsed)) return timestamp;
+		const diffMs = Date.now() - parsed;
+		if (diffMs < 0) return "just now";
+		const diffSec = Math.floor(diffMs / 1000);
+		if (diffSec < 60) return `${Math.max(1, diffSec)}s ago`;
+		const diffMin = Math.floor(diffSec / 60);
+		if (diffMin < 60) return `${diffMin}m ago`;
+		const diffHours = Math.floor(diffMin / 60);
+		if (diffHours < 24) return `${diffHours}h ago`;
+		const diffDays = Math.floor(diffHours / 24);
+		return `${diffDays}d ago`;
+	}
+
+	private formatDurationMs(startedAt: string | undefined, finishedAt?: string): string {
+		if (!startedAt) return "-";
+		const started = Date.parse(startedAt);
+		if (!Number.isFinite(started)) return "-";
+		const end = finishedAt ? Date.parse(finishedAt) : Date.now();
+		if (!Number.isFinite(end) || end < started) return "-";
+		const diffSec = Math.max(0, Math.floor((end - started) / 1000));
+		const hours = Math.floor(diffSec / 3600);
+		const minutes = Math.floor((diffSec % 3600) / 60);
+		const seconds = diffSec % 60;
+		if (hours > 0) return `${hours}h ${minutes}m`;
+		if (minutes > 0) return `${minutes}m ${seconds}s`;
+		return `${seconds}s`;
+	}
+
+	private sortBackgroundRecords(records: readonly BackgroundProcessRecord[]): BackgroundProcessRecord[] {
+		return [...records].sort((left, right) => {
+			const byStatus = this.getBackgroundStatusWeight(left.status) - this.getBackgroundStatusWeight(right.status);
+			if (byStatus !== 0) return byStatus;
+			return right.createdAt.localeCompare(left.createdAt);
+		});
+	}
+
+	private formatBackgroundProcessOptionLabel(record: BackgroundProcessRecord, index: number): string {
+		const statusLabel = this.formatBackgroundStatusLabel(record.status);
+		const age = this.formatRelativeTime(record.createdAt);
+		const runtime = this.formatDurationMs(record.startedAt, record.finishedAt);
+		const source = record.source ?? "-";
+		const commandPreview = record.command.length > 72 ? `${record.command.slice(0, 69)}...` : record.command;
+		const stopFlag = record.requestedStopAt ? " · stop requested" : "";
+		return `${index + 1}. [${statusLabel}] ${record.id} · pid=${record.pid} · age=${age} · runtime=${runtime} · source=${source}${stopFlag}\n   ${commandPreview}`;
+	}
+
+	private buildBackgroundProcessesReport(records: readonly BackgroundProcessRecord[]): string {
+		const counts = {
+			running: 0,
+			done: 0,
+			error: 0,
+			terminated: 0,
+			unknown: 0,
+		};
+		for (const record of records) {
+			counts[record.status] += 1;
+		}
+		const header = `Summary: total=${records.length} · running=${counts.running} · done=${counts.done} · error=${counts.error} · terminated=${counts.terminated} · unknown=${counts.unknown}`;
+		const items = records.map((record, index) => this.formatBackgroundProcessOptionLabel(record, index));
+		const hints = [
+			"Quick actions:",
+			"- /bg status <id>",
+			"- /bg logs <id> [lines]",
+			"- /bg stop <id>",
+			"- /bg stop-all",
+			"- /bg prune [hours]",
+		];
+		return [header, "", ...items, "", ...hints].join("\n");
+	}
+
+	private async runBackgroundMenu(cwd: string): Promise<boolean> {
+		if (!this.canUseInteractiveSelectors()) return false;
+		const records = this.sortBackgroundRecords(listBackgroundProcesses(cwd, 60));
+		const runningCount = records.filter((record) => record.status === "running").length;
+		const selected = await this.showExtensionSelector(
+			`/bg menu · running=${runningCount} · total=${records.length}`,
+			[
+				"List all processes",
+				"List running only",
+				"Show process status",
+				"Show process logs",
+				"Stop process",
+				"Stop all running processes",
+				"Prune old completed records",
+				"Help",
+				"Cancel",
+			],
+		);
+
+		if (!selected || selected === "Cancel") {
+			this.showStatus("/bg menu cancelled.");
+			return true;
+		}
+
+		if (selected === "List all processes") {
+			await this.handleBackgroundProcessesSlashCommand("/bg list");
+			return true;
+		}
+		if (selected === "List running only") {
+			await this.handleBackgroundProcessesSlashCommand("/bg running");
+			return true;
+		}
+		if (selected === "Show process status") {
+			await this.handleBackgroundProcessesSlashCommand("/bg status");
+			return true;
+		}
+		if (selected === "Show process logs") {
+			await this.handleBackgroundProcessesSlashCommand("/bg logs");
+			return true;
+		}
+		if (selected === "Stop process") {
+			await this.handleBackgroundProcessesSlashCommand("/bg stop");
+			return true;
+		}
+		if (selected === "Stop all running processes") {
+			await this.handleBackgroundProcessesSlashCommand("/bg stop-all");
+			return true;
+		}
+		if (selected === "Prune old completed records") {
+			await this.handleBackgroundProcessesSlashCommand("/bg prune");
+			return true;
+		}
+		if (selected === "Help") {
+			await this.handleBackgroundProcessesSlashCommand("/bg help");
+			return true;
+		}
+
+		return true;
+	}
+
+	private async pickBackgroundProcessId(
+		cwd: string,
+		actionLabel: string,
+		options?: {
+			preferredStatuses?: readonly BackgroundProcessStatus[];
+			limit?: number;
+		},
+	): Promise<string | undefined> {
+		const limit = options?.limit ?? 50;
+		const records = this.sortBackgroundRecords(listBackgroundProcesses(cwd, limit));
 		if (records.length === 0) {
 			this.showStatus("No background processes found.");
 			return undefined;
 		}
-		const options = records.map((record, index) => this.formatBackgroundProcessOptionLabel(record, index));
-		const selected = await this.showExtensionSelector(`/bg ${actionLabel}: select process`, options);
+		const preferredStatuses = options?.preferredStatuses;
+		let filtered = records;
+		if (preferredStatuses && preferredStatuses.length > 0) {
+			const allowed = new Set(preferredStatuses);
+			const preferred = records.filter((record) => allowed.has(record.status));
+			if (preferred.length > 0) filtered = preferred;
+		}
+		const pickerOptions = filtered.map((record, index) => this.formatBackgroundProcessOptionLabel(record, index));
+		const selected = await this.showExtensionSelector(`/bg ${actionLabel}: select process`, pickerOptions);
 		if (!selected) {
 			this.showStatus(`/bg ${actionLabel} cancelled.`);
 			return undefined;
 		}
-		const selectedIndex = options.indexOf(selected);
-		return selectedIndex >= 0 ? records[selectedIndex]?.id : undefined;
+		const selectedIndex = pickerOptions.indexOf(selected);
+		return selectedIndex >= 0 ? filtered[selectedIndex]?.id : undefined;
+	}
+
+	private async stopAllBackgroundProcesses(cwd: string): Promise<void> {
+		const runningRecords = this.sortBackgroundRecords(listBackgroundProcesses(cwd, 200)).filter(
+			(record) => record.status === "running",
+		);
+		if (runningRecords.length === 0) {
+			this.showStatus("No running background processes found.");
+			return;
+		}
+
+		if (this.canUseInteractiveSelectors()) {
+			const confirmed = await this.showExtensionConfirm(
+				"Stop all background processes?",
+				`Send stop signal to ${runningRecords.length} running process(es).`,
+			);
+			if (!confirmed) {
+				this.showStatus("/bg stop-all cancelled.");
+				return;
+			}
+		}
+
+		const updatedRecords: BackgroundProcessRecord[] = [];
+		for (const record of runningRecords) {
+			const updated = stopBackgroundProcess(cwd, record.id);
+			if (updated) updatedRecords.push(updated);
+		}
+		const stillRunning = updatedRecords.filter((record) => record.status === "running");
+		const lines = [
+			`Stop-all requested for ${runningRecords.length} process(es).`,
+			`Still running: ${stillRunning.length}`,
+			"",
+			...updatedRecords.map(
+				(record, index) => `${index + 1}. ${record.id} · status=${record.status} · requested_stop=${record.requestedStopAt ?? "-"}`,
+			),
+		];
+		this.showCommandTextBlock("Background Stop-All", lines.join("\n"));
 	}
 
 	private async handleBackgroundProcessesSlashCommand(text: string): Promise<void> {
 		const args = this.parseSlashArgs(text).slice(1);
 		const cwd = this.sessionManager.getCwd();
+		const usage = this.getBackgroundCommandUsage();
+		if (args.length === 0) {
+			const handledByMenu = await this.runBackgroundMenu(cwd);
+			if (handledByMenu) return;
+		}
+
 		const firstArg = (args[0] ?? "").toLowerCase();
 		const subcommand = firstArg || "list";
 
-		if (subcommand === "list" || /^\d+$/.test(subcommand)) {
-			const limitRaw = subcommand === "list" ? args[1] : subcommand;
+		const listFilters: Partial<Record<string, readonly BackgroundProcessStatus[]>> = {
+			list: undefined,
+			running: ["running"],
+			done: ["done"],
+			error: ["error"],
+			failed: ["error"],
+			terminated: ["terminated"],
+			unknown: ["unknown"],
+		};
+		const hasListFilter = Object.prototype.hasOwnProperty.call(listFilters, subcommand);
+
+		if (hasListFilter || /^\d+$/.test(subcommand)) {
+			const limitRaw = subcommand === "list" ? args[1] : hasListFilter ? args[1] : subcommand;
 			const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 20;
 			if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-				this.showWarning("Usage: /bg [list [limit: 1..200]] | /bg status [id] | /bg logs [id] [lines] | /bg stop [id]");
+				this.showWarning(`Usage: ${usage}`);
 				return;
 			}
-			const records = listBackgroundProcesses(cwd, limit);
-			if (records.length === 0) {
-				this.showStatus("No background processes found.");
+			const records = this.sortBackgroundRecords(listBackgroundProcesses(cwd, limit));
+			const statusFilter = hasListFilter ? listFilters[subcommand] : undefined;
+			const filtered =
+				statusFilter && statusFilter.length > 0
+					? records.filter((record) => statusFilter.includes(record.status))
+					: records;
+			if (filtered.length === 0) {
+				if (statusFilter && statusFilter.length > 0) {
+					this.showStatus(`No background processes found for "${subcommand}" filter.`);
+				} else {
+					this.showStatus("No background processes found.");
+				}
 				return;
 			}
-			const lines = records.map((record, index) => {
-				const status = `status=${record.status}`;
-				const pid = `pid=${record.pid}`;
-				const created = record.createdAt ? ` · ${record.createdAt}` : "";
-				const finished = record.finishedAt ? ` · finished=${record.finishedAt}` : "";
-				const exitCode = typeof record.exitCode === "number" ? ` · exit=${record.exitCode}` : "";
-				return `${index + 1}. ${record.id} · ${status} · ${pid}${created}${finished}${exitCode}\n  ${record.command}`;
-			});
-			this.showCommandTextBlock("Background Processes", lines.join("\n"));
+			this.showCommandTextBlock("Background Processes", this.buildBackgroundProcessesReport(filtered));
 			return;
 		}
 
@@ -14800,10 +15082,11 @@ export class InteractiveMode {
 			}
 			const lines = [
 				`ID: ${record.id}`,
-				`Status: ${record.status}`,
+				`Status: ${this.formatBackgroundStatusLabel(record.status)}${record.requestedStopAt ? " (stop requested)" : ""}`,
 				`PID: ${record.pid}`,
-				`Created: ${record.createdAt}`,
+				`Created: ${record.createdAt} (${this.formatRelativeTime(record.createdAt)})`,
 				`Started: ${record.startedAt}`,
+				`Runtime: ${this.formatDurationMs(record.startedAt, record.finishedAt)}`,
 				`Finished: ${record.finishedAt ?? "-"}`,
 				`Exit code: ${typeof record.exitCode === "number" ? record.exitCode : "-"}`,
 				`Cwd: ${record.cwd}`,
@@ -14811,6 +15094,10 @@ export class InteractiveMode {
 				`Requested stop: ${record.requestedStopAt ?? "-"}`,
 				`Status file: ${record.metaPath}`,
 				`Log file: ${record.logPath}`,
+				"",
+				"Quick actions:",
+				`- /bg logs ${record.id} 120`,
+				`- /bg stop ${record.id}`,
 				"",
 				"Command:",
 				record.command,
@@ -14822,7 +15109,9 @@ export class InteractiveMode {
 		if (subcommand === "logs") {
 			let id: string | undefined = args[1];
 			if (!id) {
-				id = await this.pickBackgroundProcessId(cwd, "logs");
+				id = await this.pickBackgroundProcessId(cwd, "logs", {
+					preferredStatuses: ["running", "unknown", "error", "done", "terminated"],
+				});
 			}
 			if (!id) return;
 			const linesRaw = args[2];
@@ -14844,7 +15133,13 @@ export class InteractiveMode {
 			const body = tail.trim().length > 0 ? tail : "(no output yet)";
 			this.showCommandTextBlock(
 				"Background Logs",
-				[`ID: ${record.id} · status=${record.status} · tail=${tailLines} lines`, "", body].join("\n"),
+				[
+					`ID: ${record.id} · status=${this.formatBackgroundStatusLabel(record.status)} · tail=${tailLines} lines`,
+					`Runtime: ${this.formatDurationMs(record.startedAt, record.finishedAt)} · stop_requested=${record.requestedStopAt ? "yes" : "no"}`,
+					`Command: ${record.command.length > 120 ? `${record.command.slice(0, 117)}...` : record.command}`,
+					"",
+					body,
+				].join("\n"),
 			);
 			return;
 		}
@@ -14852,23 +15147,408 @@ export class InteractiveMode {
 		if (subcommand === "stop" || subcommand === "kill" || subcommand === "cancel") {
 			let id: string | undefined = args[1];
 			if (!id) {
-				id = await this.pickBackgroundProcessId(cwd, "stop");
+				id = await this.pickBackgroundProcessId(cwd, "stop", {
+					preferredStatuses: ["running", "unknown", "error", "done", "terminated"],
+				});
 			}
 			if (!id) return;
+			const current = getBackgroundProcess(cwd, id);
+			if (!current) {
+				this.showWarning(`Background process not found: ${id}`);
+				return;
+			}
+			if (current.status !== "running") {
+				this.showStatus(`Background process ${current.id} is already ${current.status}.`);
+				return;
+			}
+			if (this.canUseInteractiveSelectors()) {
+				const confirmed = await this.showExtensionConfirm(
+					"Stop background process?",
+					`${current.id}\n${current.command.length > 140 ? `${current.command.slice(0, 137)}...` : current.command}`,
+				);
+				if (!confirmed) {
+					this.showStatus(`/bg stop cancelled for ${current.id}.`);
+					return;
+				}
+			}
 			const record = stopBackgroundProcess(cwd, id);
 			if (!record) {
 				this.showWarning(`Background process not found: ${id}`);
 				return;
 			}
 			if (record.status === "running") {
-				this.showWarning(`Stop signal sent to ${record.id}, but process still appears running.`);
+				this.showWarning(`Stop requested for ${record.id}, waiting for graceful shutdown. Use /bg status ${record.id} to monitor.`);
 			} else {
 				this.showStatus(`Background process ${record.id} stopped (${record.status}).`);
 			}
 			return;
 		}
 
-		this.showWarning("Usage: /bg [list [limit: 1..200]] | /bg status [id] | /bg logs [id] [lines] | /bg stop [id]");
+		if (subcommand === "stop-all" || subcommand === "kill-all" || subcommand === "cancel-all") {
+			await this.stopAllBackgroundProcesses(cwd);
+			return;
+		}
+
+		if (subcommand === "prune" || subcommand === "cleanup") {
+			const hoursRaw = args[1];
+			const hours = hoursRaw ? Number.parseInt(hoursRaw, 10) : 168;
+			if (!Number.isInteger(hours) || hours < 1 || hours > 2160) {
+				this.showWarning("Usage: /bg prune [hours: 1..2160]");
+				return;
+			}
+			const result = pruneBackgroundProcesses(cwd, { maxAgeHours: hours });
+			const preview =
+				result.removedIds.length > 0 ? `\n${result.removedIds.slice(0, 10).map((id) => `- ${id}`).join("\n")}` : "";
+			const moreSuffix = result.removedIds.length > 10 ? `\n- ... (+${result.removedIds.length - 10} more)` : "";
+			this.showCommandTextBlock(
+				"Background Prune",
+				[
+					`Threshold: older than ${result.thresholdHours}h`,
+					`Removed: ${result.removed}`,
+					`Skipped running: ${result.skippedRunning}`,
+					`Skipped recent: ${result.skippedRecent}`,
+					preview ? "" : undefined,
+					preview || undefined,
+					moreSuffix || undefined,
+				]
+					.filter((line): line is string => typeof line === "string")
+					.join("\n"),
+			);
+			return;
+		}
+
+		if (subcommand === "help") {
+			this.showCommandTextBlock(
+				"Background Help",
+				[
+					"Background command usage:",
+					usage,
+					"",
+					"Examples:",
+					"- ! npm run dev &",
+					"- /bg",
+					"- /bg running",
+					"- /bg status bg_123",
+					"- /bg logs bg_123 200",
+					"- /bg stop bg_123",
+					"- /bg stop-all",
+					"- /bg prune 72",
+				].join("\n"),
+			);
+			return;
+		}
+
+		this.showWarning(`Usage: ${usage}`);
+	}
+
+	private getExtensionsCommandUsage(): string {
+		return "/extensions (/ext) [list|install <source>|update [source]|remove <source>|enable <target>|disable <target>|help] [--global]";
+	}
+
+	private createInteractivePackageManager(cwd: string): DefaultPackageManager {
+		return new DefaultPackageManager({
+			cwd,
+			agentDir: getAgentDir(),
+			settingsManager: this.settingsManager,
+		});
+	}
+
+	private normalizeExtensionOverrideTarget(target: string): string {
+		const trimmed = target.trim();
+		if (!trimmed) return "";
+		if (path.isAbsolute(trimmed)) {
+			return path.resolve(trimmed);
+		}
+		let normalized = trimmed.replace(/\\/g, "/");
+		if (normalized.startsWith("./")) normalized = normalized.slice(2);
+		if (!normalized.startsWith("extensions/")) {
+			normalized = `extensions/${normalized}`;
+		}
+		return normalized;
+	}
+
+	private setExtensionOverride(
+		scope: "project" | "user",
+		target: string,
+		enabled: boolean,
+	): { updated: boolean; token: string | undefined } {
+		const normalizedTarget = this.normalizeExtensionOverrideTarget(target);
+		if (!normalizedTarget) return { updated: false, token: undefined };
+
+		const current =
+			scope === "project"
+				? [...(this.settingsManager.getProjectSettings().extensions ?? [])]
+				: [...(this.settingsManager.getGlobalSettings().extensions ?? [])];
+		const normalizeEntryTarget = (entry: string): string => {
+			const trimmed = entry.trim();
+			if (trimmed.startsWith("+") || trimmed.startsWith("-")) {
+				return this.normalizeExtensionOverrideTarget(trimmed.slice(1));
+			}
+			return "";
+		};
+		const filtered = current.filter((entry) => normalizeEntryTarget(entry) !== normalizedTarget);
+		const token = `${enabled ? "+" : "-"}${normalizedTarget}`;
+		const next = [...filtered, token];
+
+		if (JSON.stringify(next) === JSON.stringify(current)) {
+			return { updated: false, token };
+		}
+
+		if (scope === "project") {
+			this.settingsManager.setProjectExtensionPaths(next);
+		} else {
+			this.settingsManager.setExtensionPaths(next);
+		}
+		return { updated: true, token };
+	}
+
+	private togglePackageExtensionSource(
+		scope: "project" | "user",
+		source: string,
+		enabled: boolean,
+	): { matched: boolean; changed: boolean; message: string } {
+		const settings = scope === "project" ? this.settingsManager.getProjectSettings() : this.settingsManager.getGlobalSettings();
+		const packages = [...(settings.packages ?? [])];
+		const index = packages.findIndex((pkg) => (typeof pkg === "string" ? pkg : pkg.source) === source);
+		if (index < 0) {
+			return { matched: false, changed: false, message: "" };
+		}
+
+		const entry = packages[index];
+		let nextEntry: PackageSource = entry;
+		if (!enabled) {
+			if (typeof entry === "string") {
+				nextEntry = { source: entry, extensions: [] };
+			} else if (Array.isArray(entry.extensions) && entry.extensions.length === 0) {
+				return { matched: true, changed: false, message: `Extension source already disabled: ${source}` };
+			} else {
+				nextEntry = { ...entry, extensions: [] };
+			}
+		} else if (typeof entry === "string") {
+			return { matched: true, changed: false, message: `Extension source already enabled: ${source}` };
+		} else if (!Array.isArray(entry.extensions) || entry.extensions.length > 0) {
+			return { matched: true, changed: false, message: `Extension source already enabled: ${source}` };
+		} else {
+			const { extensions: _extensions, ...rest } = entry;
+			nextEntry = Object.keys(rest).length === 1 ? rest.source : rest;
+		}
+
+		packages[index] = nextEntry;
+		if (scope === "project") {
+			this.settingsManager.setProjectPackages(packages);
+		} else {
+			this.settingsManager.setPackages(packages);
+		}
+		return {
+			matched: true,
+			changed: true,
+			message: `${enabled ? "Enabled" : "Disabled"} extension source (${scope}): ${source}`,
+		};
+	}
+
+	private async showExtensionsList(scopeFilter?: "project" | "user"): Promise<void> {
+		const cwd = this.sessionManager.getCwd();
+		const packageManager = this.createInteractivePackageManager(cwd);
+		const resolved = await packageManager.resolve();
+		const packageLines: string[] = [];
+		const projectPackages = this.settingsManager.getProjectSettings().packages ?? [];
+		const globalPackages = this.settingsManager.getGlobalSettings().packages ?? [];
+		const includeProject = !scopeFilter || scopeFilter === "project";
+		const includeGlobal = !scopeFilter || scopeFilter === "user";
+
+		if (includeProject) {
+			packageLines.push("Project package sources:");
+			if (projectPackages.length === 0) {
+				packageLines.push("  (none)");
+			} else {
+				for (const pkg of projectPackages) {
+					const source = typeof pkg === "string" ? pkg : pkg.source;
+					const status =
+						typeof pkg === "object" && Array.isArray(pkg.extensions) && pkg.extensions.length === 0
+							? "disabled"
+							: "enabled";
+					packageLines.push(`  - [${status}] ${source}`);
+				}
+			}
+		}
+		if (includeGlobal) {
+			if (packageLines.length > 0) packageLines.push("");
+			packageLines.push("User package sources:");
+			if (globalPackages.length === 0) {
+				packageLines.push("  (none)");
+			} else {
+				for (const pkg of globalPackages) {
+					const source = typeof pkg === "string" ? pkg : pkg.source;
+					const status =
+						typeof pkg === "object" && Array.isArray(pkg.extensions) && pkg.extensions.length === 0
+							? "disabled"
+							: "enabled";
+					packageLines.push(`  - [${status}] ${source}`);
+				}
+			}
+		}
+
+		const extensions = resolved.extensions
+			.filter((resource) => !scopeFilter || resource.metadata.scope === scopeFilter)
+			.sort((a, b) => {
+				if (a.metadata.scope !== b.metadata.scope) return a.metadata.scope.localeCompare(b.metadata.scope, "en");
+				return a.path.localeCompare(b.path, "en");
+			});
+		const enabledCount = extensions.filter((resource) => resource.enabled).length;
+		const disabledCount = extensions.length - enabledCount;
+		const extensionLines =
+			extensions.length === 0
+				? ["  (none)"]
+				: extensions.map((resource) => {
+						const relative = path.relative(cwd, resource.path);
+						const displayPath = !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : resource.path;
+						const status = resource.enabled ? "enabled" : "disabled";
+						return `  - [${status}] ${displayPath} · scope=${resource.metadata.scope} · source=${resource.metadata.source}`;
+					});
+
+		const lines = [
+			`Extension resources: total=${extensions.length} · enabled=${enabledCount} · disabled=${disabledCount}`,
+			"",
+			...extensionLines,
+			"",
+			...packageLines,
+			"",
+			"Commands:",
+			"- /extensions install <source> [--global]",
+			"- /extensions update [source]",
+			"- /extensions remove <source> [--global]",
+			"- /extensions disable <source-or-path> [--global]",
+			"- /extensions enable <source-or-path> [--global]",
+		];
+		this.showCommandTextBlock("Extensions", lines.join("\n"));
+	}
+
+	private async handleExtensionsSlashCommand(text: string): Promise<void> {
+		const args = this.parseSlashArgs(text).slice(1);
+		const usage = this.getExtensionsCommandUsage();
+		const filteredArgs = args.filter((arg) => arg !== "/extensions" && arg !== "/ext");
+		let scope: "project" | "user" = "project";
+		const normalizedArgs: string[] = [];
+		for (const arg of filteredArgs) {
+			if (arg === "--global" || arg === "-g") {
+				scope = "user";
+				continue;
+			}
+			if (arg === "--project") {
+				scope = "project";
+				continue;
+			}
+			normalizedArgs.push(arg);
+		}
+
+		const subcommand = (normalizedArgs[0] ?? "list").toLowerCase();
+		const subArgs = normalizedArgs.slice(1);
+		const cwd = this.sessionManager.getCwd();
+		const packageManager = this.createInteractivePackageManager(cwd);
+
+		if (subcommand === "help") {
+			this.showCommandTextBlock(
+				"Extensions Help",
+				[
+					"Extension lifecycle usage:",
+					usage,
+					"",
+					"Examples:",
+					"- /extensions list",
+					"- /extensions list --global",
+					"- /extensions install npm:@org/iosm-extension",
+					"- /extensions install ./local-extension --global",
+					"- /extensions update",
+					"- /extensions remove npm:@org/iosm-extension",
+					"- /extensions disable extensions/my-tool.ts",
+					"- /ext enable npm:@org/iosm-extension --global",
+				].join("\n"),
+			);
+			return;
+		}
+
+		if (subcommand === "list") {
+			await this.showExtensionsList(scope);
+			return;
+		}
+
+		if (subcommand === "install") {
+			const source = subArgs[0];
+			if (!source) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			await packageManager.install(source, { local: scope === "project" });
+			packageManager.addSourceToSettings(source, { local: scope === "project" });
+			await this.reloadAfterMemoryMutation(
+				`Installed extension source (${scope}): ${source}`,
+				"Extension source installed but reload failed",
+			);
+			return;
+		}
+
+		if (subcommand === "update") {
+			const source = subArgs[0];
+			await packageManager.update(source);
+			await this.reloadAfterMemoryMutation(
+				source ? `Updated extension source: ${source}` : "Updated extension sources",
+				"Extension sources updated but reload failed",
+			);
+			return;
+		}
+
+		if (subcommand === "remove" || subcommand === "uninstall") {
+			const source = subArgs[0];
+			if (!source) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			await packageManager.remove(source, { local: scope === "project" });
+			const removed = packageManager.removeSourceFromSettings(source, { local: scope === "project" });
+			if (!removed) {
+				this.showWarning(`No matching extension source found in ${scope} scope: ${source}`);
+				return;
+			}
+			await this.reloadAfterMemoryMutation(
+				`Removed extension source (${scope}): ${source}`,
+				"Extension source removed but reload failed",
+			);
+			return;
+		}
+
+		if (subcommand === "enable" || subcommand === "disable") {
+			const target = subArgs[0];
+			if (!target) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const desiredEnabled = subcommand === "enable";
+			const packageToggle = this.togglePackageExtensionSource(scope, target, desiredEnabled);
+			if (packageToggle.matched) {
+				if (!packageToggle.changed) {
+					this.showStatus(packageToggle.message);
+					return;
+				}
+				await this.reloadAfterMemoryMutation(
+					packageToggle.message,
+					"Extension source toggle applied but reload failed",
+				);
+				return;
+			}
+
+			const override = this.setExtensionOverride(scope, target, desiredEnabled);
+			if (!override.updated) {
+				this.showStatus(`No extension override changes were needed for: ${target}`);
+				return;
+			}
+			await this.reloadAfterMemoryMutation(
+				`${desiredEnabled ? "Enabled" : "Disabled"} extension path (${scope}) via override: ${override.token}`,
+				"Extension override applied but reload failed",
+			);
+			return;
+		}
+
+		this.showWarning(`Usage: ${usage}`);
 	}
 
 	private handleTeamRunsSlashCommand(text: string): void {

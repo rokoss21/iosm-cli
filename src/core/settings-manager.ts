@@ -83,6 +83,7 @@ export interface PromptContextSettings {
 	maxContextCharsPerFile?: number; // default: 4000
 	maxTotalContextChars?: number; // default: 12000
 	enableGitSnapshotContext?: boolean; // default: false
+	gitSnapshotMaxChars?: number; // default: 2000
 }
 
 export interface PermissionsSettings {
@@ -818,6 +819,12 @@ export class SettingsManager {
 
 	getPromptContextEnableGitSnapshotContext(): boolean {
 		return this.settings.promptContext?.enableGitSnapshotContext ?? false;
+	}
+
+	getPromptContextGitSnapshotMaxChars(): number {
+		const value = this.settings.promptContext?.gitSnapshotMaxChars;
+		if (typeof value !== "number" || !Number.isFinite(value)) return 2000;
+		return Math.max(256, Math.floor(value));
 	}
 
 	getShellCommandPrefix(): string | undefined {

@@ -385,6 +385,11 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	} else if (hasBash && (hasGrep || hasFind || hasLs || hasRg || hasFd)) {
 		addGuideline("Prefer grep/find/ls/rg/fd tools over bash for codebase exploration (faster and less noisy)");
 	}
+	if (hasRead) {
+		addGuideline(
+			"When the user asks to manage extension lifecycle (list/install/update/remove/enable/disable), prefer /extensions (/ext) command flows over manual settings edits",
+		);
+	}
 	if (hasBash) {
 		addGuideline(
 			"For long-running shell work that should not block the turn, use bash with run_in_background=true and report the returned backgroundTaskId; keep foreground mode for commands whose output is needed immediately",
