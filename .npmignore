@@ -1,0 +1,2 @@
+# Explicit file to avoid npm's .gitignore fallback warning during publish.
+# Published files are primarily controlled by the "files" whitelist in package.json.
