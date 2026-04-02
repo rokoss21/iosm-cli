@@ -33,3 +33,6 @@ coverage/
 
 # Local comparative analysis clones
 tmp/
+
+# Internal planning artifacts
+task.md
