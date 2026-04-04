@@ -147,6 +147,29 @@ console.log(result.details?.backgroundTaskId);
 
 Extensions can expose UI elements through RPC mode. See [rpc-extension-ui.ts](../examples/rpc-extension-ui.ts) for a complete example of using `confirm`, `select`, `notify`, and other UI methods over RPC.
 
+RPC clients can also drive built-in slash commands without TUI by sending:
+
+```json
+{ "type": "run_builtin_command", "commandText": "/permissions status" }
+```
+
+Current headless built-ins include:
+- `/status`, `/session`, `/abort`, `/new`, `/clear`
+- `/name`, `/copy`, `/export`
+- `/model`, `/model cycle`
+- `/yolo`, `/permissions ...`
+- `/resume <session-path>`, `/fork <entry-id>`
+
+For `ask`-mode dangerous tool calls, RPC now emits:
+- `requires_confirmation` event (high-level signal)
+- `extension_ui_request` with `method: "confirm_permission"` and matching `id`
+
+Clients should answer with:
+
+```json
+{ "type": "extension_ui_response", "id": "<request-id>", "confirmed": true }
+```
+
 ---
 
 ## Print Mode

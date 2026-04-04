@@ -105,6 +105,11 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
+		test("parses --mode telegram", () => {
+			const result = parseArgs(["--mode", "telegram"]);
+			expect(result.mode).toBe("telegram");
+		});
+
 		test("parses --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.session).toBe("/path/to/session.jsonl");

@@ -423,6 +423,33 @@ describe("AuthStorage", () => {
 		});
 	});
 
+	describe("disabled providers", () => {
+		test("hides disabled provider credentials from public accessors", async () => {
+			writeAuthJson({
+				"google-antigravity": { type: "api_key", key: "disabled-key" },
+				anthropic: { type: "api_key", key: "enabled-key" },
+			});
+
+			authStorage = AuthStorage.create(authJsonPath);
+
+			expect(authStorage.list()).toContain("anthropic");
+			expect(authStorage.list()).not.toContain("google-antigravity");
+			expect(authStorage.has("google-antigravity")).toBe(false);
+			expect(authStorage.get("google-antigravity")).toBeUndefined();
+			expect(authStorage.hasAuth("google-antigravity")).toBe(false);
+			expect(await authStorage.getApiKey("google-antigravity")).toBeUndefined();
+		});
+
+		test("rejects login and set operations for disabled provider", async () => {
+			authStorage = AuthStorage.create(authJsonPath);
+
+			expect(() =>
+				authStorage.set("google-antigravity", { type: "api_key", key: "disabled-key" }),
+			).toThrow(/disabled/i);
+			await expect(authStorage.login("google-antigravity" as any, {} as any)).rejects.toThrow(/disabled/i);
+		});
+	});
+
 	describe("runtime overrides", () => {
 		test("runtime override takes priority over auth.json", async () => {
 			writeAuthJson({

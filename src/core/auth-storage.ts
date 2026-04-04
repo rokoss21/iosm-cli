@@ -17,6 +17,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "f
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { getAgentDir } from "../config.js";
+import { filterAllowedProviders, isProviderAllowed } from "./provider-policy.js";
 import { resolveConfigValue } from "./resolve-config-value.js";
 
 export type ApiKeyCredential = {
@@ -257,6 +258,7 @@ export class AuthStorage {
 	 * Get credential for a provider.
 	 */
 	get(provider: string): AuthCredential | undefined {
+		if (!isProviderAllowed(provider)) return undefined;
 		return this.data[provider] ?? undefined;
 	}
 
@@ -264,6 +266,9 @@ export class AuthStorage {
 	 * Set credential for a provider.
 	 */
 	set(provider: string, credential: AuthCredential): void {
+		if (!isProviderAllowed(provider)) {
+			throw new Error(`Provider "${provider}" is disabled in this build.`);
+		}
 		this.data[provider] = credential;
 		this.persistProviderChange(provider, credential);
 	}
@@ -280,13 +285,14 @@ export class AuthStorage {
 	 * List all providers with credentials.
 	 */
 	list(): string[] {
-		return Object.keys(this.data);
+		return Object.keys(this.data).filter((providerId) => isProviderAllowed(providerId));
 	}
 
 	/**
 	 * Check if credentials exist for a provider in auth.json.
 	 */
 	has(provider: string): boolean {
+		if (!isProviderAllowed(provider)) return false;
 		return provider in this.data;
 	}
 
@@ -295,6 +301,7 @@ export class AuthStorage {
 	 * Unlike getApiKey(), this doesn't refresh OAuth tokens.
 	 */
 	hasAuth(provider: string): boolean {
+		if (!isProviderAllowed(provider)) return false;
 		if (this.runtimeOverrides.has(provider)) return true;
 		if (this.data[provider]) return true;
 		if (getEnvApiKey(provider)) return true;
@@ -319,6 +326,9 @@ export class AuthStorage {
 	 * Login to an OAuth provider.
 	 */
 	async login(providerId: OAuthProviderId, callbacks: OAuthLoginCallbacks): Promise<void> {
+		if (!isProviderAllowed(providerId)) {
+			throw new Error(`Provider "${providerId}" is disabled in this build.`);
+		}
 		const provider = getOAuthProvider(providerId);
 		if (!provider) {
 			throw new Error(`Unknown OAuth provider: ${providerId}`);
@@ -395,6 +405,7 @@ export class AuthStorage {
 	 * 5. Fallback resolver (models.json custom providers)
 	 */
 	async getApiKey(providerId: string): Promise<string | undefined> {
+		if (!isProviderAllowed(providerId)) return undefined;
 		// Runtime override takes highest priority
 		const runtimeKey = this.runtimeOverrides.get(providerId);
 		if (runtimeKey) {
@@ -457,6 +468,6 @@ export class AuthStorage {
 	 * Get all registered OAuth providers
 	 */
 	getOAuthProviders() {
-		return getOAuthProviders();
+		return filterAllowedProviders(getOAuthProviders());
 	}
 }

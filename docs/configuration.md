@@ -121,6 +121,27 @@ Settings are merged in this order (later wins):
 `promptContext` controls system prompt context compaction before model call: dedupe by normalized content hash, per-file char budget, total char budget, optional git snapshot context inclusion, and bounded git snapshot size.
 `permissions.extensionToolEnforcement` enables strict runtime permission tier checks for extension tools (off by default).
 
+### Telegram Bridge Settings
+
+Telegram remote control is opt-in and disabled by default.
+
+```json
+{
+  "telegram": {
+    "enabled": true,
+    "botToken": "123456:AA...",
+    "allowedUserIds": [123456789],
+    "transport": "long-polling",
+    "chatDefaults": {
+      "statusEditThrottleMs": 1200,
+      "maxSummaryChars": 3000
+    }
+  }
+}
+```
+
+Run with `iosm --mode telegram` or `iosm telegram`.
+
 ### `db_run` Setup (Recommended)
 
 1. Install required DB client CLI for your adapter:

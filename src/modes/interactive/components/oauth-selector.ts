@@ -1,4 +1,3 @@
-import { getOAuthProviders } from "@mariozechner/pi-ai/oauth";
 import { Container, fuzzyFilter, getEditorKeybindings, Input, Spacer, Text, TruncatedText } from "@mariozechner/pi-tui";
 import type { AuthStorage } from "../../../core/auth-storage.js";
 import { theme } from "../theme/theme.js";
@@ -93,7 +92,7 @@ export class OAuthSelectorComponent extends Container {
 	}
 
 	private loadProviders(): void {
-		const oauthProviders: LoginProviderOption[] = getOAuthProviders().map((provider) => ({
+		const oauthProviders: LoginProviderOption[] = this.authStorage.getOAuthProviders().map((provider) => ({
 			id: provider.id,
 			name: provider.name,
 			kind: "oauth",

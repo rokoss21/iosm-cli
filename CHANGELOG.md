@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-04-04
+
+### Added
+
+- **Telegram bridge mode** — added mobile remote-control runtime (`iosm telegram` / `--mode telegram`) with long-polling transport, single-operator allowlist guard, Control Hub navigation, live status updates, quick-action keyboard, model picker, and confirmation flow for dangerous tool calls
+- **Headless built-in command dispatcher** — extracted built-in slash command execution into a shared dispatcher for non-TUI runtimes
+- **RPC built-in command contract** — added `get_builtin_commands` and `run_builtin_command` RPC commands so external clients can invoke core slash commands without TUI routing
+- **RPC permission events** — added `requires_confirmation` event and `confirm_permission` extension UI request contract for ask-mode tool confirmations in external clients
+- **Subagent background run registry** — added persistent metadata/log tracking for background subagent execution with stop/stop-all/prune helpers and interactive command surface
+
+### Changed
+
+- **CLI mode surface** — expanded `--mode` to include `telegram` and added top-level `iosm telegram` alias command
+- **RPC startup behavior** — RPC mode now starts without a preselected model so remote clients can choose model later (for example via Telegram `/model`)
+- **Interactive subagent commands** — extended `/subagent-runs` with `bg` management commands (`list/running/queued/done/error/cancelled/status/logs/stop/stop-all/prune`)
+- **Provider policy filtering** — disabled `google-antigravity` provider from auth/model/login catalogs and default model resolution in this build
+- **Example set refresh** — removed deprecated `examples/extensions/antigravity-image-gen.ts` and updated extension example count
+
+### Documentation
+
+- Updated README integration/mode coverage with Telegram bridge examples and profile-based launch commands
+- Updated `docs/cli-reference.md` with `--mode telegram` and `iosm telegram --profile ...` usage
+- Updated `docs/configuration.md` with `telegram` settings schema (`enabled`, `botToken`, `allowedUserIds`, `transport`, `chatDefaults`)
+- Updated `docs/rpc-json-sdk.md` with built-in command RPC calls and confirmation event/response protocol
+
+### Tests
+
+- Added command dispatcher coverage in `test/command-dispatcher.test.ts`
+- Added subagent background run storage/control coverage in `test/subagent-background-runs.test.ts`
+- Expanded RPC/interactive/settings/model/auth regressions for telegram mode wiring, built-in command dispatch, permission-mode/state handling, and provider policy filtering
+
 ## [0.2.13] - 2026-04-02
 
 ### Added

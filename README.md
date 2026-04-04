@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.13</h1>
+<h1>IOSM CLI 0.2.14</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -62,7 +62,7 @@ It is not a chat interface. It is a runtime.
 | **Multi-agent work** | Parallel subagents with shared memory and consistency model |
 | **Background execution** | Detached shell runs (`! <command> &`) with `/bg` process management |
 | **Methodology** | IOSM cycles: measurable improvement with metrics, evidence, and artifact history |
-| **Integrations** | Interactive TUI, print mode, JSON event stream, JSON-RPC server, TypeScript SDK |
+| **Integrations** | Interactive TUI, print mode, JSON event stream, JSON-RPC server, Telegram bridge, TypeScript SDK |
 | **Extensibility** | MCP servers, TypeScript extensions, Markdown skills, prompt templates, themes |
 
 ---
@@ -348,6 +348,7 @@ Run artifacts: `.iosm/orchestrate/<run-id>/` — run state, DAG, checkpoints, ev
 | **CI / automation** | Contract-driven runs inside pipelines | `iosm -p "..."` — exits non-zero on failure |
 | **JSON stream** | Machine-readable event output | `iosm --mode json -p "..."` |
 | **RPC server** | IDE / editor integration | `iosm --mode rpc --no-session` |
+| **Telegram bridge** | Mobile remote control over Telegram | `iosm --mode telegram` |
 | **TypeScript SDK** | Embed the runtime in your own application | `createAgentSession()` |
 
 ```bash
@@ -365,6 +366,15 @@ iosm --mode json -p "Summarize the repository" | jq -r 'select(.type=="text_delt
 
 # RPC server for editor integrations
 iosm --mode rpc --no-session
+
+# Telegram remote control bridge (requires telegram settings)
+iosm --mode telegram
+
+# Telegram bridge with explicit root-agent profile
+iosm telegram --profile full
+iosm telegram --profile meta
+iosm telegram --profile iosm
+iosm telegram --profile plan
 ```
 
 ---

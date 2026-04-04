@@ -97,6 +97,7 @@ import {
 import { ModelRegistry, type ProviderConfigInput } from "../../core/model-registry.js";
 import { MODELS_DEV_PROVIDERS, type ModelsDevProviderInfo } from "../../core/models-dev-providers.js";
 import { loadOpenRouterProviderConfig } from "../../core/openrouter-model-catalog.js";
+import { isProviderAllowed } from "../../core/provider-policy.js";
 import { resolveModelScope } from "../../core/model-resolver.js";
 import {
 	getMcpCommandHelp,
@@ -195,6 +196,16 @@ import {
 	type BackgroundProcessRecord,
 	type BackgroundProcessStatus,
 } from "../../core/background-processes.js";
+import {
+	getSubagentBackgroundRun,
+	listSubagentBackgroundRuns,
+	pruneSubagentBackgroundRuns,
+	readSubagentBackgroundRunLogTail,
+	requestStopAllSubagentBackgroundRuns,
+	requestStopSubagentBackgroundRun,
+	type SubagentBackgroundRunRecord,
+	type SubagentBackgroundRunStatus,
+} from "../../core/subagent-background-runs.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { SettingsManager, type PackageSource } from "../../core/settings-manager.js";
@@ -1194,7 +1205,6 @@ function resolveDoctorCliToolStatuses(): DoctorCliToolStatus[] {
 const OPENROUTER_PROVIDER_ID = "openrouter";
 const PROVIDER_DISPLAY_NAME_OVERRIDES: Record<string, string> = {
 	"azure-openai-responses": "Azure OpenAI Responses",
-	"google-antigravity": "Google Antigravity",
 	"google-gemini-cli": "Google Gemini CLI",
 	"kimi-coding": "Kimi Coding",
 	"openai-codex": "OpenAI Codex",
@@ -1546,9 +1556,11 @@ export class InteractiveMode {
 
 	// API-key provider labels cached for /login and status messages.
 	private apiKeyProviderDisplayNames = new Map<string, string>();
-	private modelsDevProviderCatalog: readonly ModelsDevProviderInfo[] = MODELS_DEV_PROVIDERS;
+	private modelsDevProviderCatalog: readonly ModelsDevProviderInfo[] = MODELS_DEV_PROVIDERS.filter((provider) =>
+		isProviderAllowed(provider.id),
+	);
 	private modelsDevProviderCatalogById: ReadonlyMap<string, ModelsDevProviderCatalogInfo> = new Map(
-		MODELS_DEV_PROVIDERS.map((provider) => [
+		MODELS_DEV_PROVIDERS.filter((provider) => isProviderAllowed(provider.id)).map((provider) => [
 			provider.id,
 			{
 				...provider,
@@ -7765,8 +7777,10 @@ export class InteractiveMode {
 
 		this.modelsDevProviderCatalogRefreshPromise = (async () => {
 			const catalog = await loadModelsDevProviderCatalog();
-			this.modelsDevProviderCatalogById = catalog;
-			this.modelsDevProviderCatalog = Array.from(catalog.values())
+			this.modelsDevProviderCatalogById = new Map(
+				Array.from(catalog.entries()).filter(([providerId]) => isProviderAllowed(providerId)),
+			);
+			this.modelsDevProviderCatalog = Array.from(this.modelsDevProviderCatalogById.values())
 				.map((provider) => ({
 					id: provider.id,
 					name: provider.name,
@@ -7775,9 +7789,9 @@ export class InteractiveMode {
 				.sort((a, b) => a.name.localeCompare(b.name, "en") || a.id.localeCompare(b.id, "en"));
 		})()
 			.catch(() => {
-				this.modelsDevProviderCatalog = MODELS_DEV_PROVIDERS;
+				this.modelsDevProviderCatalog = MODELS_DEV_PROVIDERS.filter((provider) => isProviderAllowed(provider.id));
 				this.modelsDevProviderCatalogById = new Map(
-					MODELS_DEV_PROVIDERS.map((provider) => [
+					MODELS_DEV_PROVIDERS.filter((provider) => isProviderAllowed(provider.id)).map((provider) => [
 						provider.id,
 						{
 							...provider,
@@ -7952,12 +7966,14 @@ export class InteractiveMode {
 		this.apiKeyProviderDisplayNames.clear();
 
 		for (const model of this.session.modelRegistry.getAll()) {
+			if (!isProviderAllowed(model.provider)) continue;
 			if (!providerNames.has(model.provider)) {
 				providerNames.set(model.provider, toProviderDisplayName(model.provider));
 			}
 		}
 
 		for (const provider of modelsDevProviders) {
+			if (!isProviderAllowed(provider.id)) continue;
 			const fallbackName = toProviderDisplayName(provider.id);
 			const current = providerNames.get(provider.id);
 			if (!current || current === fallbackName) {
@@ -7966,6 +7982,7 @@ export class InteractiveMode {
 		}
 
 		for (const providerId of this.session.modelRegistry.authStorage.list()) {
+			if (!isProviderAllowed(providerId)) continue;
 			if (!providerNames.has(providerId)) {
 				providerNames.set(providerId, toProviderDisplayName(providerId));
 			}
@@ -8064,7 +8081,7 @@ export class InteractiveMode {
 		const usesCallbackServer = providerInfo?.usesCallbackServer ?? false;
 
 		// Create login dialog component
-		const dialog = new LoginDialogComponent(this.ui, providerId, (_success, _message) => {
+		const dialog = new LoginDialogComponent(this.ui, providerName, (_success, _message) => {
 			// Completion handled below
 		});
 
@@ -14678,22 +14695,277 @@ export class InteractiveMode {
 		}
 	}
 
-	private handleSubagentRunsSlashCommand(text: string): void {
-		const args = this.parseSlashArgs(text).slice(1);
-		const limitRaw = args[0];
-		const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 20;
-		if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
-			this.showWarning("Usage: /subagent-runs [limit: 1..200]");
+	private getSubagentBackgroundUsage(): string {
+		return "/subagent-runs bg [list|running|queued|done|error|cancelled] [limit: 1..200] | /subagent-runs bg status <id> | /subagent-runs bg logs <id> [lines: 1..1000] | /subagent-runs bg stop <id> | /subagent-runs bg stop-all | /subagent-runs bg prune [hours: 1..2160]";
+	}
+
+	private getSubagentBackgroundStatusWeight(status: SubagentBackgroundRunStatus): number {
+		switch (status) {
+			case "running":
+				return 0;
+			case "queued":
+				return 1;
+			case "error":
+				return 2;
+			case "cancelled":
+				return 3;
+			case "done":
+				return 4;
+			default:
+				return 5;
+		}
+	}
+
+	private formatSubagentBackgroundStatusLabel(status: SubagentBackgroundRunStatus): string {
+		switch (status) {
+			case "running":
+				return "RUNNING";
+			case "queued":
+				return "QUEUED";
+			case "done":
+				return "DONE";
+			case "error":
+				return "ERROR";
+			case "cancelled":
+				return "CANCELLED";
+			default:
+				return "UNKNOWN";
+		}
+	}
+
+	private sortSubagentBackgroundRecords(records: readonly SubagentBackgroundRunRecord[]): SubagentBackgroundRunRecord[] {
+		return [...records].sort((left, right) => {
+			const byStatus =
+				this.getSubagentBackgroundStatusWeight(left.status) - this.getSubagentBackgroundStatusWeight(right.status);
+			if (byStatus !== 0) return byStatus;
+			return right.createdAt.localeCompare(left.createdAt);
+		});
+	}
+
+	private formatSubagentBackgroundOptionLabel(record: SubagentBackgroundRunRecord, index: number): string {
+		const statusLabel = this.formatSubagentBackgroundStatusLabel(record.status);
+		const age = this.formatRelativeTime(record.createdAt);
+		const runtime = this.formatDurationMs(record.startedAt, record.finishedAt);
+		const profile = record.profile || "-";
+		const agent = record.agent?.trim() ? record.agent : "-";
+		const stopFlag = record.requestedStopAt ? " · stop requested" : "";
+		const description = record.description.length > 80 ? `${record.description.slice(0, 77)}...` : record.description;
+		return `${index + 1}. [${statusLabel}] ${record.runId} · profile=${profile} · agent=${agent} · age=${age} · runtime=${runtime}${stopFlag}\n   ${description}`;
+	}
+
+	private buildSubagentBackgroundReport(records: readonly SubagentBackgroundRunRecord[]): string {
+		const counts = {
+			queued: 0,
+			running: 0,
+			done: 0,
+			error: 0,
+			cancelled: 0,
+		};
+		for (const record of records) {
+			counts[record.status] += 1;
+		}
+		const header = `Summary: total=${records.length} · queued=${counts.queued} · running=${counts.running} · done=${counts.done} · error=${counts.error} · cancelled=${counts.cancelled}`;
+		const items = records.map((record, index) => this.formatSubagentBackgroundOptionLabel(record, index));
+		const hints = [
+			"Quick actions:",
+			"- /subagent-runs bg status <id>",
+			"- /subagent-runs bg logs <id> [lines]",
+			"- /subagent-runs bg stop <id>",
+			"- /subagent-runs bg stop-all",
+			"- /subagent-runs bg prune [hours]",
+		];
+		return [header, "", ...items, "", ...hints].join("\n");
+	}
+
+	private handleSubagentBackgroundRunsSlashCommand(args: string[], cwd: string): void {
+		const usage = this.getSubagentBackgroundUsage();
+		const firstArg = (args[0] ?? "").toLowerCase();
+		const subcommand = firstArg || "list";
+
+		const listFilters: Partial<Record<string, readonly SubagentBackgroundRunStatus[]>> = {
+			list: undefined,
+			running: ["running"],
+			queued: ["queued"],
+			done: ["done"],
+			error: ["error"],
+			failed: ["error"],
+			cancelled: ["cancelled"],
+		};
+		const hasListFilter = Object.prototype.hasOwnProperty.call(listFilters, subcommand);
+
+		if (hasListFilter || /^\d+$/.test(subcommand)) {
+			const limitRaw = subcommand === "list" ? args[1] : hasListFilter ? args[1] : subcommand;
+			const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 20;
+			if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const records = this.sortSubagentBackgroundRecords(listSubagentBackgroundRuns(cwd, limit));
+			const statusFilter = hasListFilter ? listFilters[subcommand] : undefined;
+			const filtered =
+				statusFilter && statusFilter.length > 0
+					? records.filter((record) => statusFilter.includes(record.status))
+					: records;
+			if (filtered.length === 0) {
+				if (statusFilter && statusFilter.length > 0) {
+					this.showStatus(`No background subagent runs found for "${subcommand}" filter.`);
+				} else {
+					this.showStatus("No background subagent runs found.");
+				}
+				return;
+			}
+			this.showCommandTextBlock("Subagent Background Runs", this.buildSubagentBackgroundReport(filtered));
 			return;
 		}
 
+		if (subcommand === "status") {
+			const runId = args[1];
+			if (!runId) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const record = getSubagentBackgroundRun(cwd, runId);
+			if (!record) {
+				this.showWarning(`Background subagent run not found: ${runId}`);
+				return;
+			}
+			const lines = [
+				`Run: ${record.runId}`,
+				`Status: ${this.formatSubagentBackgroundStatusLabel(record.status)}${record.requestedStopAt ? " (stop requested)" : ""}`,
+				`Created: ${record.createdAt} (${this.formatRelativeTime(record.createdAt)})`,
+				`Started: ${record.startedAt ?? "-"}`,
+				`Runtime: ${this.formatDurationMs(record.startedAt, record.finishedAt)}`,
+				`Finished: ${record.finishedAt ?? "-"}`,
+				`Profile: ${record.profile}`,
+				`Agent: ${record.agent ?? "-"}`,
+				`Model: ${record.model ?? "-"}`,
+				`Cwd: ${record.cwd}`,
+				`Requested stop: ${record.requestedStopAt ?? "-"}`,
+				`Status file: ${record.metaPath}`,
+				`Log file: ${record.logPath}`,
+				`Transcript: ${record.transcriptPath ?? "-"}`,
+				record.error ? `Error: ${record.error}` : "",
+				"",
+				"Quick actions:",
+				`- /subagent-runs bg logs ${record.runId} 120`,
+				`- /subagent-runs bg stop ${record.runId}`,
+			].filter((line) => line.length > 0);
+			this.showCommandTextBlock("Subagent Background Status", lines.join("\n"));
+			return;
+		}
+
+		if (subcommand === "logs") {
+			const runId = args[1];
+			if (!runId) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const linesRaw = args[2];
+			const tailLines = linesRaw ? Number.parseInt(linesRaw, 10) : 120;
+			if (!Number.isInteger(tailLines) || tailLines < 1 || tailLines > 1000) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const record = getSubagentBackgroundRun(cwd, runId);
+			if (!record) {
+				this.showWarning(`Background subagent run not found: ${runId}`);
+				return;
+			}
+			const tail = readSubagentBackgroundRunLogTail(cwd, runId, tailLines);
+			if (tail === undefined) {
+				this.showWarning(`Background subagent run not found: ${runId}`);
+				return;
+			}
+			const body = tail.trim().length > 0 ? tail : "(no output yet)";
+			this.showCommandTextBlock(
+				"Subagent Background Logs",
+				[
+					`Run: ${record.runId} · status=${this.formatSubagentBackgroundStatusLabel(record.status)} · tail=${tailLines} lines`,
+					`Runtime: ${this.formatDurationMs(record.startedAt, record.finishedAt)} · stop_requested=${record.requestedStopAt ? "yes" : "no"}`,
+					`Description: ${record.description}`,
+					"",
+					body,
+				].join("\n"),
+			);
+			return;
+		}
+
+		if (subcommand === "stop" || subcommand === "cancel" || subcommand === "kill") {
+			const runId = args[1];
+			if (!runId) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const updated = requestStopSubagentBackgroundRun(cwd, runId);
+			if (!updated) {
+				this.showWarning(`Background subagent run not found: ${runId}`);
+				return;
+			}
+			this.showStatus(
+				`Stop requested for subagent run ${updated.runId} (status=${this.formatSubagentBackgroundStatusLabel(updated.status)}).`,
+			);
+			return;
+		}
+
+		if (subcommand === "stop-all") {
+			const result = requestStopAllSubagentBackgroundRuns(cwd);
+			if (result.requested === 0) {
+				this.showStatus("No running or queued background subagent runs found.");
+				return;
+			}
+			const lines = [
+				`Stop-all requested for ${result.requested} run(s).`,
+				"",
+				...result.requestedIds.map((id, index) => `${index + 1}. ${id}`),
+			];
+			this.showCommandTextBlock("Subagent Background Stop-All", lines.join("\n"));
+			return;
+		}
+
+		if (subcommand === "prune") {
+			const hoursRaw = args[1];
+			const hours = hoursRaw ? Number.parseInt(hoursRaw, 10) : 24;
+			if (!Number.isInteger(hours) || hours < 1 || hours > 2160) {
+				this.showWarning(`Usage: ${usage}`);
+				return;
+			}
+			const result = pruneSubagentBackgroundRuns(cwd, hours);
+			const lines = [
+				`Threshold: ${result.thresholdHours}h`,
+				`Removed: ${result.removed}`,
+				`Skipped running/queued: ${result.skippedRunning}`,
+				`Skipped recent: ${result.skippedRecent}`,
+			];
+			if (result.removedIds.length > 0) {
+				lines.push("", ...result.removedIds.map((id, index) => `${index + 1}. ${id}`));
+			}
+			this.showCommandTextBlock("Subagent Background Prune", lines.join("\n"));
+			return;
+		}
+
+		this.showWarning(`Usage: ${usage}`);
+	}
+
+	private handleSubagentRunsSlashCommand(text: string): void {
+		const args = this.parseSlashArgs(text).slice(1);
 		const cwd = this.sessionManager.getCwd();
+		const firstArg = (args[0] ?? "").toLowerCase();
+		if (firstArg === "bg" || firstArg === "background") {
+			this.handleSubagentBackgroundRunsSlashCommand(args.slice(1), cwd);
+			return;
+		}
+
+		const limitRaw = args[0];
+		const limit = limitRaw ? Number.parseInt(limitRaw, 10) : 20;
+		if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+			this.showWarning("Usage: /subagent-runs [limit: 1..200] | /subagent-runs bg ...");
+			return;
+		}
 		const runs = listSubagentRuns(cwd, limit);
 		if (runs.length === 0) {
 			this.showStatus("No subagent runs found.");
 			return;
 		}
-
 		const lines = runs.map((run, index) => {
 			const created = run.createdAt ? ` · ${run.createdAt}` : "";
 			const profile = run.profile ? ` · ${run.profile}` : "";

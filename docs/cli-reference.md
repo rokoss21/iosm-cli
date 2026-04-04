@@ -177,7 +177,7 @@ Migration notes:
 
 | Flag | Description |
 |------|-------------|
-| `--mode <text\|json\|rpc>` | Set output/protocol mode |
+| `--mode <text\|json\|rpc\|telegram>` | Set output/protocol mode |
 | `--print`, `-p` | Non-interactive: run prompt and exit |
 
 **Examples:**
@@ -194,6 +194,15 @@ iosm --mode json "Analyze dependencies"
 
 # JSON-RPC server for IDE integration
 iosm --mode rpc --no-session
+
+# Telegram bridge for remote control
+iosm --mode telegram
+
+# Telegram bridge with explicit profile
+iosm telegram --profile full
+iosm telegram --profile meta
+iosm telegram --profile iosm
+iosm telegram --profile plan
 ```
 
 ### Session Control

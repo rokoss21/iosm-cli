@@ -490,4 +490,51 @@ describe("SettingsManager", () => {
 			});
 		});
 	});
+
+	describe("telegram settings", () => {
+		it("uses defaults when telegram block is not set", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getTelegramSettings()).toEqual({
+				enabled: false,
+				botToken: undefined,
+				allowedUserIds: [],
+				transport: "long-polling",
+				chatDefaults: {
+					statusEditThrottleMs: 1200,
+					maxSummaryChars: 3000,
+				},
+			});
+		});
+
+		it("normalizes telegram settings values", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					telegram: {
+						enabled: true,
+						botToken: " 123:abc ",
+						allowedUserIds: [111, 222.8, "bad"],
+						transport: "long-polling",
+						chatDefaults: {
+							statusEditThrottleMs: 100,
+							maxSummaryChars: 120,
+						},
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getTelegramSettings()).toEqual({
+				enabled: true,
+				botToken: "123:abc",
+				allowedUserIds: [111, 222],
+				transport: "long-polling",
+				chatDefaults: {
+					statusEditThrottleMs: 300,
+					maxSummaryChars: 256,
+				},
+			});
+		});
+	});
 });

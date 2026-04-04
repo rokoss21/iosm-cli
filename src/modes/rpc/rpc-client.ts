@@ -10,8 +10,18 @@ import type { AgentEvent, AgentMessage, ThinkingLevel } from "@mariozechner/pi-a
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
+import type { BuiltinCommandResult } from "../../core/command-dispatcher.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
-import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.js";
+import type {
+	RpcBuiltinSlashCommand,
+	RpcCommand,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
+	RpcRequiresConfirmationEvent,
+	RpcResponse,
+	RpcSessionState,
+	RpcSlashCommand,
+} from "./rpc-types.js";
 
 // ============================================================================
 // Types
@@ -55,6 +65,8 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private rl: readline.Interface | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private extensionUiListeners: Array<(request: RpcExtensionUIRequest) => void> = [];
+	private confirmationListeners: Array<(event: RpcRequiresConfirmationEvent) => void> = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -148,6 +160,26 @@ export class RpcClient {
 			const index = this.eventListeners.indexOf(listener);
 			if (index !== -1) {
 				this.eventListeners.splice(index, 1);
+			}
+		};
+	}
+
+	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
+		this.extensionUiListeners.push(listener);
+		return () => {
+			const index = this.extensionUiListeners.indexOf(listener);
+			if (index !== -1) {
+				this.extensionUiListeners.splice(index, 1);
+			}
+		};
+	}
+
+	onRequiresConfirmation(listener: (event: RpcRequiresConfirmationEvent) => void): () => void {
+		this.confirmationListeners.push(listener);
+		return () => {
+			const index = this.confirmationListeners.indexOf(listener);
+			if (index !== -1) {
+				this.confirmationListeners.splice(index, 1);
 			}
 		};
 	}
@@ -252,6 +284,16 @@ export class RpcClient {
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		const response = await this.send({ type: "cycle_thinking_level" });
 		return this.getData(response);
+	}
+
+	async setPermissionMode(mode: "ask" | "auto" | "yolo"): Promise<"ask" | "auto" | "yolo"> {
+		const response = await this.send({ type: "set_permission_mode", mode });
+		return this.getData<{ mode: "ask" | "auto" | "yolo" }>(response).mode;
+	}
+
+	async getPermissionMode(): Promise<"ask" | "auto" | "yolo"> {
+		const response = await this.send({ type: "get_permission_mode" });
+		return this.getData<{ mode: "ask" | "auto" | "yolo" }>(response).mode;
 	}
 
 	/**
@@ -385,6 +427,23 @@ export class RpcClient {
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
 
+	async getBuiltinCommands(): Promise<RpcBuiltinSlashCommand[]> {
+		const response = await this.send({ type: "get_builtin_commands" });
+		return this.getData<{ commands: RpcBuiltinSlashCommand[] }>(response).commands;
+	}
+
+	async runBuiltinCommand(commandText: string): Promise<BuiltinCommandResult> {
+		const response = await this.send({ type: "run_builtin_command", commandText });
+		return this.getData<BuiltinCommandResult>(response);
+	}
+
+	respondExtensionUi(response: RpcExtensionUIResponse): void {
+		if (!this.process?.stdin) {
+			throw new Error("Client not started");
+		}
+		this.process.stdin.write(`${JSON.stringify(response)}\n`);
+	}
+
 	// =========================================================================
 	// Helpers
 	// =========================================================================
@@ -454,6 +513,20 @@ export class RpcClient {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
+				return;
+			}
+
+			if (data.type === "extension_ui_request") {
+				for (const listener of this.extensionUiListeners) {
+					listener(data as RpcExtensionUIRequest);
+				}
+				return;
+			}
+
+			if (data.type === "requires_confirmation") {
+				for (const listener of this.confirmationListeners) {
+					listener(data as RpcRequiresConfirmationEvent);
+				}
 				return;
 			}
 

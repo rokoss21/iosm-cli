@@ -10,8 +10,8 @@ import { isValidThinkingLevel } from "../cli/args.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ModelRegistry } from "./model-registry.js";
 
-/** Default model IDs for each known provider */
-export const defaultModelPerProvider: Record<KnownProvider, string> = {
+/** Default model IDs for providers enabled in iosm-cli. */
+export const defaultModelPerProvider: Partial<Record<KnownProvider, string>> = {
 	"amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
 	anthropic: "claude-opus-4-6",
 	openai: "gpt-5.4",
@@ -19,7 +19,6 @@ export const defaultModelPerProvider: Record<KnownProvider, string> = {
 	"openai-codex": "gpt-5.4",
 	google: "gemini-2.5-pro",
 	"google-gemini-cli": "gemini-2.5-pro",
-	"google-antigravity": "gemini-3.1-pro-high",
 	"google-vertex": "gemini-3-pro-preview",
 	"github-copilot": "gpt-4o",
 	openrouter: "openai/gpt-5.1-codex",

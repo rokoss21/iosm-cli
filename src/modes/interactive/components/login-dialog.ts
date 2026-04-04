@@ -1,4 +1,3 @@
-import { getOAuthProviders } from "@mariozechner/pi-ai/oauth";
 import { Container, type Focusable, getEditorKeybindings, Input, Spacer, Text, type TUI } from "@mariozechner/pi-tui";
 import { spawn } from "node:child_process";
 import { theme } from "../theme/theme.js";
@@ -28,14 +27,11 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 	constructor(
 		tui: TUI,
-		providerId: string,
+		providerName: string,
 		private onComplete: (success: boolean, message?: string) => void,
 	) {
 		super();
 		this.tui = tui;
-
-		const providerInfo = getOAuthProviders().find((p) => p.id === providerId);
-		const providerName = providerInfo?.name || providerId;
 
 		// Top border
 		this.addChild(new DynamicBorder());

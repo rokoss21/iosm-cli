@@ -24,6 +24,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir } from "../config.js";
 import type { AuthStorage } from "./auth-storage.js";
+import { isProviderAllowed } from "./provider-policy.js";
 import { createQwenCliProviderConfig, QWEN_CLI_PROVIDER_ID } from "./qwen-cli-provider.js";
 import { clearConfigValueCache, resolveConfigValue, resolveHeaders } from "./resolve-config-value.js";
 
@@ -301,7 +302,9 @@ export class ModelRegistry {
 		overrides: Map<string, ProviderOverride>,
 		modelOverrides: Map<string, Map<string, ModelOverride>>,
 	): Model<Api>[] {
-		return getProviders().flatMap((provider) => {
+		return getProviders()
+			.filter((provider) => isProviderAllowed(provider))
+			.flatMap((provider) => {
 			const models = getModels(provider as KnownProvider) as Model<Api>[];
 			const providerOverride = overrides.get(provider);
 			const perModelOverrides = modelOverrides.get(provider);
@@ -327,7 +330,7 @@ export class ModelRegistry {
 
 				return model;
 			});
-		});
+			});
 	}
 
 	/** Merge custom models into built-in list by provider+id (custom wins on conflicts). */
@@ -369,6 +372,7 @@ export class ModelRegistry {
 			const modelOverrides = new Map<string, Map<string, ModelOverride>>();
 
 			for (const [providerName, providerConfig] of Object.entries(config.providers)) {
+				if (!isProviderAllowed(providerName)) continue;
 				// Apply provider-level baseUrl/headers/apiKey override to built-in models when configured.
 				if (providerConfig.baseUrl || providerConfig.headers || providerConfig.apiKey) {
 					overrides.set(providerName, {
@@ -401,6 +405,7 @@ export class ModelRegistry {
 
 	private validateConfig(config: ModelsConfig): void {
 		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
+			if (!isProviderAllowed(providerName)) continue;
 			const hasProviderApi = !!providerConfig.api;
 			const models = providerConfig.models ?? [];
 			const hasModelOverrides =
@@ -444,6 +449,7 @@ export class ModelRegistry {
 		const models: Model<Api>[] = [];
 
 		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
+			if (!isProviderAllowed(providerName)) continue;
 			const modelDefs = providerConfig.models ?? [];
 			if (modelDefs.length === 0) continue; // Override-only, no custom models
 
@@ -546,6 +552,9 @@ export class ModelRegistry {
 	 * If provider has oauth: registers OAuth provider for /login support.
 	 */
 	registerProvider(providerName: string, config: ProviderConfigInput): void {
+		if (!isProviderAllowed(providerName)) {
+			throw new Error(`Provider "${providerName}" is disabled in this build.`);
+		}
 		this.registeredProviders.set(providerName, config);
 		this.applyProviderConfig(providerName, config);
 	}

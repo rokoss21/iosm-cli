@@ -693,6 +693,142 @@ describe("InteractiveMode interactive command flows", () => {
 		}
 	});
 
+	test("lists background subagent runs via /subagent-runs bg list", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-subagent-bg-list-"));
+		try {
+			const { writeSubagentBackgroundRunStatus } = await import("../src/core/subagent-background-runs.js");
+			const runId = "subagent_test_bg_list";
+			writeSubagentBackgroundRunStatus(cwd, {
+				runId,
+				status: "running",
+				createdAt: new Date().toISOString(),
+				startedAt: new Date().toISOString(),
+				description: "index repository",
+				profile: "plan",
+				cwd,
+			});
+
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+
+			(InteractiveMode as any).prototype.handleSubagentRunsSlashCommand.call(fakeThis, "/subagent-runs bg list 10");
+
+			expect(showCommandTextBlock).toHaveBeenCalledWith(
+				"Subagent Background Runs",
+				expect.stringContaining(runId),
+			);
+			expect(showWarning).not.toHaveBeenCalled();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("stops background subagent run via /subagent-runs bg stop <id>", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-subagent-bg-stop-"));
+		try {
+			const {
+				getSubagentBackgroundRun,
+				registerSubagentBackgroundRunController,
+				writeSubagentBackgroundRunStatus,
+			} = await import("../src/core/subagent-background-runs.js");
+			const runId = "subagent_test_bg_stop";
+			writeSubagentBackgroundRunStatus(cwd, {
+				runId,
+				status: "running",
+				createdAt: new Date().toISOString(),
+				startedAt: new Date().toISOString(),
+				description: "run checks",
+				profile: "explore",
+				cwd,
+			});
+			const controller = new AbortController();
+			registerSubagentBackgroundRunController(cwd, runId, controller);
+
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+
+			(InteractiveMode as any).prototype.handleSubagentRunsSlashCommand.call(
+				fakeThis,
+				`/subagent-runs bg stop ${runId}`,
+			);
+
+			expect(controller.signal.aborted).toBe(true);
+			expect(getSubagentBackgroundRun(cwd, runId)?.requestedStopAt).toBeDefined();
+			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining(runId));
+			expect(showWarning).not.toHaveBeenCalled();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("shows background subagent logs via /subagent-runs bg logs <id>", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-subagent-bg-logs-"));
+		try {
+			const {
+				appendSubagentBackgroundRunLog,
+				writeSubagentBackgroundRunStatus,
+			} = await import("../src/core/subagent-background-runs.js");
+			const runId = "subagent_test_bg_logs";
+			writeSubagentBackgroundRunStatus(cwd, {
+				runId,
+				status: "running",
+				createdAt: new Date().toISOString(),
+				startedAt: new Date().toISOString(),
+				description: "tail logs",
+				profile: "plan",
+				cwd,
+			});
+			appendSubagentBackgroundRunLog(cwd, runId, "line one");
+			appendSubagentBackgroundRunLog(cwd, runId, "line two");
+
+			const showCommandTextBlock = vi.fn();
+			const showStatus = vi.fn();
+			const showWarning = vi.fn();
+			const fakeThis: any = Object.create((InteractiveMode as any).prototype);
+			fakeThis.session = {
+				sessionManager: {
+					getCwd: () => cwd,
+				},
+			};
+			fakeThis.showCommandTextBlock = showCommandTextBlock;
+			fakeThis.showStatus = showStatus;
+			fakeThis.showWarning = showWarning;
+
+			(InteractiveMode as any).prototype.handleSubagentRunsSlashCommand.call(
+				fakeThis,
+				`/subagent-runs bg logs ${runId} 10`,
+			);
+
+			expect(showCommandTextBlock).toHaveBeenCalledWith(
+				"Subagent Background Logs",
+				expect.stringContaining("line two"),
+			);
+			expect(showWarning).not.toHaveBeenCalled();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	test("lists background processes via /bg list", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "iosm-bg-list-"));
 		try {
@@ -1560,6 +1696,7 @@ describe("OAuthSelectorComponent login providers", () => {
 		const rendered = stripAnsi(selector.render(120).join("\n"));
 		expect(rendered).toContain("OpenRouter");
 		expect(rendered).toContain("API key");
+		expect(rendered).not.toContain("Google Antigravity");
 	});
 
 	test("renders injected API key providers in login selector", () => {

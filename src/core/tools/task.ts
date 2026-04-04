@@ -30,6 +30,12 @@ import {
 	summarizeSharedMemoryUsage,
 	writeSharedMemory,
 } from "../shared-memory.js";
+import {
+	appendSubagentBackgroundRunLog,
+	registerSubagentBackgroundRunController,
+	unregisterSubagentBackgroundRunController,
+	writeSubagentBackgroundRunStatus,
+} from "../subagent-background-runs.js";
 import { normalizeAndFilterToolNames, normalizeToolName, type CustomSubagentDefinition } from "../subagents.js";
 
 /**
@@ -1302,33 +1308,6 @@ function persistSubagentTranscript(input: {
 	}
 }
 
-type BackgroundRunStatus = {
-	runId: string;
-	status: "queued" | "running" | "done" | "error" | "cancelled";
-	createdAt: string;
-	startedAt?: string;
-	finishedAt?: string;
-	description: string;
-	profile: string;
-	cwd: string;
-	agent?: string;
-	model?: string;
-	error?: string;
-	transcriptPath?: string;
-};
-
-function writeBackgroundRunStatus(rootCwd: string, status: BackgroundRunStatus): string | undefined {
-	try {
-		const dir = path.join(rootCwd, ".iosm", "subagents", "background");
-		mkdirSync(dir, { recursive: true });
-		const filePath = path.join(dir, `${status.runId}.json`);
-		writeFileSync(filePath, `${JSON.stringify(status, null, 2)}\n`, "utf8");
-		return filePath;
-	} catch {
-		return undefined;
-	}
-}
-
 function gitResult(args: string[], cwd: string): { ok: boolean; stdout: string } {
 	const result = spawnSync("git", args, {
 		cwd,
@@ -1440,6 +1419,7 @@ export function createTaskTool(
 			_signal?: AbortSignal,
 			onUpdate?,
 		) => {
+			let runtimeAbortSignal: AbortSignal | undefined = _signal;
 			const updateTrackedTaskStatus = (status: "running" | "done" | "error" | "cancelled"): void => {
 				if (!orchestrationRunId || !orchestrationTaskId) return;
 				updateTeamTaskStatus({
@@ -1450,7 +1430,7 @@ export function createTaskTool(
 				});
 			};
 			const throwIfAborted = (): void => {
-				if (_signal?.aborted) {
+				if (runtimeAbortSignal?.aborted) {
 					updateTrackedTaskStatus("cancelled");
 					throw new Error("Operation aborted");
 				}
@@ -1725,11 +1705,11 @@ export function createTaskTool(
 					throwIfAborted();
 					if (orchestrationRunId && orchestrationTaskId) {
 						try {
-							await waitForOrchestrationDependencies({
-								cwd,
-								runId: orchestrationRunId,
-								taskId: orchestrationTaskId,
-								signal: _signal,
+								await waitForOrchestrationDependencies({
+									cwd,
+									runId: orchestrationRunId,
+									taskId: orchestrationTaskId,
+									signal: runtimeAbortSignal,
 								onWaiting: (waiting) => {
 									emitProgress({
 										kind: "subagent_progress",
@@ -1740,8 +1720,8 @@ export function createTaskTool(
 									});
 								},
 							});
-							} catch (error) {
-								if (_signal?.aborted || isAbortError(error)) {
+								} catch (error) {
+									if (runtimeAbortSignal?.aborted || isAbortError(error)) {
 									updateTrackedTaskStatus("cancelled");
 									throw new Error("Operation aborted");
 								}
@@ -1840,7 +1820,7 @@ export function createTaskTool(
 										scope: "run",
 										mode: "set",
 									},
-									_signal,
+									runtimeAbortSignal,
 								);
 							} catch (error) {
 								const message = error instanceof Error ? error.message : String(error);
@@ -1878,7 +1858,7 @@ export function createTaskTool(
 										scope: "run",
 										mode: "set",
 									},
-									_signal,
+									runtimeAbortSignal,
 								);
 							} catch (error) {
 								const message = error instanceof Error ? error.message : String(error);
@@ -1906,7 +1886,7 @@ export function createTaskTool(
 												key,
 												includeValues: true,
 											},
-											_signal,
+											runtimeAbortSignal,
 										);
 										const current = snapshot.items[0];
 										if (!current) {
@@ -1922,7 +1902,7 @@ export function createTaskTool(
 													scope: "run",
 													mode: "set",
 												},
-												_signal,
+												runtimeAbortSignal,
 											);
 											lastError = undefined;
 											break;
@@ -1958,7 +1938,7 @@ export function createTaskTool(
 												mode: "set",
 												ifVersion: current.version,
 											},
-											_signal,
+											runtimeAbortSignal,
 										);
 										lastError = undefined;
 										break;
@@ -1998,7 +1978,7 @@ export function createTaskTool(
 											cwd: subagentCwd,
 											modelOverride: effectiveModelOverride,
 											sharedMemoryContext: rootSharedMemoryContext,
-											signal: _signal,
+											signal: runtimeAbortSignal,
 											onProgress: (progress) => emitProgress(progress),
 										});
 										throwIfAborted();
@@ -2038,7 +2018,7 @@ export function createTaskTool(
 											activeTool: undefined,
 										});
 									} catch (error) {
-										if (_signal?.aborted || isAbortError(error)) {
+										if (runtimeAbortSignal?.aborted || isAbortError(error)) {
 											throw new Error("Operation aborted");
 										}
 										const message = error instanceof Error ? error.message : String(error);
@@ -2431,7 +2411,7 @@ export function createTaskTool(
 											cwd: nestedCwd,
 											modelOverride: nestedModelOverride,
 											sharedMemoryContext: nestedSharedMemoryContext,
-											signal: _signal,
+											signal: runtimeAbortSignal,
 											onProgress: (progress) => {
 												emitProgress({
 													kind: "subagent_progress",
@@ -2764,7 +2744,7 @@ export function createTaskTool(
 													cwd: childCwd,
 													modelOverride: childModelOverride,
 													sharedMemoryContext: childSharedMemoryContext,
-													signal: _signal,
+													signal: runtimeAbortSignal,
 													onProgress: (progress) => {
 														emitProgress({
 															kind: "subagent_progress",
@@ -2816,7 +2796,7 @@ export function createTaskTool(
 													delegateItems,
 												});
 											} catch (error) {
-												if (_signal?.aborted || isAbortError(error)) {
+												if (runtimeAbortSignal?.aborted || isAbortError(error)) {
 													throw new Error("Operation aborted");
 												}
 												const message = error instanceof Error ? error.message : String(error);
@@ -2988,7 +2968,7 @@ export function createTaskTool(
 								});
 								} catch (error) {
 									const message = error instanceof Error ? error.message : String(error);
-									if (_signal?.aborted || isAbortError(error)) {
+									if (runtimeAbortSignal?.aborted || isAbortError(error)) {
 										throw new Error("Operation aborted");
 									}
 									const classified =
@@ -3079,7 +3059,7 @@ export function createTaskTool(
 						}
 						} catch (error) {
 							const message = error instanceof Error ? error.message : String(error);
-							if (_signal?.aborted || isAbortError(error)) {
+							if (runtimeAbortSignal?.aborted || isAbortError(error)) {
 								recordFailureCause("aborted");
 								const hasFailureCauses = Object.keys(failureCauses).length > 0;
 								const details: TaskToolDetails = {
@@ -3209,7 +3189,7 @@ export function createTaskTool(
 										scope: "run",
 										mode: "set",
 									},
-									_signal,
+									runtimeAbortSignal,
 								);
 								sharedMemorySummaryKey = summaryWrite.key;
 							} catch (error) {
@@ -3251,7 +3231,7 @@ export function createTaskTool(
 										runId: sharedMemoryRunId,
 										taskId: sharedMemoryTaskId,
 									},
-									_signal,
+									runtimeAbortSignal,
 								);
 								if (delegatedTasks > 1 && usage.currentTaskDelegateWrites === 0) {
 									delegationWarnings.push(
@@ -3286,7 +3266,7 @@ export function createTaskTool(
 										includeValues: true,
 										limit: Math.max(40, delegatedTasks * 8),
 									},
-									_signal,
+									runtimeAbortSignal,
 								);
 								const collisions: Array<{ key: string; owners: string[] }> = [];
 								for (const item of claims.items) {
@@ -3339,7 +3319,7 @@ export function createTaskTool(
 										includeValues: true,
 										limit: Math.max(20, delegatedTasks * 4),
 									},
-									_signal,
+									runtimeAbortSignal,
 								);
 								const examples = findings.items.slice(0, 6).map((item) => {
 									let excerpt = "";
@@ -3507,7 +3487,11 @@ export function createTaskTool(
 
 			if (runInBackground) {
 				const now = new Date().toISOString();
-				const queuedStatusPath = writeBackgroundRunStatus(cwd, {
+				const backgroundAbortController = new AbortController();
+				runtimeAbortSignal = backgroundAbortController.signal;
+				registerSubagentBackgroundRunController(cwd, runId, backgroundAbortController);
+				const logPath = appendSubagentBackgroundRunLog(cwd, runId, `queued · profile=${effectiveProfile} · cwd=${requestedSubagentCwd}`);
+				const queuedStatusPath = writeSubagentBackgroundRunStatus(cwd, {
 					runId,
 					status: "queued",
 					createdAt: now,
@@ -3516,9 +3500,10 @@ export function createTaskTool(
 					cwd: requestedSubagentCwd,
 					agent: customSubagent?.name,
 					model: effectiveModelOverride,
+					logPath,
 				});
 				void (async () => {
-					writeBackgroundRunStatus(cwd, {
+					writeSubagentBackgroundRunStatus(cwd, {
 						runId,
 						status: "running",
 						createdAt: now,
@@ -3528,10 +3513,12 @@ export function createTaskTool(
 						cwd: requestedSubagentCwd,
 						agent: customSubagent?.name,
 						model: effectiveModelOverride,
+						logPath,
 					});
+					appendSubagentBackgroundRunLog(cwd, runId, "running");
 					try {
 						const result = await executeSubagent();
-						writeBackgroundRunStatus(cwd, {
+						writeSubagentBackgroundRunStatus(cwd, {
 							runId,
 							status: "done",
 							createdAt: now,
@@ -3542,21 +3529,31 @@ export function createTaskTool(
 							agent: customSubagent?.name,
 							model: effectiveModelOverride,
 							transcriptPath: result.details.transcriptPath,
+							logPath,
 						});
-						} catch (error) {
-							const aborted = isAbortError(error);
-							writeBackgroundRunStatus(cwd, {
-								runId,
-								status: aborted ? "cancelled" : "error",
-								createdAt: now,
-								finishedAt: new Date().toISOString(),
-								description,
+						appendSubagentBackgroundRunLog(cwd, runId, `done · transcript=${result.details.transcriptPath ?? "-"}`);
+					} catch (error) {
+						const aborted = isAbortError(error);
+						writeSubagentBackgroundRunStatus(cwd, {
+							runId,
+							status: aborted ? "cancelled" : "error",
+							createdAt: now,
+							finishedAt: new Date().toISOString(),
+							description,
 							profile: effectiveProfile,
 							cwd: requestedSubagentCwd,
 							agent: customSubagent?.name,
 							model: effectiveModelOverride,
 							error: error instanceof Error ? error.message : String(error),
+							logPath,
 						});
+						appendSubagentBackgroundRunLog(
+							cwd,
+							runId,
+							`${aborted ? "cancelled" : "error"} · ${error instanceof Error ? error.message : String(error)}`,
+						);
+					} finally {
+						unregisterSubagentBackgroundRunController(cwd, runId);
 					}
 				})();
 				return {

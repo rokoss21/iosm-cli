@@ -36,7 +36,11 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 		description:
 			"Interactive agent menu: browse/use/create/edit/delete custom agents and inspect source precedence from .iosm/agents",
 	},
-	{ name: "subagent-runs", description: "List recent subagent runs from .iosm/subagents/runs" },
+	{
+		name: "subagent-runs",
+		description:
+			"List subagent runs and manage background subagent jobs: /subagent-runs [limit] | /subagent-runs bg [list|running|status|logs|stop|stop-all|prune]",
+	},
 	{
 		name: "subagent-resume",
 		description: "Resume from prior subagent output: /subagent-resume [run-id] [extra instructions] (picker when omitted)",

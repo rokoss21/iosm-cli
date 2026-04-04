@@ -10,6 +10,8 @@ import type { ImageContent, Model } from "@mariozechner/pi-ai";
 import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { BuiltinCommandResult } from "../../core/command-dispatcher.js";
+import type { ToolPermissionRequest } from "../../core/tools/index.js";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -34,6 +36,8 @@ export type RpcCommand =
 	// Thinking
 	| { id?: string; type: "set_thinking_level"; level: ThinkingLevel }
 	| { id?: string; type: "cycle_thinking_level" }
+	| { id?: string; type: "set_permission_mode"; mode: "ask" | "auto" | "yolo" }
+	| { id?: string; type: "get_permission_mode" }
 
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
@@ -64,7 +68,9 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+	| { id?: string; type: "get_builtin_commands" }
+	| { id?: string; type: "run_builtin_command"; commandText: string };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -84,6 +90,14 @@ export interface RpcSlashCommand {
 	path?: string;
 }
 
+/** A built-in slash command exposed by iosm-cli core runtime */
+export interface RpcBuiltinSlashCommand {
+	/** Command name (without leading slash) */
+	name: string;
+	/** Human-readable description */
+	description: string;
+}
+
 // ============================================================================
 // RPC State
 // ============================================================================
@@ -95,6 +109,7 @@ export interface RpcSessionState {
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
+	permissionMode: "ask" | "auto" | "yolo";
 	sessionFile?: string;
 	sessionId: string;
 	sessionName?: string;
@@ -151,6 +166,20 @@ export type RpcResponse =
 			success: true;
 			data: { level: ThinkingLevel } | null;
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "set_permission_mode";
+			success: true;
+			data: { mode: "ask" | "auto" | "yolo" };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_permission_mode";
+			success: true;
+			data: { mode: "ask" | "auto" | "yolo" };
+	  }
 
 	// Queue modes
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }
@@ -200,6 +229,20 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcSlashCommand[] };
 	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_builtin_commands";
+			success: true;
+			data: { commands: RpcBuiltinSlashCommand[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "run_builtin_command";
+			success: true;
+			data: BuiltinCommandResult;
+	  }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };
@@ -212,6 +255,15 @@ export type RpcResponse =
 export type RpcExtensionUIRequest =
 	| { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
 	| { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
+	| {
+			type: "extension_ui_request";
+			id: string;
+			method: "confirm_permission";
+			title: string;
+			message: string;
+			request: ToolPermissionRequest;
+			timeout?: number;
+	  }
 	| {
 			type: "extension_ui_request";
 			id: string;
@@ -255,6 +307,18 @@ export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
 	| { type: "extension_ui_response"; id: string; confirmed: boolean }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
+
+// ============================================================================
+// Permission Confirmation Event (stdout)
+// ============================================================================
+
+export interface RpcRequiresConfirmationEvent {
+	type: "requires_confirmation";
+	id: string;
+	message: string;
+	request: ToolPermissionRequest;
+	timeout?: number;
+}
 
 // ============================================================================
 // Helper type for extracting command types

@@ -1,6 +1,6 @@
 # Extension Examples
 
-66 example extensions for `iosm-cli` demonstrating the full extension API: custom tools, lifecycle hooks, commands, UI components, and provider integrations.
+65 example extensions for `iosm-cli` demonstrating the full extension API: custom tools, lifecycle hooks, commands, UI components, and provider integrations.
 
 ## Quick Start
 
@@ -56,7 +56,6 @@ export default function (pi: ExtensionAPI) {
 | [built-in-tool-renderer.ts](built-in-tool-renderer.ts) | Custom compact rendering for built-in tools | `renderCall()`, `renderResult()` |
 | [minimal-mode.ts](minimal-mode.ts) | Override built-in tool rendering for minimal display | Tool render override |
 | [truncated-tool.ts](truncated-tool.ts) | Wraps ripgrep with proper output truncation (50KB/2000 lines) | Output truncation, `pi.exec()` |
-| [antigravity-image-gen.ts](antigravity-image-gen.ts) | Generate images via Google Antigravity | External API, file save |
 | [ssh.ts](ssh.ts) | Delegate all tools to a remote machine via SSH | SSH operations, tool delegation |
 | [subagent/](subagent/) | Delegate tasks to subagents with isolated context | Subagent orchestration |
 

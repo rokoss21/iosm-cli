@@ -65,7 +65,7 @@ import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
-import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.js";
+import { InteractiveMode, runPrintMode, runRpcMode, runTelegramBridgeMode } from "./modes/index.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import {
 	buildIosmAgentVerificationPrompt,
@@ -1709,6 +1709,10 @@ async function handleSemanticCommand(args: string[]): Promise<boolean> {
 }
 
 export async function main(args: string[]) {
+	if (args[0] === "telegram") {
+		args = ["--mode", "telegram", ...args.slice(1)];
+	}
+
 	applySessionTraceCliOverrides(args);
 
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env[ENV_OFFLINE]) || isTruthyEnvFlag(process.env.PI_OFFLINE);
@@ -1822,6 +1826,16 @@ export async function main(args: string[]) {
 		process.exit(0);
 	}
 
+	if (parsed.mode === "telegram") {
+		await runTelegramBridgeMode({
+			rawArgs: args,
+			settingsManager,
+			cliPath: process.argv[1],
+			cwd,
+		});
+		return;
+	}
+
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	if (parsed.mode !== "rpc") {
 		const stdinContent = await readPipedStdin();
@@ -1927,7 +1941,9 @@ export async function main(args: string[]) {
 
 		const { session, modelFallbackMessage } = await createAgentSession(sessionOptions);
 
-		if (!isInteractive && !session.model) {
+		// RPC mode must start even without a preselected model so remote clients
+		// (for example Telegram bridge) can choose one later via /model.
+		if (!isInteractive && mode !== "rpc" && !session.model) {
 			console.error(chalk.red("No model selected."));
 			console.error(chalk.yellow("\nSelect one explicitly:"));
 			console.error(`  ${APP_NAME} --provider <provider> --model <model-id> ...`);

@@ -57,6 +57,11 @@ describe("ModelRegistry", () => {
 		return registry.getAll().filter((m) => m.provider === provider);
 	}
 
+	test("excludes disabled built-in providers", () => {
+		const registry = new ModelRegistry(authStorage, modelsJsonPath);
+		expect(getModelsForProvider(registry, "google-antigravity")).toHaveLength(0);
+	});
+
 	/** Create a baseUrl-only override (no custom models) */
 	function overrideConfig(baseUrl: string, headers?: Record<string, string>) {
 		return { baseUrl, ...(headers && { headers }) };

@@ -90,6 +90,21 @@ export interface PermissionsSettings {
 	extensionToolEnforcement?: boolean; // default: false
 }
 
+export interface TelegramChatDefaultsSettings {
+	/** Minimum milliseconds between live status edits in Telegram */
+	statusEditThrottleMs?: number; // default: 1200
+	/** Max characters to keep in chat summary before attaching full output as file */
+	maxSummaryChars?: number; // default: 3000
+}
+
+export interface TelegramSettings {
+	enabled?: boolean; // default: false
+	botToken?: string;
+	allowedUserIds?: number[];
+	transport?: "long-polling"; // default: long-polling
+	chatDefaults?: TelegramChatDefaultsSettings;
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -149,6 +164,7 @@ export interface Settings {
 	dbTools?: DbToolsSettings;
 	promptContext?: PromptContextSettings;
 	permissions?: PermissionsSettings;
+	telegram?: TelegramSettings;
 }
 
 const WEB_SEARCH_PROVIDER_MODES = ["auto", "tavily"] as const;
@@ -1265,5 +1281,51 @@ export class SettingsManager {
 
 	getCodeBlockIndent(): string {
 		return this.settings.markdown?.codeBlockIndent ?? "  ";
+	}
+
+	getTelegramSettings(): {
+		enabled: boolean;
+		botToken?: string;
+		allowedUserIds: number[];
+		transport: "long-polling";
+		chatDefaults: {
+			statusEditThrottleMs: number;
+			maxSummaryChars: number;
+		};
+	} {
+		const raw = this.settings.telegram;
+		const allowedUserIds = Array.isArray(raw?.allowedUserIds)
+			? raw.allowedUserIds
+				.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+				.map((value) => Math.trunc(value))
+			: [];
+		const transport = raw?.transport === "long-polling" ? "long-polling" : "long-polling";
+		const statusEditThrottleRaw = raw?.chatDefaults?.statusEditThrottleMs;
+		const maxSummaryCharsRaw = raw?.chatDefaults?.maxSummaryChars;
+		const statusEditThrottleMs =
+			typeof statusEditThrottleRaw === "number" && Number.isFinite(statusEditThrottleRaw)
+				? Math.max(300, Math.trunc(statusEditThrottleRaw))
+				: 1200;
+		const maxSummaryChars =
+			typeof maxSummaryCharsRaw === "number" && Number.isFinite(maxSummaryCharsRaw)
+				? Math.max(256, Math.trunc(maxSummaryCharsRaw))
+				: 3000;
+
+		return {
+			enabled: raw?.enabled ?? false,
+			botToken: raw?.botToken?.trim() || undefined,
+			allowedUserIds,
+			transport,
+			chatDefaults: {
+				statusEditThrottleMs,
+				maxSummaryChars,
+			},
+		};
+	}
+
+	setTelegramSettings(settings: TelegramSettings): void {
+		this.globalSettings.telegram = structuredClone(settings);
+		this.markModified("telegram");
+		this.save();
 	}
 }

@@ -17,7 +17,7 @@ import {
 } from "../config.js";
 import { allTools, type ToolName } from "../core/tools/index.js";
 
-export type Mode = "text" | "json" | "rpc";
+export type Mode = "text" | "json" | "rpc" | "telegram";
 
 export interface Args {
 	provider?: string;
@@ -84,7 +84,7 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc") {
+			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "telegram") {
 				result.mode = mode;
 			}
 		} else if (arg === "--continue" || arg === "-c") {
@@ -215,6 +215,7 @@ ${chalk.bold("Commands:")}
   ${APP_NAME} list                     List installed extensions from settings
   ${APP_NAME} mcp <subcommand>         Manage MCP servers and inspect MCP tools
   ${APP_NAME} semantic <subcommand>    Manage semantic index (status/index/rebuild/query)
+  ${APP_NAME} telegram [options]       Start Telegram remote-control bridge (same as --mode telegram)
   ${APP_NAME} config                   Open TUI to enable/disable package resources
   ${APP_NAME} <command> --help         Show help for init/cycle/install/remove/update/list/mcp/semantic
 
@@ -224,7 +225,7 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: IOSM agent prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt
-  --mode <mode>                  Output mode: text (default), json, or rpc
+  --mode <mode>                  Output mode: text (default), json, rpc, or telegram
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
@@ -316,6 +317,12 @@ ${chalk.bold("Examples:")}
   # Export a session file to HTML
   ${APP_NAME} --export ~/${CONFIG_DIR_NAME}/agent/sessions/--path--/session.jsonl
   ${APP_NAME} --export session.jsonl output.html
+
+  # Telegram bridge with explicit root-agent profile
+  ${APP_NAME} telegram --profile full
+  ${APP_NAME} telegram --profile meta
+  ${APP_NAME} telegram --profile iosm
+  ${APP_NAME} telegram --profile plan
 
 ${chalk.bold("Environment Variables:")}
   ANTHROPIC_API_KEY                - Anthropic Claude API key

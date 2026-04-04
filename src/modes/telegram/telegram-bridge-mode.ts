@@ -1,0 +1,2393 @@
+import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import { marked, type Token, type Tokens } from "marked";
+import { setTimeout as sleepTimeout } from "node:timers/promises";
+import { APP_NAME, VERSION } from "../../config.js";
+import type { BuiltinCommandResult } from "../../core/command-dispatcher.js";
+import type { SettingsManager } from "../../core/settings-manager.js";
+import { RpcClient } from "../rpc/rpc-client.js";
+import type {
+	RpcBuiltinSlashCommand,
+	RpcExtensionUIRequest,
+	RpcRequiresConfirmationEvent,
+	RpcSessionState,
+	RpcSlashCommand,
+} from "../rpc/rpc-types.js";
+
+type TelegramChatId = number;
+
+export interface TelegramBridgeModeOptions {
+	/**
+	 * Original CLI argv (without node/script prefixes). Used to forward model/profile/session args to RPC child.
+	 */
+	rawArgs: string[];
+	/** Loaded settings manager for telegram settings and runtime updates. */
+	settingsManager: SettingsManager;
+	/** Optional explicit cli path for RPC child. Defaults to current process argv[1]. */
+	cliPath?: string;
+	/** Optional cwd override for RPC child. */
+	cwd?: string;
+}
+
+interface TelegramUser {
+	id: number;
+	username?: string;
+}
+
+interface TelegramChat {
+	id: number;
+	type: string;
+}
+
+interface TelegramMessage {
+	message_id: number;
+	from?: TelegramUser;
+	chat: TelegramChat;
+	date: number;
+	text?: string;
+}
+
+interface TelegramCallbackQuery {
+	id: string;
+	from: TelegramUser;
+	data?: string;
+	message?: TelegramMessage;
+}
+
+interface TelegramUpdate {
+	update_id: number;
+	message?: TelegramMessage;
+	callback_query?: TelegramCallbackQuery;
+}
+
+interface TelegramApiEnvelope<T> {
+	ok: boolean;
+	result?: T;
+	description?: string;
+	error_code?: number;
+}
+
+interface TelegramInlineKeyboardMarkup {
+	inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+}
+
+interface TelegramReplyKeyboardMarkup {
+	keyboard: Array<Array<{ text: string }>>;
+	resize_keyboard?: boolean;
+	is_persistent?: boolean;
+	one_time_keyboard?: boolean;
+	input_field_placeholder?: string;
+}
+
+type TelegramReplyMarkup = TelegramInlineKeyboardMarkup | TelegramReplyKeyboardMarkup;
+
+interface ActiveTurnState {
+	turnId: number;
+	chatId: TelegramChatId;
+	prompt: string;
+	startedAt: number;
+	statusMessageId: number;
+	phase: string;
+	lastTool?: string;
+	aborted: boolean;
+	statusEditPending: boolean;
+	statusEditTimer?: NodeJS.Timeout;
+	statusEditInFlight?: Promise<void>;
+	lastStatusEditAt: number;
+}
+
+interface PendingConfirmation {
+	chatId: TelegramChatId;
+	requestId: string;
+	label: string;
+	groupKey: string;
+}
+
+interface CommandCatalogEntry {
+	name: string;
+	description?: string;
+	source: "builtin" | "extension" | "prompt" | "skill";
+	commandText: string;
+}
+
+type CommandMenuView = "main" | "all";
+
+interface ModelCatalogEntry {
+	provider: string;
+	id: string;
+	contextWindow: number;
+	reasoning: boolean;
+}
+
+type HubView = "compact" | "details";
+
+const COMMANDS_PAGE_SIZE = 8;
+const COMMAND_MENU_TTL_MS = 5 * 60 * 1000;
+const MODELS_PAGE_SIZE = 8;
+const MODEL_MENU_TTL_MS = 2 * 60 * 1000;
+const QUICK_ACTION_DEBOUNCE_MS = 800;
+const LIVE_STATUS_ANIMATION_MAX_THROTTLE_MS = 850;
+const INPUT_BUTTON_HUB = "🧭 Hub";
+const INPUT_BUTTON_NEW = "🆕 New";
+const INPUT_BUTTON_COMMANDS = "⚡ Cmd";
+const INPUT_BUTTON_HELP = "❓ Help";
+const INPUT_BUTTON_ABORT = "⛔ Abort";
+const INPUT_BUTTON_STOP = "🛑 Stop";
+const MAIN_COMMAND_MENU: CommandCatalogEntry[] = [
+	{
+		name: "model",
+		description: "Choose active model",
+		source: "builtin",
+		commandText: "/model",
+	},
+	{
+		name: "status",
+		description: "Show control hub status",
+		source: "builtin",
+		commandText: "/status",
+	},
+	{
+		name: "new",
+		description: "Start a new session",
+		source: "builtin",
+		commandText: "/new",
+	},
+	{
+		name: "abort",
+		description: "Abort active task",
+		source: "builtin",
+		commandText: "/abort",
+	},
+	{
+		name: "permissions",
+		description: "Show permission mode",
+		source: "builtin",
+		commandText: "/permissions status",
+	},
+	{
+		name: "yolo",
+		description: "Show YOLO mode",
+		source: "builtin",
+		commandText: "/yolo status",
+	},
+	{
+		name: "help",
+		description: "Show command help",
+		source: "builtin",
+		commandText: "/help",
+	},
+	{
+		name: "stop",
+		description: "Stop bridge and cancel active work",
+		source: "builtin",
+		commandText: "/stop",
+	},
+];
+
+class TelegramBotApi {
+	constructor(private readonly token: string) {}
+
+	private get endpoint(): string {
+		return `https://api.telegram.org/bot${this.token}`;
+	}
+
+	async getMe(): Promise<{ id: number; username?: string }> {
+		return this.call("getMe", {});
+	}
+
+	async getUpdates(offset: number, timeoutSeconds: number): Promise<TelegramUpdate[]> {
+		return this.call("getUpdates", {
+			offset,
+			timeout: timeoutSeconds,
+			allowed_updates: ["message", "callback_query"],
+		});
+	}
+
+	async sendMessage(
+		chatId: TelegramChatId,
+		text: string,
+		options?: {
+			replyMarkup?: TelegramReplyMarkup;
+			disableNotification?: boolean;
+			parseMode?: "HTML";
+		},
+	): Promise<TelegramMessage> {
+		return this.call("sendMessage", {
+			chat_id: chatId,
+			text,
+			reply_markup: options?.replyMarkup,
+			disable_notification: options?.disableNotification ?? false,
+			parse_mode: options?.parseMode,
+		});
+	}
+
+	async editMessageText(
+		chatId: TelegramChatId,
+		messageId: number,
+		text: string,
+		options?: { replyMarkup?: TelegramInlineKeyboardMarkup },
+	): Promise<TelegramMessage | boolean> {
+		return this.call("editMessageText", {
+			chat_id: chatId,
+			message_id: messageId,
+			text,
+			reply_markup: options?.replyMarkup,
+		});
+	}
+
+	async editMessageReplyMarkup(
+		chatId: TelegramChatId,
+		messageId: number,
+		replyMarkup?: TelegramInlineKeyboardMarkup,
+	): Promise<TelegramMessage | boolean> {
+		return this.call("editMessageReplyMarkup", {
+			chat_id: chatId,
+			message_id: messageId,
+			reply_markup: replyMarkup,
+		});
+	}
+
+	async deleteMessage(chatId: TelegramChatId, messageId: number): Promise<boolean> {
+		return this.call("deleteMessage", {
+			chat_id: chatId,
+			message_id: messageId,
+		});
+	}
+
+	async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<boolean> {
+		return this.call("answerCallbackQuery", {
+			callback_query_id: callbackQueryId,
+			text,
+			show_alert: false,
+		});
+	}
+
+	async sendTextDocument(chatId: TelegramChatId, filename: string, content: string, caption?: string): Promise<TelegramMessage> {
+		const form = new FormData();
+		form.set("chat_id", String(chatId));
+		if (caption) {
+			form.set("caption", caption);
+		}
+		form.set("document", new Blob([content], { type: "text/plain" }), filename);
+		return this.callMultipart("sendDocument", form);
+	}
+
+	private async call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
+		const response = await fetch(`${this.endpoint}/${method}`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(payload),
+		});
+		const envelope = (await response.json()) as TelegramApiEnvelope<T>;
+		if (!response.ok || !envelope.ok || envelope.result === undefined) {
+			throw new Error(
+				`Telegram API ${method} failed: ${envelope.description ?? response.statusText} (${envelope.error_code ?? response.status})`,
+			);
+		}
+		return envelope.result;
+	}
+
+	private async callMultipart<T>(method: string, form: FormData): Promise<T> {
+		const response = await fetch(`${this.endpoint}/${method}`, {
+			method: "POST",
+			body: form,
+		});
+		const envelope = (await response.json()) as TelegramApiEnvelope<T>;
+		if (!response.ok || !envelope.ok || envelope.result === undefined) {
+			throw new Error(
+				`Telegram API ${method} failed: ${envelope.description ?? response.statusText} (${envelope.error_code ?? response.status})`,
+			);
+		}
+		return envelope.result;
+	}
+}
+
+export async function runTelegramBridgeMode(options: TelegramBridgeModeOptions): Promise<never> {
+	const mode = new TelegramBridgeRuntime(options);
+	await mode.run();
+	// run() loops forever unless it throws; keep Promise<never> contract explicit.
+	return new Promise(() => {});
+}
+
+class TelegramBridgeRuntime {
+	private readonly settingsManager: SettingsManager;
+	private readonly bot: TelegramBotApi;
+	private readonly allowedUserIds: Set<number>;
+	private readonly statusEditThrottleMs: number;
+	private readonly maxSummaryChars: number;
+	private readonly rpcClient: RpcClient;
+	private readonly queue: Array<{ chatId: TelegramChatId; text: string }> = [];
+	private readonly pendingConfirmations = new Map<string, PendingConfirmation>();
+	private readonly pendingConfirmationGroupIdsByKey = new Map<string, Set<string>>();
+	private readonly commandCatalogByChat = new Map<TelegramChatId, { updatedAt: number; entries: CommandCatalogEntry[] }>();
+	private readonly modelCatalogByChat = new Map<TelegramChatId, { updatedAt: number; entries: ModelCatalogEntry[] }>();
+	private readonly hubMessageIdByChat = new Map<TelegramChatId, number>();
+	private readonly hubViewByChat = new Map<TelegramChatId, HubView>();
+	private readonly inputMenuEnabledByChat = new Set<TelegramChatId>();
+	private readonly quickActionDebounceByChat = new Map<TelegramChatId, { command: string; at: number }>();
+	private nextUpdateOffset = 0;
+	private nextTurnId = 1;
+	private activeTurn: ActiveTurnState | undefined;
+	private activeSessionState: RpcSessionState | undefined;
+	private lastAuthorizedChatId: TelegramChatId | undefined;
+	private rpcConnected = false;
+	private bridgeStopped = false;
+
+	constructor(private readonly options: TelegramBridgeModeOptions) {
+		this.settingsManager = options.settingsManager;
+		const telegramSettings = this.settingsManager.getTelegramSettings();
+		if (!telegramSettings.enabled) {
+			throw new Error("Telegram bridge is disabled in settings (telegram.enabled=false).");
+		}
+		if (!telegramSettings.botToken) {
+			throw new Error("Telegram bridge requires settings.telegram.botToken.");
+		}
+		if (telegramSettings.allowedUserIds.length === 0) {
+			throw new Error("Telegram bridge requires at least one allowed user ID in settings.telegram.allowedUserIds.");
+		}
+		if (telegramSettings.transport !== "long-polling") {
+			throw new Error(`Unsupported telegram transport: ${telegramSettings.transport}`);
+		}
+
+		this.bot = new TelegramBotApi(telegramSettings.botToken);
+		this.allowedUserIds = new Set(telegramSettings.allowedUserIds);
+		this.statusEditThrottleMs = telegramSettings.chatDefaults.statusEditThrottleMs;
+		this.maxSummaryChars = telegramSettings.chatDefaults.maxSummaryChars;
+		this.rpcClient = new RpcClient({
+			cliPath: options.cliPath,
+			cwd: options.cwd,
+			args: this.buildRpcForwardedArgs(options.rawArgs),
+		});
+	}
+
+	async run(): Promise<void> {
+		const me = await this.bot.getMe();
+		await this.startRpc();
+		console.log(`[telegram] bridge online as @${me.username ?? "unknown"} (${me.id})`);
+
+		const shutdown = async (signal: string) => {
+			console.log(`[telegram] received ${signal}, stopping bridge...`);
+			try {
+				await this.rpcClient.stop();
+			} finally {
+				process.exit(0);
+			}
+		};
+		process.once("SIGINT", () => {
+			void shutdown("SIGINT");
+		});
+		process.once("SIGTERM", () => {
+			void shutdown("SIGTERM");
+		});
+
+		this.rpcClient.onEvent((event) => {
+			void this.onRpcEvent(event);
+		});
+		this.rpcClient.onExtensionUIRequest((request) => {
+			void this.onRpcExtensionUiRequest(request);
+		});
+		this.rpcClient.onRequiresConfirmation((event) => {
+			void this.onRpcConfirmationRequest(event);
+		});
+
+		// Keep polling forever.
+		for (;;) {
+			try {
+				const updates = await this.bot.getUpdates(this.nextUpdateOffset, 25);
+				for (const update of updates) {
+					this.nextUpdateOffset = Math.max(this.nextUpdateOffset, update.update_id + 1);
+					await this.handleUpdate(update);
+				}
+			} catch (error) {
+				console.error(`[telegram] polling error: ${error instanceof Error ? error.message : String(error)}`);
+				await sleepTimeout(2_000);
+			}
+		}
+	}
+
+	private buildRpcForwardedArgs(rawArgs: string[]): string[] {
+		const forwarded: string[] = [];
+		for (let i = 0; i < rawArgs.length; i++) {
+			const arg = rawArgs[i];
+			if (i === 0 && arg === "telegram") continue;
+			if (arg === "--mode") {
+				// RPC mode is enforced by RpcClient; ignore any caller-provided mode.
+				i += 1;
+				continue;
+			}
+			forwarded.push(arg);
+		}
+		return forwarded;
+	}
+
+	private async startRpc(): Promise<void> {
+		try {
+			await this.rpcClient.start();
+			this.activeSessionState = await this.rpcClient.getState();
+			this.rpcConnected = true;
+		} catch (error) {
+			this.rpcConnected = false;
+			throw new Error(`Failed to start RPC child: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async restartRpc(): Promise<void> {
+		await this.rpcClient.stop();
+		await this.startRpc();
+	}
+
+	private async ensureRpcConnected(): Promise<void> {
+		if (this.rpcConnected) return;
+		await this.restartRpc();
+	}
+
+	private isAuthorizedUser(userId: number | undefined): userId is number {
+		return typeof userId === "number" && this.allowedUserIds.has(userId);
+	}
+
+	private buildInputMenuKeyboard(): TelegramReplyKeyboardMarkup {
+		return {
+			keyboard: [
+				[{ text: INPUT_BUTTON_HUB }, { text: INPUT_BUTTON_NEW }, { text: INPUT_BUTTON_COMMANDS }],
+				[{ text: INPUT_BUTTON_HELP }, { text: INPUT_BUTTON_ABORT }, { text: INPUT_BUTTON_STOP }],
+			],
+			resize_keyboard: true,
+			is_persistent: true,
+			input_field_placeholder: "Write a task or pick an action",
+		};
+	}
+
+	private async ensureInputMenu(chatId: TelegramChatId, force = false): Promise<void> {
+		if (!force && this.inputMenuEnabledByChat.has(chatId)) return;
+		const notice = force ? "Quick actions updated ↓" : "Quick actions ready ↓";
+		await this.bot.sendMessage(chatId, notice, {
+			replyMarkup: this.buildInputMenuKeyboard(),
+			disableNotification: true,
+		});
+		this.inputMenuEnabledByChat.add(chatId);
+	}
+
+	private normalizeInputActionText(text: string): string {
+		return text
+			.normalize("NFKC")
+			.replace(/\uFE0F/g, "")
+			.toLowerCase()
+			.replace(/[^\p{Letter}\p{Number} ]+/gu, " ")
+			.replace(/\s+/g, " ")
+			.trim();
+	}
+
+	private mapInputMenuAction(text: string): string | undefined {
+		const normalized = this.normalizeInputActionText(text);
+		switch (normalized) {
+			case "hub":
+			case "status":
+			case "хаб":
+			case "статус":
+				return "/status";
+			case "new":
+			case "new session":
+			case "новая":
+			case "новая сессия":
+			case "новый":
+				return "/new";
+			case "cmd":
+			case "command":
+			case "commands":
+			case "команда":
+			case "команды":
+				return "/commands";
+			case "help":
+			case "помощь":
+			case "хелп":
+				return "/help";
+			case "abort":
+			case "cancel":
+			case "прервать":
+			case "отмена":
+				return "/abort";
+			case "stop":
+			case "стоп":
+				return "/stop";
+		}
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_HUB)) return "/status";
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_NEW)) return "/new";
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_COMMANDS)) return "/commands";
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_HELP)) return "/help";
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_ABORT)) return "/abort";
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_STOP)) return "/stop";
+		return undefined;
+	}
+
+	private isDebouncedQuickAction(chatId: TelegramChatId, command: string): boolean {
+		const now = Date.now();
+		const previous = this.quickActionDebounceByChat.get(chatId);
+		this.quickActionDebounceByChat.set(chatId, { command, at: now });
+		return Boolean(previous && previous.command === command && now - previous.at < QUICK_ACTION_DEBOUNCE_MS);
+	}
+
+	private async handleUpdate(update: TelegramUpdate): Promise<void> {
+		if (update.callback_query) {
+			await this.handleCallbackQuery(update.callback_query);
+			return;
+		}
+		if (!update.message?.text) return;
+
+		const message = update.message;
+		const userId = message.from?.id;
+		if (!this.isAuthorizedUser(userId)) {
+			console.warn(
+				`[telegram] unauthorized message ignored (user=${userId ?? "unknown"}, chat=${message.chat.id})`,
+			);
+			return;
+		}
+
+		this.lastAuthorizedChatId = message.chat.id;
+		const text = (message.text ?? "").trim();
+		if (text.length === 0) return;
+		if (!this.inputMenuEnabledByChat.has(message.chat.id)) {
+			await this.ensureInputMenu(message.chat.id);
+		}
+
+		const quickActionCommand = this.mapInputMenuAction(text);
+		if (quickActionCommand) {
+			if (this.isDebouncedQuickAction(message.chat.id, quickActionCommand)) {
+				return;
+			}
+			await this.handleCommandMessage(message.chat.id, quickActionCommand);
+			return;
+		}
+
+		if (text.startsWith("/")) {
+			await this.handleCommandMessage(message.chat.id, text);
+			return;
+		}
+
+		if (this.bridgeStopped) {
+			await this.bot.sendMessage(message.chat.id, "Bridge is stopped. Use /start to resume.");
+			return;
+		}
+
+		await this.enqueuePrompt(message.chat.id, text);
+	}
+
+	private async handleCallbackQuery(callback: TelegramCallbackQuery): Promise<void> {
+		const userId = callback.from?.id;
+		if (!this.isAuthorizedUser(userId)) {
+			await this.bot.answerCallbackQuery(callback.id, "Unauthorized");
+			console.warn(`[telegram] unauthorized callback ignored (user=${userId ?? "unknown"})`);
+			return;
+		}
+
+		const data = callback.data?.trim();
+		if (!data) {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+
+		if (data.startsWith("confirm:")) {
+			const [, requestId, decision] = data.split(":");
+			if (!requestId || (decision !== "yes" && decision !== "no")) {
+				await this.bot.answerCallbackQuery(callback.id, "Invalid confirmation payload");
+				return;
+			}
+			const confirmed = decision === "yes";
+			const pending = this.pendingConfirmations.get(requestId);
+			await this.respondConfirmation(requestId, confirmed);
+			const confirmChatId = callback.message?.chat.id;
+			const confirmMessageId = callback.message?.message_id;
+			if (confirmChatId && typeof confirmMessageId === "number") {
+				await this.updateConfirmationDecisionMessage(confirmChatId, confirmMessageId, confirmed, pending?.label);
+				await this.moveLiveStatusToBottom(confirmChatId);
+			}
+			await this.bot.answerCallbackQuery(callback.id, confirmed ? "Approved" : "Denied");
+			return;
+		}
+
+		if (data.startsWith("hub:")) {
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.handleHubAction(callback.message?.chat.id, data.slice(4));
+			return;
+		}
+
+		if (data.startsWith("live:")) {
+			await this.handleLiveAction(callback, data);
+			return;
+		}
+
+		if (data.startsWith("cmd:")) {
+			await this.handleCommandMenuCallback(callback, data);
+			return;
+		}
+
+		if (data.startsWith("model:")) {
+			await this.handleModelMenuCallback(callback, data);
+			return;
+		}
+
+		await this.bot.answerCallbackQuery(callback.id);
+	}
+
+	private async handleHubAction(chatId: TelegramChatId | undefined, action: string): Promise<void> {
+		if (!chatId) return;
+		const statusOnlyActions = new Set(["status", "refresh", "details", "compact", "permissions"]);
+		if (this.bridgeStopped && !statusOnlyActions.has(action)) {
+			await this.bot.sendMessage(chatId, "Bridge is stopped. Use /start to resume.");
+			return;
+		}
+		switch (action) {
+			case "prompt":
+				await this.bot.sendMessage(chatId, "Send any text to start a task.");
+				return;
+			case "commands":
+				await this.sendCommandMenu(chatId, 0, { view: "main", refreshCatalog: false });
+				return;
+			case "new": {
+				await this.runNewSession(chatId);
+				return;
+			}
+			case "permissions":
+				await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true, view: "details" });
+				return;
+			case "toggle_mode":
+				await this.togglePermissionMode(chatId);
+				return;
+			case "model":
+				await this.sendModelMenu(chatId, 0, { refreshCatalog: true });
+				return;
+			case "status":
+			case "refresh":
+				await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+				return;
+			case "details":
+				await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true, view: "details" });
+				return;
+			case "compact":
+				await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true, view: "compact" });
+				return;
+			case "abort":
+				await this.abortActiveTurn(chatId);
+				return;
+			case "stop":
+				await this.stopBridge(chatId);
+				return;
+			default:
+				await this.bot.sendMessage(chatId, "Action is not implemented yet in Telegram bridge.");
+		}
+	}
+
+	private async runNewSession(chatId: TelegramChatId): Promise<void> {
+		const handled = await this.runBuiltinCommand(chatId, "/new");
+		if (!handled) {
+			await this.enqueuePrompt(chatId, "/new");
+		}
+	}
+
+	private async switchMenuMessageToHub(chatId: TelegramChatId, messageId?: number): Promise<void> {
+		if (messageId) {
+			this.hubMessageIdByChat.set(chatId, messageId);
+		}
+		await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+	}
+
+	private async clearInlineKeyboard(chatId: TelegramChatId, messageId: number): Promise<void> {
+		try {
+			await this.bot.editMessageReplyMarkup(chatId, messageId, { inline_keyboard: [] });
+		} catch {
+			// Best-effort cleanup of stale buttons.
+		}
+	}
+
+	private buildConfirmationResolvedText(confirmed: boolean, label?: string): string {
+		const status = confirmed ? "✅ Allowed" : "❌ Denied";
+		if (!label) return status;
+		const lines = label
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0);
+		const detail = lines.find((line) => !/^permission required$/i.test(line)) ?? lines[0];
+		if (!detail) return status;
+		const clipped = detail.length > 120 ? `${detail.slice(0, 119)}…` : detail;
+		return `${status}\n${clipped}`;
+	}
+
+	private async updateConfirmationDecisionMessage(
+		chatId: TelegramChatId,
+		messageId: number,
+		confirmed: boolean,
+		label?: string,
+	): Promise<void> {
+		const text = this.buildConfirmationResolvedText(confirmed, label);
+		try {
+			await this.bot.editMessageText(chatId, messageId, text, {
+				replyMarkup: { inline_keyboard: [] },
+			});
+		} catch {
+			await this.clearInlineKeyboard(chatId, messageId);
+		}
+	}
+
+	private async moveLiveStatusToBottom(chatId: TelegramChatId): Promise<void> {
+		const turn = this.activeTurn;
+		if (!turn || turn.chatId !== chatId) return;
+		const previousStatusId = turn.statusMessageId;
+		try {
+			const fresh = await this.bot.sendMessage(chatId, this.formatLiveStatus());
+			turn.statusMessageId = fresh.message_id;
+			turn.lastStatusEditAt = Date.now();
+			if (previousStatusId !== fresh.message_id) {
+				await this.bot.deleteMessage(chatId, previousStatusId).catch(() => {});
+			}
+		} catch {
+			// Best-effort relocation; keep existing status message on failure.
+		}
+	}
+
+	private async handleLiveAction(callback: TelegramCallbackQuery, data: string): Promise<void> {
+		const chatId = callback.message?.chat.id;
+		if (!chatId) {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+		const [, action] = data.split(":");
+		if (!action) {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+		if (this.bridgeStopped && action !== "hub") {
+			await this.bot.answerCallbackQuery(callback.id, "Bridge is stopped");
+			return;
+		}
+
+		if (action === "hub") {
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+			return;
+		}
+		if (action === "commands") {
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.sendCommandMenu(chatId, 0, { view: "main", refreshCatalog: false });
+			return;
+		}
+		if (action === "model") {
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.sendModelMenu(chatId, 0, { refreshCatalog: true });
+			return;
+		}
+		if (action === "new") {
+			await this.bot.answerCallbackQuery(callback.id, "New session");
+			await this.runNewSession(chatId);
+			return;
+		}
+		if (action === "abort") {
+			await this.bot.answerCallbackQuery(callback.id, "Aborting...");
+			await this.abortActiveTurn(chatId);
+			return;
+		}
+		if (action === "stop") {
+			await this.bot.answerCallbackQuery(callback.id, "Stopping...");
+			await this.stopBridge(chatId);
+			return;
+		}
+
+		await this.bot.answerCallbackQuery(callback.id);
+	}
+
+	private async handleCommandMessage(chatId: TelegramChatId, text: string): Promise<void> {
+		const [commandRaw, ...rest] = text.split(/\s+/);
+		const command = commandRaw.toLowerCase();
+
+		if (command === "/start") {
+			this.bridgeStopped = false;
+			await this.sendStart(chatId);
+			return;
+		}
+		if (command === "/help") {
+			await this.sendHelp(chatId);
+			return;
+		}
+		if (command === "/menu") {
+			await this.ensureInputMenu(chatId, true);
+			return;
+		}
+		if (command === "/status") {
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: false });
+			return;
+		}
+		if (command === "/stop") {
+			await this.stopBridge(chatId);
+			return;
+		}
+		if (this.bridgeStopped) {
+			await this.bot.sendMessage(chatId, "Bridge is stopped. Use /start to resume.");
+			return;
+		}
+		if (command === "/commands") {
+			await this.sendCommandMenu(chatId, 0, { view: "main", refreshCatalog: false });
+			return;
+		}
+		if (command === "/abort") {
+			await this.abortActiveTurn(chatId);
+			return;
+		}
+		if (command === "/yolo") {
+			await this.handleYoloCommand(chatId, rest);
+			return;
+		}
+		if (command === "/model" && rest.join(" ").trim().length === 0) {
+			await this.sendModelMenu(chatId, 0, { refreshCatalog: true });
+			return;
+		}
+
+		const handled = await this.runBuiltinCommand(chatId, text);
+		if (handled) {
+			return;
+		}
+
+		// Fallback to raw slash prompt to support extension/prompt-template/skill slash commands.
+		await this.enqueuePrompt(chatId, text);
+	}
+
+	private async runBuiltinCommand(chatId: TelegramChatId, commandText: string): Promise<boolean> {
+		try {
+			await this.ensureRpcConnected();
+			const result = await this.rpcClient.runBuiltinCommand(commandText);
+			this.rpcConnected = true;
+			if (!result.handled) {
+				return false;
+			}
+			await this.sendBuiltinCommandResult(chatId, result);
+			return true;
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.bot.sendMessage(chatId, `Command failed: ${error instanceof Error ? error.message : String(error)}`);
+			return true;
+		}
+	}
+
+	private async sendBuiltinCommandResult(chatId: TelegramChatId, result: BuiltinCommandResult): Promise<void> {
+		if (result.message) {
+			const prefix = result.level === "error" ? "Error: " : result.level === "warning" ? "Warning: " : "";
+			await this.bot.sendMessage(chatId, `${prefix}${result.message}`);
+		}
+		if (result.text) {
+			await this.sendFinalOutput(chatId, result.text);
+		}
+		if (result.filePath) {
+			await this.bot.sendMessage(chatId, `File: ${result.filePath}`);
+		}
+	}
+
+	private async sendStart(chatId: TelegramChatId): Promise<void> {
+		await this.sendStatusCard(chatId, {
+			header: `Control Hub · ${APP_NAME} v${VERSION}`,
+			includeKeyboard: true,
+			preferEditHub: true,
+		});
+		await this.ensureInputMenu(chatId, false);
+	}
+
+	private async sendHelp(chatId: TelegramChatId): Promise<void> {
+		const help = [
+			"IOSM Telegram · Quick Guide",
+			"",
+			"What the agent can do",
+			"- Analyze your codebase and explain behavior",
+			"- Create/edit files and refactor code",
+			"- Run shell commands, investigate failures, fix tests",
+			"- Work with git changes and repository context",
+			"- Prepare concise result summaries",
+			"",
+			"Tools the agent uses",
+			"- Shell tools: bash/zsh commands for diagnostics and automation",
+			"- Code tools: search (rg), read/edit files, refactor project code",
+			"- Validation tools: run tests, linters, build checks",
+			"- Git tools: inspect diffs/status, create safe code changes",
+			"- In ASK mode, dangerous tool actions require Allow/Deny",
+			"",
+			"How to ask",
+			"- Write a plain task: what to do + where + expected output",
+			"- Example: \"Find why tests fail and fix them\"",
+			"- Example: \"Find large files and propose safe cleanup\"",
+			"",
+			"Quick buttons",
+			"- 🧭 Hub: current status/model/mode",
+			"- ⚡ Cmd: command/action center",
+			"- 🆕 New: start a new session",
+			"- ⛔ Abort: stop current task",
+			"- 🛑 Stop: stop bridge",
+			"",
+			"Models and permissions",
+			"- /model: choose model",
+			"- ASK mode: dangerous actions require Allow/Deny",
+			"- /yolo on|off|status: confirmation mode control",
+			"",
+			"Useful commands",
+			"/status  /commands  /model  /menu  /help",
+			"",
+			"Tip: phrase tasks like \"do X, verify Y, report result\".",
+		].join("\n");
+		await this.bot.sendMessage(chatId, help);
+	}
+
+	private buildDefaultCommandText(name: string): string {
+		const lower = name.toLowerCase();
+		switch (lower) {
+			case "permissions":
+				return "/permissions status";
+			case "yolo":
+				return "/yolo status";
+			case "checkpoint":
+				return "/checkpoint list";
+			case "rollback":
+				return "/rollback list";
+			case "tree":
+				return "/tree list";
+			default:
+				return `/${name}`;
+		}
+	}
+
+	private mapBuiltinCommands(commands: RpcBuiltinSlashCommand[]): CommandCatalogEntry[] {
+		return commands.map((command) => ({
+			name: command.name,
+			description: command.description,
+			source: "builtin" as const,
+			commandText: this.buildDefaultCommandText(command.name),
+		}));
+	}
+
+	private mapExternalCommands(commands: RpcSlashCommand[]): CommandCatalogEntry[] {
+		return commands.map((command) => ({
+			name: command.name,
+			description: command.description,
+			source: command.source,
+			commandText: `/${command.name}`,
+		}));
+	}
+
+	private getLocalBridgeCommands(): CommandCatalogEntry[] {
+		return [
+			{
+				name: "commands",
+				description: "Open paged command buttons",
+				source: "builtin",
+				commandText: "/commands",
+			},
+			{
+				name: "model",
+				description: "Open model picker",
+				source: "builtin",
+				commandText: "/model",
+			},
+			{
+				name: "status",
+				description: "Show runtime status",
+				source: "builtin",
+				commandText: "/status",
+			},
+			{
+				name: "abort",
+				description: "Abort active task",
+				source: "builtin",
+				commandText: "/abort",
+			},
+			{
+				name: "stop",
+				description: "Stop bridge and cancel active work",
+				source: "builtin",
+				commandText: "/stop",
+			},
+		];
+	}
+
+	private commandButtonLabel(entry: CommandCatalogEntry, view: CommandMenuView): string {
+		if (view === "all") {
+			const raw = entry.commandText.startsWith("/") ? entry.commandText : `/${entry.name}`;
+			return raw.length > 24 ? `${raw.slice(0, 23)}…` : raw;
+		}
+		const key = entry.commandText.toLowerCase();
+		switch (key) {
+			case "/model":
+				return "🤖 Model";
+			case "/status":
+				return "🔄 Status";
+			case "/new":
+				return "🆕 New";
+			case "/abort":
+				return "⛔ Abort";
+			case "/permissions status":
+				return "🛡 Mode";
+			case "/yolo status":
+				return "⚠️ YOLO";
+			case "/help":
+				return "❓ Help";
+			case "/stop":
+				return "🛑 Stop";
+			default:
+				return entry.commandText;
+		}
+	}
+
+	private async getCommandCatalog(chatId: TelegramChatId, refreshCatalog: boolean): Promise<CommandCatalogEntry[]> {
+		const cached = this.commandCatalogByChat.get(chatId);
+		const now = Date.now();
+		if (!refreshCatalog && cached && now - cached.updatedAt < COMMAND_MENU_TTL_MS) {
+			return cached.entries;
+		}
+
+		await this.ensureRpcConnected();
+		const [builtin, dynamic] = await Promise.all([
+			this.rpcClient.getBuiltinCommands(),
+			this.rpcClient.getCommands(),
+		]);
+		this.rpcConnected = true;
+
+		const entries: CommandCatalogEntry[] = [];
+		const seen = new Set<string>();
+		for (const entry of this.getLocalBridgeCommands()) {
+			const key = entry.commandText;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			entries.push(entry);
+		}
+		for (const entry of this.mapBuiltinCommands(builtin)) {
+			const key = entry.commandText;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			entries.push(entry);
+		}
+
+		const dynamicEntries = this.mapExternalCommands(dynamic).sort((a, b) => a.name.localeCompare(b.name));
+		for (const entry of dynamicEntries) {
+			const key = entry.commandText;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			entries.push(entry);
+		}
+
+		this.commandCatalogByChat.set(chatId, { updatedAt: now, entries });
+		return entries;
+	}
+
+	private buildCommandMenuKeyboard(
+		entries: CommandCatalogEntry[],
+		page: number,
+		view: CommandMenuView,
+	): TelegramInlineKeyboardMarkup {
+		const pageCount = Math.max(1, Math.ceil(entries.length / COMMANDS_PAGE_SIZE));
+		const normalizedPage = Math.max(0, Math.min(page, pageCount - 1));
+		const start = normalizedPage * COMMANDS_PAGE_SIZE;
+		const pageEntries = entries.slice(start, start + COMMANDS_PAGE_SIZE);
+
+		const commandRows: Array<Array<{ text: string; callback_data: string }>> = [];
+		for (let index = 0; index < pageEntries.length; index += 2) {
+			const left = pageEntries[index];
+			const right = pageEntries[index + 1];
+			const row: Array<{ text: string; callback_data: string }> = [];
+			if (left) {
+				row.push({
+					text: this.commandButtonLabel(left, view),
+					callback_data: `cmd:run:${view}:${start + index}`,
+				});
+			}
+			if (right) {
+				row.push({
+					text: this.commandButtonLabel(right, view),
+					callback_data: `cmd:run:${view}:${start + index + 1}`,
+				});
+			}
+			if (row.length > 0) {
+				commandRows.push(row);
+			}
+		}
+
+		const navRow: Array<{ text: string; callback_data: string }> = [];
+		navRow.push({
+			text: normalizedPage > 0 ? "◀ Prev" : "·",
+			callback_data: normalizedPage > 0 ? `cmd:page:${view}:${normalizedPage - 1}` : "cmd:noop",
+		});
+		navRow.push({
+			text: `${normalizedPage + 1}/${pageCount}`,
+			callback_data: "cmd:noop",
+		});
+		navRow.push({
+			text: normalizedPage < pageCount - 1 ? "Next ▶" : "·",
+			callback_data: normalizedPage < pageCount - 1 ? `cmd:page:${view}:${normalizedPage + 1}` : "cmd:noop",
+		});
+
+		return {
+			inline_keyboard: [
+				...commandRows,
+				navRow,
+				[
+					{
+						text: view === "main" ? "All Commands" : "Main Commands",
+						callback_data: `cmd:view:${view === "main" ? "all" : "main"}:0`,
+					},
+					{
+						text: "Refresh",
+						callback_data: view === "all" ? `cmd:refresh:${view}:${normalizedPage}` : `cmd:view:${view}:0`,
+					},
+				],
+				[
+					{ text: "Hub", callback_data: "cmd:hub" },
+					{ text: "Close", callback_data: "cmd:close" },
+				],
+			],
+		};
+	}
+
+	private async sendCommandMenu(
+		chatId: TelegramChatId,
+		page: number,
+		options?: { messageId?: number; refreshCatalog?: boolean; view?: CommandMenuView },
+	): Promise<void> {
+		let entries: CommandCatalogEntry[] = [];
+		const view = options?.view ?? "main";
+		try {
+			entries = view === "main" ? MAIN_COMMAND_MENU : await this.getCommandCatalog(chatId, options?.refreshCatalog === true);
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.bot.sendMessage(chatId, `Failed to load commands: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+
+		const pageCount = Math.max(1, Math.ceil(entries.length / COMMANDS_PAGE_SIZE));
+		const normalizedPage = Math.max(0, Math.min(page, pageCount - 1));
+		const header = [
+			`Command Center · ${APP_NAME}`,
+			`${view === "main" ? "Main Actions" : "All Commands"} · ${normalizedPage + 1}/${pageCount}`,
+			`${entries.length} items`,
+		].join("\n");
+		const keyboard = this.buildCommandMenuKeyboard(entries, normalizedPage, view);
+
+		if (options?.messageId) {
+			try {
+				await this.bot.editMessageText(chatId, options.messageId, header, { replyMarkup: keyboard });
+				return;
+			} catch {
+				// Fallback below: send a new message if editing failed.
+			}
+		}
+		await this.bot.sendMessage(chatId, header, { replyMarkup: keyboard });
+	}
+
+	private async handleCommandMenuCallback(callback: TelegramCallbackQuery, data: string): Promise<void> {
+		const chatId = callback.message?.chat.id;
+		const messageId = callback.message?.message_id;
+		if (!chatId) {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+
+		const parts = data.split(":");
+		const action = parts[1] ?? "";
+		const rawView = parts[2];
+		let view: CommandMenuView = rawView === "all" ? "all" : "main";
+		let value = parts[3];
+		// Backward compatibility with older callback payloads: cmd:<action>:<value>.
+		if ((action === "page" || action === "refresh" || action === "run") && parts.length === 3) {
+			view = "main";
+			value = parts[2];
+		}
+		if (action === "noop") {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+		if (action === "close") {
+			await this.bot.answerCallbackQuery(callback.id, "Hub");
+			await this.switchMenuMessageToHub(chatId, messageId);
+			return;
+		}
+		if (action === "hub") {
+			await this.bot.answerCallbackQuery(callback.id, "Hub");
+			await this.switchMenuMessageToHub(chatId, messageId);
+			return;
+		}
+		if (this.bridgeStopped) {
+			await this.bot.answerCallbackQuery(callback.id, "Bridge is stopped");
+			return;
+		}
+		if (action === "view") {
+			const page = Number.parseInt(value ?? "0", 10);
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.sendCommandMenu(chatId, Number.isFinite(page) ? page : 0, {
+				messageId,
+				view,
+				refreshCatalog: view === "all",
+			});
+			return;
+		}
+		if (action === "page" || action === "refresh") {
+			const page = Number.parseInt(value ?? "0", 10);
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.sendCommandMenu(chatId, Number.isFinite(page) ? page : 0, {
+				messageId,
+				view,
+				refreshCatalog: action === "refresh",
+			});
+			return;
+		}
+		if (action === "run") {
+			const index = Number.parseInt(value ?? "-1", 10);
+			let entries: CommandCatalogEntry[] = [];
+			if (view === "main") {
+				entries = MAIN_COMMAND_MENU;
+			} else {
+				try {
+					entries = await this.getCommandCatalog(chatId, false);
+				} catch (error) {
+					this.rpcConnected = false;
+					await this.bot.answerCallbackQuery(callback.id, "Failed to load command catalog");
+					await this.bot.sendMessage(
+						chatId,
+						`Failed to load commands: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return;
+				}
+			}
+			const entry = Number.isFinite(index) ? entries[index] : undefined;
+			if (!entry) {
+				await this.bot.answerCallbackQuery(callback.id, "Command list expired. Refresh.");
+				return;
+			}
+			if (entry.commandText === "/model") {
+				await this.bot.answerCallbackQuery(callback.id, "Open model picker");
+				await this.sendModelMenu(chatId, 0, { refreshCatalog: true });
+				return;
+			}
+			if (entry.commandText === "/status") {
+				await this.bot.answerCallbackQuery(callback.id);
+				await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+				return;
+			}
+			if (entry.commandText === "/help") {
+				await this.bot.answerCallbackQuery(callback.id);
+				await this.sendHelp(chatId);
+				return;
+			}
+			if (entry.commandText === "/abort") {
+				await this.bot.answerCallbackQuery(callback.id, "Abort signal sent");
+				await this.abortActiveTurn(chatId);
+				return;
+			}
+			if (entry.commandText.startsWith("/yolo")) {
+				await this.bot.answerCallbackQuery(callback.id);
+				const parts = entry.commandText.split(/\s+/).slice(1);
+				await this.handleYoloCommand(chatId, parts);
+				return;
+			}
+			if (entry.commandText === "/stop") {
+				await this.bot.answerCallbackQuery(callback.id, "Stopping bridge");
+				await this.stopBridge(chatId);
+				return;
+			}
+			if (entry.commandText === "/commands") {
+				await this.bot.answerCallbackQuery(callback.id);
+				await this.sendCommandMenu(chatId, 0, { view: "main", refreshCatalog: false });
+				return;
+			}
+			await this.bot.answerCallbackQuery(callback.id, `Run ${entry.commandText}`);
+			const handled = await this.runBuiltinCommand(chatId, entry.commandText);
+			if (!handled) {
+				await this.enqueuePrompt(chatId, entry.commandText);
+			}
+			return;
+		}
+
+		await this.bot.answerCallbackQuery(callback.id);
+	}
+
+	private modelKey(model: { provider: string; id: string } | undefined): string | undefined {
+		if (!model) return undefined;
+		return `${model.provider}/${model.id}`;
+	}
+
+	private async getModelCatalog(chatId: TelegramChatId, refreshCatalog: boolean): Promise<ModelCatalogEntry[]> {
+		const cached = this.modelCatalogByChat.get(chatId);
+		const now = Date.now();
+		if (!refreshCatalog && cached && now - cached.updatedAt < MODEL_MENU_TTL_MS) {
+			return cached.entries;
+		}
+
+		await this.ensureRpcConnected();
+		const entries = (await this.rpcClient.getAvailableModels())
+			.map((model) => ({
+				provider: model.provider,
+				id: model.id,
+				contextWindow: model.contextWindow,
+				reasoning: model.reasoning,
+			}))
+			.sort((a, b) => this.modelKey(a)!.localeCompare(this.modelKey(b)!));
+		this.rpcConnected = true;
+		this.modelCatalogByChat.set(chatId, { updatedAt: now, entries });
+		return entries;
+	}
+
+	private buildModelMenuKeyboard(
+		entries: ModelCatalogEntry[],
+		page: number,
+		currentModelKey: string | undefined,
+	): TelegramInlineKeyboardMarkup {
+		const pageCount = Math.max(1, Math.ceil(entries.length / MODELS_PAGE_SIZE));
+		const normalizedPage = Math.max(0, Math.min(page, pageCount - 1));
+		const start = normalizedPage * MODELS_PAGE_SIZE;
+		const pageEntries = entries.slice(start, start + MODELS_PAGE_SIZE);
+
+		const modelRows = pageEntries.map((entry, index) => {
+			const key = this.modelKey(entry);
+			const selectedPrefix = key === currentModelKey ? "✅ " : "";
+			return [
+				{
+					text: `${selectedPrefix}${entry.provider}/${entry.id}`,
+					callback_data: `model:set:${start + index}`,
+				},
+			];
+		});
+
+		const navRow: Array<{ text: string; callback_data: string }> = [];
+		navRow.push({
+			text: normalizedPage > 0 ? "◀ Prev" : "·",
+			callback_data: normalizedPage > 0 ? `model:page:${normalizedPage - 1}` : "model:noop",
+		});
+		navRow.push({
+			text: `${normalizedPage + 1}/${pageCount}`,
+			callback_data: "model:noop",
+		});
+		navRow.push({
+			text: normalizedPage < pageCount - 1 ? "Next ▶" : "·",
+			callback_data: normalizedPage < pageCount - 1 ? `model:page:${normalizedPage + 1}` : "model:noop",
+		});
+
+		return {
+			inline_keyboard: [
+				...modelRows,
+				navRow,
+				[
+					{ text: "Cycle", callback_data: "model:cycle" },
+					{ text: "Refresh", callback_data: `model:refresh:${normalizedPage}` },
+				],
+				[
+					{ text: "Hub", callback_data: "model:hub" },
+					{ text: "Close", callback_data: "model:close" },
+				],
+			],
+		};
+	}
+
+	private async sendModelMenu(
+		chatId: TelegramChatId,
+		page: number,
+		options?: { messageId?: number; refreshCatalog?: boolean },
+	): Promise<void> {
+		if (this.bridgeStopped) {
+			await this.bot.sendMessage(chatId, "Bridge is stopped. Use /start to resume.");
+			return;
+		}
+
+		let entries: ModelCatalogEntry[] = [];
+		try {
+			entries = await this.getModelCatalog(chatId, options?.refreshCatalog === true);
+			this.activeSessionState = await this.rpcClient.getState();
+			this.rpcConnected = true;
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.bot.sendMessage(chatId, `Failed to load models: ${error instanceof Error ? error.message : String(error)}`);
+			return;
+		}
+
+		if (entries.length === 0) {
+			await this.bot.sendMessage(chatId, "No models available. Configure models in settings and retry.");
+			return;
+		}
+
+		const currentModelKey = this.modelKey(this.activeSessionState?.model);
+		const pageCount = Math.max(1, Math.ceil(entries.length / MODELS_PAGE_SIZE));
+		const normalizedPage = Math.max(0, Math.min(page, pageCount - 1));
+		const header = [
+			"Model Picker",
+			`Current: ${currentModelKey ?? "not selected"}`,
+			`Available: ${entries.length}`,
+			`Page: ${normalizedPage + 1}/${pageCount}`,
+		].join("\n");
+		const keyboard = this.buildModelMenuKeyboard(entries, normalizedPage, currentModelKey);
+
+		if (options?.messageId) {
+			try {
+				await this.bot.editMessageText(chatId, options.messageId, header, { replyMarkup: keyboard });
+				return;
+			} catch {
+				// Fallback to sending a fresh message.
+			}
+		}
+		await this.bot.sendMessage(chatId, header, { replyMarkup: keyboard });
+	}
+
+	private async handleModelMenuCallback(callback: TelegramCallbackQuery, data: string): Promise<void> {
+		const chatId = callback.message?.chat.id;
+		const messageId = callback.message?.message_id;
+		if (!chatId) {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+
+		const [, action, value] = data.split(":");
+		if (action === "noop") {
+			await this.bot.answerCallbackQuery(callback.id);
+			return;
+		}
+		if (action === "close") {
+			await this.bot.answerCallbackQuery(callback.id, "Hub");
+			await this.switchMenuMessageToHub(chatId, messageId);
+			return;
+		}
+		if (action === "hub") {
+			await this.bot.answerCallbackQuery(callback.id, "Hub");
+			await this.switchMenuMessageToHub(chatId, messageId);
+			return;
+		}
+
+		if (this.bridgeStopped) {
+			await this.bot.answerCallbackQuery(callback.id, "Bridge is stopped");
+			return;
+		}
+
+		if (action === "page" || action === "refresh") {
+			const page = Number.parseInt(value ?? "0", 10);
+			await this.bot.answerCallbackQuery(callback.id);
+			await this.sendModelMenu(chatId, Number.isFinite(page) ? page : 0, {
+				messageId,
+				refreshCatalog: action === "refresh",
+			});
+			return;
+		}
+
+		if (action === "cycle") {
+			try {
+				await this.ensureRpcConnected();
+				const cycled = await this.rpcClient.cycleModel();
+				this.activeSessionState = await this.rpcClient.getState();
+				this.rpcConnected = true;
+				await this.bot.answerCallbackQuery(
+					callback.id,
+					cycled ? `Model: ${cycled.model.provider}/${cycled.model.id}` : "No model candidates",
+				);
+				await this.sendModelMenu(chatId, 0, { messageId, refreshCatalog: false });
+			} catch (error) {
+				this.rpcConnected = false;
+				await this.bot.answerCallbackQuery(callback.id, "Failed to cycle model");
+				await this.bot.sendMessage(chatId, `Failed to cycle model: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
+
+		if (action === "set") {
+			const index = Number.parseInt(value ?? "-1", 10);
+			let entries: ModelCatalogEntry[] = [];
+			try {
+				entries = await this.getModelCatalog(chatId, false);
+			} catch (error) {
+				this.rpcConnected = false;
+				await this.bot.answerCallbackQuery(callback.id, "Model list expired. Refresh.");
+				await this.bot.sendMessage(chatId, `Failed to load models: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+
+			const entry = Number.isFinite(index) ? entries[index] : undefined;
+			if (!entry) {
+				await this.bot.answerCallbackQuery(callback.id, "Model list expired. Refresh.");
+				return;
+			}
+
+			try {
+				await this.ensureRpcConnected();
+				await this.rpcClient.setModel(entry.provider, entry.id);
+				this.activeSessionState = await this.rpcClient.getState();
+				this.rpcConnected = true;
+				await this.bot.answerCallbackQuery(callback.id, `Selected ${entry.provider}/${entry.id}`);
+				await this.sendModelMenu(chatId, Math.floor(index / MODELS_PAGE_SIZE), { messageId, refreshCatalog: false });
+				await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+			} catch (error) {
+				this.rpcConnected = false;
+				await this.bot.answerCallbackQuery(callback.id, "Failed to set model");
+				await this.bot.sendMessage(chatId, `Failed to set model: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			return;
+		}
+
+		await this.bot.answerCallbackQuery(callback.id);
+	}
+
+	private async stopBridge(chatId: TelegramChatId): Promise<void> {
+		if (this.bridgeStopped && !this.activeTurn && this.queue.length === 0 && !this.rpcConnected) {
+			await this.bot.sendMessage(chatId, "Bridge already stopped. Use /start to resume.");
+			return;
+		}
+
+		const droppedQueue = this.queue.length;
+		this.queue.length = 0;
+		this.bridgeStopped = true;
+		this.commandCatalogByChat.clear();
+		this.modelCatalogByChat.clear();
+
+		if (this.rpcConnected) {
+			for (const requestId of this.pendingConfirmations.keys()) {
+				try {
+					this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id: requestId, confirmed: false });
+				} catch {
+					// Ignore; bridge is stopping.
+				}
+			}
+		}
+		this.pendingConfirmations.clear();
+		this.pendingConfirmationGroupIdsByKey.clear();
+
+		const active = this.activeTurn;
+		if (active?.statusEditTimer) {
+			clearTimeout(active.statusEditTimer);
+		}
+		this.activeTurn = undefined;
+		if (active) {
+			if (active.statusEditInFlight) {
+				try {
+					await active.statusEditInFlight;
+				} catch {
+					// Best-effort; proceed with stop status.
+				}
+			}
+			try {
+				await this.bot.editMessageText(active.chatId, active.statusMessageId, "⛔ done (stopped)");
+			} catch {
+				// Best-effort status close.
+			}
+			if (active.chatId !== chatId) {
+				await this.bot.sendMessage(active.chatId, "Bridge stopped. Active task cancelled.");
+			}
+		}
+
+		try {
+			await this.rpcClient.stop();
+		} catch (error) {
+			console.warn(`[telegram] rpc stop failed: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			this.rpcConnected = false;
+		}
+
+		const parts = ["Bridge stopped."];
+		if (active) {
+			parts.push("Active task cancelled.");
+		}
+		if (droppedQueue > 0) {
+			parts.push(`Dropped queued tasks: ${droppedQueue}.`);
+		}
+		parts.push("Use /start to resume.");
+		await this.bot.sendMessage(chatId, parts.join(" "));
+	}
+
+	private formatConnectionStatus(): string {
+		if (this.bridgeStopped) return "⛔ stopped";
+		if (!this.rpcConnected) return "🟥 disconnected";
+		if (this.activeTurn) return "🟩 connected";
+		return "🟦 idle";
+	}
+
+	private formatPermissionShort(mode: "ask" | "auto" | "yolo" | undefined): string {
+		if (mode === "yolo") return "YOLO";
+		if (mode === "auto") return "AUTO";
+		return "ASK";
+	}
+
+	private formatPermissionButton(mode: "ask" | "auto" | "yolo" | undefined): string {
+		if (mode === "yolo") return "⚠️ YOLO";
+		if (mode === "auto") return "🤖 AUTO";
+		return "🛡 ASK";
+	}
+
+	private formatModelShort(model: string, maxLen = 42): string {
+		if (model.length <= maxLen) return model;
+		return `${model.slice(0, maxLen - 1)}…`;
+	}
+
+	private formatSessionShort(sessionName: string | undefined, sessionId: string | undefined): string {
+		if (sessionName && sessionName.trim().length > 0) return this.formatModelShort(sessionName.trim(), 24);
+		if (!sessionId || sessionId.trim().length === 0) return "unknown";
+		const value = sessionId.trim();
+		if (value.length <= 14) return value;
+		return `${value.slice(0, 8)}…${value.slice(-4)}`;
+	}
+
+	private formatCompactTurn(): string {
+		if (!this.activeTurn) return "idle";
+		const elapsed = Math.max(0, Math.floor((Date.now() - this.activeTurn.startedAt) / 1000));
+		const phase = this.formatStatusPhase(this.activeTurn.phase);
+		return `${phase} ${elapsed}s`;
+	}
+
+	private buildHubKeyboard(mode: "ask" | "auto" | "yolo" | undefined, view: HubView): TelegramInlineKeyboardMarkup {
+		const detailsToggle =
+			view === "details"
+				? { text: "◀ Compact", callback_data: "hub:compact" }
+				: { text: "ℹ️ Details", callback_data: "hub:details" };
+		return {
+			inline_keyboard: [
+				[
+					{ text: "🆕 New", callback_data: "hub:new" },
+					{ text: "⚡ Cmd", callback_data: "hub:commands" },
+					{ text: "🤖 Model", callback_data: "hub:model" },
+				],
+				[
+					{ text: this.formatPermissionButton(mode), callback_data: "hub:toggle_mode" },
+					{ text: "🔄 Refresh", callback_data: "hub:refresh" },
+					detailsToggle,
+				],
+				[
+					{ text: "⛔ Abort", callback_data: "hub:abort" },
+					{ text: "🛑 Stop", callback_data: "hub:stop" },
+				],
+			],
+		};
+	}
+
+	private async sendStatusCard(
+		chatId: TelegramChatId,
+		options?: { header?: string; includeKeyboard?: boolean; preferEditHub?: boolean; view?: HubView },
+	): Promise<void> {
+		if (!this.bridgeStopped) {
+			try {
+				await this.ensureRpcConnected();
+				this.activeSessionState = await this.rpcClient.getState();
+				this.rpcConnected = true;
+			} catch (error) {
+				this.rpcConnected = false;
+				await this.bot.sendMessage(
+					chatId,
+					`Status unavailable: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return;
+			}
+		}
+
+		const state = this.activeSessionState;
+		const model = state?.model ? `${state.model.provider}/${state.model.id}` : "not selected";
+		const queueSize = this.queue.length;
+		const mcpState = "RPC child";
+		const permissionMode = state?.permissionMode ?? "ask";
+		const resolvedView = options?.view ?? this.hubViewByChat.get(chatId) ?? "compact";
+		this.hubViewByChat.set(chatId, resolvedView);
+
+		const header = options?.header ?? "Control Hub";
+		const compactText = [
+			header,
+			`${this.formatConnectionStatus()} · ${this.formatPermissionShort(permissionMode)} · q${queueSize} · ${this.formatCompactTurn()}`,
+			`🤖 ${this.formatModelShort(model)}`,
+			`💬 ${this.formatSessionShort(state?.sessionName, state?.sessionId)}`,
+		].join("\n");
+		const detailsText = [
+			`${header} · Details`,
+			`Connection: ${this.formatConnectionStatus()}`,
+			`Mode: ${permissionMode}`,
+			`Model: ${model}`,
+			`Session: ${state?.sessionName ?? state?.sessionId ?? "unknown"}`,
+			`Turn: ${this.activeTurn ? `${this.activeTurn.phase} (${Math.floor((Date.now() - this.activeTurn.startedAt) / 1000)}s)` : "idle"}`,
+			`Queue: ${queueSize}`,
+			`MCP: ${mcpState}`,
+			"Telegram: active",
+		].join("\n");
+		const text = resolvedView === "details" ? detailsText : compactText;
+		const keyboard = options?.includeKeyboard ? this.buildHubKeyboard(permissionMode, resolvedView) : undefined;
+
+		if (options?.includeKeyboard && options.preferEditHub) {
+			const hubMessageId = this.hubMessageIdByChat.get(chatId);
+			if (hubMessageId) {
+				try {
+					await this.bot.editMessageText(chatId, hubMessageId, text, { replyMarkup: keyboard });
+					return;
+				} catch {
+					// Fallback below: send a fresh hub card if original message is gone.
+				}
+			}
+		}
+
+		const message = await this.bot.sendMessage(chatId, text, { replyMarkup: keyboard });
+		if (options?.includeKeyboard) {
+			this.hubMessageIdByChat.set(chatId, message.message_id);
+		}
+	}
+
+	private async togglePermissionMode(chatId: TelegramChatId): Promise<void> {
+		try {
+			await this.ensureRpcConnected();
+			const current = await this.rpcClient.getPermissionMode();
+			const next = current === "yolo" ? "ask" : "yolo";
+			await this.rpcClient.setPermissionMode(next);
+			this.activeSessionState = await this.rpcClient.getState();
+			this.rpcConnected = true;
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.bot.sendMessage(chatId, `Failed to switch mode: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async handleYoloCommand(chatId: TelegramChatId, args: string[]): Promise<void> {
+		const desired = args[0]?.toLowerCase();
+		try {
+			await this.ensureRpcConnected();
+			if (!desired || desired === "status") {
+				const mode = await this.rpcClient.getPermissionMode();
+				await this.bot.sendMessage(chatId, `YOLO mode: ${mode === "yolo" ? "ON" : "OFF"} (${mode})`);
+				return;
+			}
+			if (desired === "on") {
+				await this.rpcClient.setPermissionMode("yolo");
+				await this.bot.sendMessage(chatId, "YOLO mode: ON (tool confirmations disabled).");
+				return;
+			}
+			if (desired === "off") {
+				await this.rpcClient.setPermissionMode("ask");
+				await this.bot.sendMessage(chatId, "YOLO mode: OFF (tool confirmations enabled).");
+				return;
+			}
+			await this.bot.sendMessage(chatId, "Usage: /yolo [on|off|status]");
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.bot.sendMessage(chatId, `Failed to update mode: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async abortActiveTurn(chatId: TelegramChatId): Promise<void> {
+		if (!this.activeTurn) {
+			await this.bot.sendMessage(chatId, "No active task.");
+			return;
+		}
+		try {
+			await this.ensureRpcConnected();
+			this.activeTurn.aborted = true;
+			await this.rpcClient.abort();
+			await this.bot.sendMessage(chatId, "Abort signal sent.");
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.bot.sendMessage(chatId, `Abort failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async enqueuePrompt(chatId: TelegramChatId, text: string): Promise<void> {
+		if (!this.activeTurn) {
+			await this.startTurn(chatId, text);
+			return;
+		}
+		this.queue.push({ chatId, text });
+		await this.bot.sendMessage(chatId, `⏸ queued · ${this.queue.length}`);
+		void this.editLiveStatus();
+	}
+
+	private async startTurn(chatId: TelegramChatId, text: string): Promise<void> {
+		const statusMessage = await this.bot.sendMessage(chatId, this.formatStartingStatus(text));
+		this.activeTurn = {
+			turnId: this.nextTurnId++,
+			chatId,
+			prompt: text,
+			startedAt: Date.now(),
+			statusMessageId: statusMessage.message_id,
+			phase: "starting",
+			aborted: false,
+			statusEditPending: false,
+			lastStatusEditAt: 0,
+		};
+		try {
+			await this.ensureRpcConnected();
+			await this.rpcClient.prompt(text);
+			this.rpcConnected = true;
+			await this.editLiveStatus(true);
+		} catch (error) {
+			this.rpcConnected = false;
+			await this.finishTurn({
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	private async onRpcEvent(event: AgentEvent): Promise<void> {
+		if (!this.activeTurn) return;
+
+		switch (event.type) {
+			case "turn_start":
+				this.activeTurn.phase = "running";
+				break;
+			case "tool_execution_start": {
+				const toolEvent = event as { toolName?: string };
+				this.activeTurn.phase = "tool";
+				this.activeTurn.lastTool = toolEvent.toolName;
+				break;
+			}
+			case "tool_execution_update": {
+				const toolEvent = event as { toolName?: string };
+				this.activeTurn.phase = "tool";
+				this.activeTurn.lastTool = toolEvent.toolName ?? this.activeTurn.lastTool;
+				break;
+			}
+			case "turn_end": {
+				const turnEnd = event as AgentEvent;
+				const directText = this.extractAssistantTextFromTurnEnd(turnEnd);
+				if (directText) {
+					// Keep as fallback in case getLastAssistantText fails.
+					this.activeTurn.phase = "finalizing";
+				}
+				break;
+			}
+			case "agent_end":
+				await this.finishTurn();
+				return;
+			default:
+				break;
+		}
+
+		await this.editLiveStatus();
+	}
+
+	private async onRpcExtensionUiRequest(request: RpcExtensionUIRequest): Promise<void> {
+		if (request.method === "confirm_permission" || request.method === "confirm") {
+			const chatId = this.activeTurn?.chatId ?? this.lastAuthorizedChatId;
+			if (!chatId) {
+				this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id: request.id, confirmed: false });
+				return;
+			}
+			const label = `${request.title}\n${request.message}`;
+			const groupKey =
+				request.method === "confirm_permission"
+					? this.buildPermissionGroupKey(chatId, request.request)
+					: this.buildGenericConfirmationGroupKey(chatId, label);
+			await this.queueConfirmationPrompt(chatId, request.id, label, groupKey);
+			return;
+		}
+
+		if (request.method === "notify") {
+			const chatId = this.activeTurn?.chatId ?? this.lastAuthorizedChatId;
+			if (chatId) {
+				await this.bot.sendMessage(chatId, request.message);
+			}
+			return;
+		}
+
+		// Unsupported interactive extension methods in telegram v1: cancel by default.
+		this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id: request.id, cancelled: true });
+	}
+
+	private async onRpcConfirmationRequest(event: RpcRequiresConfirmationEvent): Promise<void> {
+		const chatId = this.activeTurn?.chatId ?? this.lastAuthorizedChatId;
+		if (!chatId) {
+			this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id: event.id, confirmed: false });
+			return;
+		}
+		const groupKey = this.buildPermissionGroupKey(chatId, event.request);
+		await this.queueConfirmationPrompt(chatId, event.id, event.message, groupKey);
+	}
+
+	private buildPermissionGroupKey(chatId: TelegramChatId, request: RpcRequiresConfirmationEvent["request"]): string {
+		const requiredPermission = request.requiredPermission ?? "unknown";
+		const toolSource = request.toolSource ?? "unknown";
+		const inputJson = JSON.stringify(request.input ?? {});
+		return `${chatId}|perm|${request.toolName}|${requiredPermission}|${toolSource}|${request.summary}|${request.cwd}|${inputJson}`;
+	}
+
+	private buildGenericConfirmationGroupKey(chatId: TelegramChatId, label: string): string {
+		const normalized = label.replace(/\s+/g, " ").trim();
+		return `${chatId}|confirm|${normalized}`;
+	}
+
+	private async queueConfirmationPrompt(
+		chatId: TelegramChatId,
+		requestId: string,
+		label: string,
+		groupKey: string,
+	): Promise<void> {
+		if (this.pendingConfirmations.has(requestId)) {
+			return;
+		}
+
+		const existing = this.pendingConfirmationGroupIdsByKey.get(groupKey);
+		if (existing) {
+			existing.add(requestId);
+			this.pendingConfirmations.set(requestId, { chatId, requestId, label, groupKey });
+			if (this.activeTurn) {
+				this.activeTurn.phase = "awaiting confirmation";
+				await this.editLiveStatus(true);
+			}
+			return;
+		}
+
+		const ids = new Set<string>([requestId]);
+		this.pendingConfirmationGroupIdsByKey.set(groupKey, ids);
+		this.pendingConfirmations.set(requestId, { chatId, requestId, label, groupKey });
+		await this.bot.sendMessage(chatId, label, {
+			replyMarkup: {
+				inline_keyboard: [
+					[
+						{ text: "Allow", callback_data: `confirm:${requestId}:yes` },
+						{ text: "Deny", callback_data: `confirm:${requestId}:no` },
+					],
+				],
+			},
+		});
+		if (this.activeTurn) {
+			this.activeTurn.phase = "awaiting confirmation";
+			await this.editLiveStatus(true);
+		}
+	}
+
+	private async respondConfirmation(requestId: string, confirmed: boolean): Promise<void> {
+		const pending = this.pendingConfirmations.get(requestId);
+		if (!pending) return;
+
+		const groupedIds = this.pendingConfirmationGroupIdsByKey.get(pending.groupKey);
+		const ids = groupedIds && groupedIds.size > 0 ? Array.from(groupedIds) : [requestId];
+		for (const id of ids) {
+			this.pendingConfirmations.delete(id);
+			try {
+				this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id, confirmed });
+			} catch {
+				// Best-effort for duplicated request IDs from different streams.
+			}
+		}
+		this.pendingConfirmationGroupIdsByKey.delete(pending.groupKey);
+
+		if (this.activeTurn) {
+			this.activeTurn.phase = confirmed ? "running" : "permission denied";
+			await this.editLiveStatus(true);
+		}
+	}
+
+	private extractAssistantTextFromTurnEnd(event: AgentEvent): string | undefined {
+		const messageEvent = event as { message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+		const message = messageEvent.message;
+		if (!message || message.role !== "assistant") return undefined;
+		const content = Array.isArray(message.content) ? message.content : [];
+		const textParts = content
+			.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
+			.map((part) => part.text.trim())
+			.filter((part) => part.length > 0);
+		if (textParts.length === 0) return undefined;
+		return textParts.join("\n\n");
+	}
+
+	private escapeTelegramHtml(text: string): string {
+		return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	}
+
+	private escapeTelegramHtmlAttribute(text: string): string {
+		return this.escapeTelegramHtml(text).replace(/"/g, "&quot;");
+	}
+
+	private stripHtmlTags(text: string): string {
+		return text.replace(/<[^>]*>/g, "");
+	}
+
+	private normalizeTelegramText(text: string): string {
+		return text.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+	}
+
+	private renderMarkdownInlineTokens(tokens: Token[] | undefined): string {
+		if (!tokens || tokens.length === 0) return "";
+		let output = "";
+		for (const token of tokens) {
+			switch (token.type) {
+				case "strong":
+					output += `<b>${this.renderMarkdownInlineTokens(token.tokens)}</b>`;
+					break;
+				case "em":
+					output += `<i>${this.renderMarkdownInlineTokens(token.tokens)}</i>`;
+					break;
+				case "del":
+					output += `<s>${this.renderMarkdownInlineTokens(token.tokens)}</s>`;
+					break;
+				case "codespan":
+					output += `<code>${this.escapeTelegramHtml(token.text)}</code>`;
+					break;
+				case "br":
+					output += "\n";
+					break;
+				case "link": {
+					const labelRaw = this.renderMarkdownInlineTokens(token.tokens);
+					const label = labelRaw.length > 0 ? labelRaw : this.escapeTelegramHtml(token.text ?? token.href);
+					const href = token.href?.trim();
+					if (href && /^(https?:\/\/|mailto:|tg:\/\/)/i.test(href)) {
+						output += `<a href="${this.escapeTelegramHtmlAttribute(href)}">${label}</a>`;
+					} else if (href) {
+						output += `${label} (${this.escapeTelegramHtml(href)})`;
+					} else {
+						output += label;
+					}
+					break;
+				}
+				case "image": {
+					const captionRaw = token.text?.trim();
+					const caption = captionRaw && captionRaw.length > 0 ? captionRaw : "image";
+					const href = token.href?.trim();
+					if (href && /^https?:\/\//i.test(href)) {
+						output += `🖼 <a href="${this.escapeTelegramHtmlAttribute(href)}">${this.escapeTelegramHtml(caption)}</a>`;
+					} else {
+						output += `🖼 ${this.escapeTelegramHtml(caption)}`;
+					}
+					break;
+				}
+				case "text":
+					if (Array.isArray(token.tokens) && token.tokens.length > 0) {
+						output += this.renderMarkdownInlineTokens(token.tokens);
+					} else {
+						output += this.escapeTelegramHtml(token.text);
+					}
+					break;
+				case "escape":
+					output += this.escapeTelegramHtml(token.text);
+					break;
+				case "html": {
+					const htmlText = this.stripHtmlTags(token.text ?? token.raw ?? "");
+					if (htmlText.length > 0) {
+						output += this.escapeTelegramHtml(htmlText);
+					}
+					break;
+				}
+				default:
+					if ("tokens" in token && Array.isArray(token.tokens)) {
+						output += this.renderMarkdownInlineTokens(token.tokens);
+					} else if ("text" in token && typeof token.text === "string") {
+						output += this.escapeTelegramHtml(token.text);
+					} else if ("raw" in token && typeof token.raw === "string") {
+						output += this.escapeTelegramHtml(token.raw);
+					}
+			}
+		}
+		return output;
+	}
+
+	private renderMarkdownTableCell(cell: Tokens.TableCell): string {
+		const rendered = this.renderMarkdownInlineTokens(cell.tokens);
+		return rendered.replace(/\s+/g, " ").trim();
+	}
+
+	private renderMarkdownBlockTokens(tokens: Token[] | undefined, listDepth = 0): string {
+		if (!tokens || tokens.length === 0) return "";
+		let output = "";
+		for (const token of tokens) {
+			switch (token.type) {
+				case "space":
+					output += "\n";
+					break;
+				case "heading":
+					output += `<b>${this.renderMarkdownInlineTokens(token.tokens)}</b>\n`;
+					break;
+				case "paragraph":
+					output += `${this.renderMarkdownInlineTokens(token.tokens)}\n`;
+					break;
+				case "text":
+					if (Array.isArray(token.tokens) && token.tokens.length > 0) {
+						output += `${this.renderMarkdownInlineTokens(token.tokens)}\n`;
+					} else {
+						output += `${this.escapeTelegramHtml(token.text)}\n`;
+					}
+					break;
+				case "code":
+					output += `<pre>${this.escapeTelegramHtml(token.text.replace(/\r\n/g, "\n"))}</pre>\n`;
+					break;
+				case "blockquote": {
+					const rawQuote = this.normalizeTelegramText(this.renderMarkdownBlockTokens(token.tokens, listDepth));
+					if (rawQuote.length > 0) {
+						const quoted = rawQuote
+							.split("\n")
+							.map((line) => (line.trim().length > 0 ? `> ${line}` : ">"))
+							.join("\n");
+						output += `${quoted}\n`;
+					}
+					break;
+				}
+				case "list": {
+					const baseIndent = "  ".repeat(listDepth);
+					const start = token.ordered && typeof token.start === "number" ? token.start : 1;
+					token.items.forEach((item: Tokens.ListItem, index: number) => {
+						const marker = token.ordered ? `${start + index}.` : "•";
+						const renderedItem = this.normalizeTelegramText(this.renderMarkdownBlockTokens(item.tokens, listDepth + 1));
+						const fallback = this.escapeTelegramHtml(item.text ?? "");
+						const body = renderedItem.length > 0 ? renderedItem : fallback;
+						const lines = body.split("\n");
+						const firstLine = lines.shift() ?? "";
+						output += `${baseIndent}${marker} ${firstLine}\n`;
+						for (const line of lines) {
+							if (line.trim().length === 0) {
+								output += "\n";
+							} else {
+								output += `${baseIndent}   ${line}\n`;
+							}
+						}
+					});
+					output += "\n";
+					break;
+				}
+				case "hr":
+					output += "────────\n";
+					break;
+				case "table": {
+					const headerLine = token.header
+						.map((cell: Tokens.TableCell) => this.renderMarkdownTableCell(cell))
+						.join(" | ")
+						.trim();
+					if (headerLine.length > 0) {
+						output += `${headerLine}\n`;
+					}
+					for (const row of token.rows) {
+						const rowLine = row
+							.map((cell: Tokens.TableCell) => this.renderMarkdownTableCell(cell))
+							.join(" | ")
+							.trim();
+						if (rowLine.length > 0) {
+							output += `${rowLine}\n`;
+						}
+					}
+					output += "\n";
+					break;
+				}
+				case "html": {
+					const htmlText = this.stripHtmlTags(token.text ?? token.raw ?? "").trim();
+					if (htmlText.length > 0) {
+						output += `${this.escapeTelegramHtml(htmlText)}\n`;
+					}
+					break;
+				}
+				default:
+					if ("tokens" in token && Array.isArray(token.tokens)) {
+						output += `${this.renderMarkdownBlockTokens(token.tokens, listDepth)}\n`;
+					} else if ("text" in token && typeof token.text === "string") {
+						output += `${this.escapeTelegramHtml(token.text)}\n`;
+					} else if ("raw" in token && typeof token.raw === "string") {
+						output += `${this.escapeTelegramHtml(token.raw)}\n`;
+					}
+			}
+		}
+		return output;
+	}
+
+	private markdownToTelegramHtml(markdown: string): string {
+		if (!markdown || markdown.trim().length === 0) return "";
+		const tokens = marked.lexer(markdown, { gfm: true, breaks: true }) as Token[];
+		const rendered = this.renderMarkdownBlockTokens(tokens);
+		return this.normalizeTelegramText(rendered);
+	}
+
+	private markdownToTelegramPlainText(markdown: string): string {
+		const html = this.markdownToTelegramHtml(markdown);
+		return this.normalizeTelegramText(
+			html
+				.replace(/<a [^>]*>([\s\S]*?)<\/a>/gi, "$1")
+				.replace(/<\/?(b|i|s|u|code|pre)>/gi, "")
+				.replace(/&quot;/g, "\"")
+				.replace(/&lt;/g, "<")
+				.replace(/&gt;/g, ">")
+				.replace(/&amp;/g, "&"),
+		);
+	}
+
+	private async sendRichMessage(chatId: TelegramChatId, text: string): Promise<void> {
+		const html = this.markdownToTelegramHtml(text);
+		if (!html || html.length === 0) {
+			await this.bot.sendMessage(chatId, text);
+			return;
+		}
+		try {
+			await this.bot.sendMessage(chatId, html, { parseMode: "HTML" });
+		} catch {
+			const plain = this.markdownToTelegramPlainText(text);
+			await this.bot.sendMessage(chatId, plain.length > 0 ? plain : text);
+		}
+	}
+
+	private formatStatusPhase(phase: string): string {
+		const lower = phase.toLowerCase();
+		if (lower.includes("awaiting")) return "confirm";
+		if (lower.includes("tool")) return "tool";
+		if (lower.includes("final")) return "final";
+		if (lower.includes("start")) return "start";
+		if (lower.includes("permission denied")) return "denied";
+		if (lower.includes("running")) return "run";
+		return lower.replace(/\s+/g, "-");
+	}
+
+	private formatPromptPreview(prompt: string, limit = 100): string {
+		const cleaned = prompt.replace(/\s+/g, " ").trim();
+		if (cleaned.length <= limit) return cleaned;
+		return `${cleaned.slice(0, limit - 1)}…`;
+	}
+
+	private statusSpinnerFrame(elapsedMs: number): string {
+		const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+		return frames[Math.floor(elapsedMs / 250) % frames.length] ?? "⠋";
+	}
+
+	private statusPulseFrame(elapsedMs: number): string {
+		const frames = ["◼···", "◼•··", "◼••·", "◼•••", "◼••·", "◼•··"];
+		return frames[Math.floor(elapsedMs / 280) % frames.length] ?? "◼···";
+	}
+
+	private statusDotsFrame(elapsedMs: number): string {
+		const frames = [".", "..", "..."];
+		return frames[Math.floor(elapsedMs / 420) % frames.length] ?? ".";
+	}
+
+	private statusActivityLabel(turn: ActiveTurnState | undefined): string {
+		if (!turn) return "idle";
+		const phase = turn.phase.toLowerCase();
+		if (phase.includes("awaiting")) return "awaiting confirm";
+		if (phase.includes("tool")) {
+			const tool = turn.lastTool?.trim();
+			if (tool && tool.length > 0) {
+				const shortTool = tool.length > 18 ? `${tool.slice(0, 17)}…` : tool;
+				return `tool:${shortTool}`;
+			}
+			return "tool:running";
+		}
+		if (phase.includes("final")) return "finalizing";
+		if (phase.includes("start")) return "starting";
+		if (phase.includes("denied")) return "permission denied";
+		return "working";
+	}
+
+	private formatToolBadge(toolName: string | undefined): string {
+		if (!toolName) return "";
+		const compact = toolName.trim().replace(/\s+/g, " ");
+		const clipped = compact.length > 18 ? `${compact.slice(0, 17)}…` : compact;
+		return ` · ${clipped}`;
+	}
+
+	private formatStartingStatus(prompt: string): string {
+		return [`⏳ ${APP_NAME} · start · 0s · q${this.queue.length}`, `“${this.formatPromptPreview(prompt, 56)}”`].join("\n");
+	}
+
+	private formatLiveStatus(turn: ActiveTurnState | undefined = this.activeTurn): string {
+		if (!turn) return "No active task.";
+		const elapsedMs = Date.now() - turn.startedAt;
+		const elapsed = `${Math.floor(elapsedMs / 1000)}s`;
+		const spinner = this.statusSpinnerFrame(elapsedMs);
+		const pulse = this.statusPulseFrame(elapsedMs);
+		const phaseLabel = this.formatStatusPhase(turn.phase);
+		const toolSegment = this.formatToolBadge(turn.lastTool);
+		const activity = this.statusActivityLabel(turn);
+		return [
+			`${spinner} ${APP_NAME} · ${phaseLabel}${toolSegment} · ${elapsed} · q${this.queue.length}`,
+			`${pulse} ${activity}`,
+			`“${this.formatPromptPreview(turn.prompt, 56)}”`,
+		].join("\n");
+	}
+
+	private async editLiveStatus(force = false): Promise<void> {
+		if (!this.activeTurn) return;
+		if (this.activeTurn.statusEditPending) return;
+		const turnId = this.activeTurn.turnId;
+		const now = Date.now();
+		const effectiveThrottleMs = Math.min(this.statusEditThrottleMs, LIVE_STATUS_ANIMATION_MAX_THROTTLE_MS);
+		const waitMs = this.activeTurn.lastStatusEditAt + effectiveThrottleMs - now;
+		if (!force && waitMs > 0) {
+			this.activeTurn.statusEditPending = true;
+			this.activeTurn.statusEditTimer = setTimeout(() => {
+				if (this.activeTurn && this.activeTurn.turnId === turnId) {
+					this.activeTurn.statusEditPending = false;
+					void this.editLiveStatus(true);
+				}
+			}, waitMs);
+			return;
+		}
+
+		const target = this.activeTurn;
+		const statusText = this.formatLiveStatus(target);
+		const editPromise = this.bot
+			.editMessageText(target.chatId, target.statusMessageId, statusText, {
+					replyMarkup: { inline_keyboard: [] },
+				})
+			.then(() => {
+				target.lastStatusEditAt = Date.now();
+			})
+			.catch((error: unknown) => {
+				const message = error instanceof Error ? error.message : String(error);
+				// Ignore no-op edit errors and transient "message is not modified".
+				if (!message.toLowerCase().includes("message is not modified")) {
+					console.warn(`[telegram] status edit failed: ${message}`);
+				}
+			})
+			.finally(() => {
+				if (target.statusEditInFlight === editPromise) {
+					target.statusEditInFlight = undefined;
+				}
+			});
+		target.statusEditInFlight = editPromise;
+		await editPromise;
+	}
+
+	private async finishTurn(options?: { error?: string }): Promise<void> {
+		const finishedTurn = this.activeTurn;
+		if (!finishedTurn) return;
+		this.activeTurn = undefined;
+		if (finishedTurn.statusEditTimer) {
+			clearTimeout(finishedTurn.statusEditTimer);
+		}
+		finishedTurn.statusEditPending = false;
+		if (finishedTurn.statusEditInFlight) {
+			try {
+				await finishedTurn.statusEditInFlight;
+			} catch {
+				// Best-effort; still continue to final status update.
+			}
+		}
+
+		let finalText: string | null = null;
+		if (!options?.error) {
+			try {
+				finalText = await this.rpcClient.getLastAssistantText();
+				this.rpcConnected = true;
+			} catch (error) {
+				this.rpcConnected = false;
+				options = {
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		}
+
+		const statusLabel = options?.error
+			? `❌ error · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s\n${this.formatPromptPreview(options.error, 96)}`
+			: finishedTurn.aborted
+				? `⛔ aborted · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`
+				: `✅ done · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`;
+		try {
+			await this.bot.editMessageText(finishedTurn.chatId, finishedTurn.statusMessageId, statusLabel, {
+				replyMarkup: { inline_keyboard: [] },
+			});
+		} catch {
+			// Best-effort.
+		}
+
+		if (options?.error) {
+			await this.bot.sendMessage(finishedTurn.chatId, `Task failed: ${options.error}`);
+		} else if (finalText && finalText.trim().length > 0) {
+			await this.sendFinalOutput(finishedTurn.chatId, finalText);
+		} else if (!finishedTurn.aborted) {
+			await this.bot.sendMessage(finishedTurn.chatId, "Task completed with no assistant text output.");
+		}
+
+		await this.drainQueue();
+	}
+
+	private async sendFinalOutput(chatId: TelegramChatId, finalText: string): Promise<void> {
+		if (finalText.length <= this.maxSummaryChars) {
+			await this.sendRichMessage(chatId, finalText);
+			return;
+		}
+		const summary = `${finalText.slice(0, this.maxSummaryChars).trimEnd()}\n\n[output truncated in chat]`;
+		await this.sendRichMessage(chatId, summary);
+		await this.bot.sendTextDocument(chatId, "iosm-output.txt", finalText, "Full output");
+	}
+
+	private async drainQueue(): Promise<void> {
+		if (this.activeTurn) return;
+		const next = this.queue.shift();
+		if (!next) return;
+		await this.startTurn(next.chatId, next.text);
+	}
+}
