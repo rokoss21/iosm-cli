@@ -124,9 +124,9 @@ const COMMANDS_PAGE_SIZE = 8;
 const COMMAND_MENU_TTL_MS = 5 * 60 * 1000;
 const MODELS_PAGE_SIZE = 8;
 const MODEL_MENU_TTL_MS = 2 * 60 * 1000;
-const QUICK_ACTION_DEBOUNCE_MS = 800;
 const LIVE_STATUS_ANIMATION_MAX_THROTTLE_MS = 850;
 const INPUT_BUTTON_HUB = "🧭 Hub";
+const INPUT_BUTTON_START = "▶️ Start";
 const INPUT_BUTTON_NEW = "🆕 New";
 const INPUT_BUTTON_COMMANDS = "⚡ Cmd";
 const INPUT_BUTTON_HELP = "❓ Help";
@@ -325,7 +325,6 @@ class TelegramBridgeRuntime {
 	private readonly hubMessageIdByChat = new Map<TelegramChatId, number>();
 	private readonly hubViewByChat = new Map<TelegramChatId, HubView>();
 	private readonly inputMenuEnabledByChat = new Set<TelegramChatId>();
-	private readonly quickActionDebounceByChat = new Map<TelegramChatId, { command: string; at: number }>();
 	private nextUpdateOffset = 0;
 	private nextTurnId = 1;
 	private activeTurn: ActiveTurnState | undefined;
@@ -446,7 +445,15 @@ class TelegramBridgeRuntime {
 		return typeof userId === "number" && this.allowedUserIds.has(userId);
 	}
 
-	private buildInputMenuKeyboard(): TelegramReplyKeyboardMarkup {
+	private buildInputMenuKeyboard(stopped = this.bridgeStopped): TelegramReplyKeyboardMarkup {
+		if (stopped) {
+			return {
+				keyboard: [[{ text: INPUT_BUTTON_HUB }, { text: INPUT_BUTTON_START }], [{ text: INPUT_BUTTON_HELP }]],
+				resize_keyboard: true,
+				is_persistent: true,
+				input_field_placeholder: "Bridge stopped. Tap Start to resume",
+			};
+		}
 		return {
 			keyboard: [
 				[{ text: INPUT_BUTTON_HUB }, { text: INPUT_BUTTON_NEW }, { text: INPUT_BUTTON_COMMANDS }],
@@ -481,6 +488,11 @@ class TelegramBridgeRuntime {
 	private mapInputMenuAction(text: string): string | undefined {
 		const normalized = this.normalizeInputActionText(text);
 		switch (normalized) {
+			case "start":
+			case "resume":
+			case "старт":
+			case "запуск":
+				return "/start";
 			case "hub":
 			case "status":
 			case "хаб":
@@ -511,6 +523,7 @@ class TelegramBridgeRuntime {
 			case "стоп":
 				return "/stop";
 		}
+		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_START)) return "/start";
 		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_HUB)) return "/status";
 		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_NEW)) return "/new";
 		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_COMMANDS)) return "/commands";
@@ -518,13 +531,6 @@ class TelegramBridgeRuntime {
 		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_ABORT)) return "/abort";
 		if (normalized === this.normalizeInputActionText(INPUT_BUTTON_STOP)) return "/stop";
 		return undefined;
-	}
-
-	private isDebouncedQuickAction(chatId: TelegramChatId, command: string): boolean {
-		const now = Date.now();
-		const previous = this.quickActionDebounceByChat.get(chatId);
-		this.quickActionDebounceByChat.set(chatId, { command, at: now });
-		return Boolean(previous && previous.command === command && now - previous.at < QUICK_ACTION_DEBOUNCE_MS);
 	}
 
 	private async handleUpdate(update: TelegramUpdate): Promise<void> {
@@ -552,9 +558,6 @@ class TelegramBridgeRuntime {
 
 		const quickActionCommand = this.mapInputMenuAction(text);
 		if (quickActionCommand) {
-			if (this.isDebouncedQuickAction(message.chat.id, quickActionCommand)) {
-				return;
-			}
 			await this.handleCommandMessage(message.chat.id, quickActionCommand);
 			return;
 		}
@@ -631,12 +634,18 @@ class TelegramBridgeRuntime {
 
 	private async handleHubAction(chatId: TelegramChatId | undefined, action: string): Promise<void> {
 		if (!chatId) return;
-		const statusOnlyActions = new Set(["status", "refresh", "details", "compact", "permissions"]);
-		if (this.bridgeStopped && !statusOnlyActions.has(action)) {
-			await this.bot.sendMessage(chatId, "Bridge is stopped. Use /start to resume.");
+		const stoppedSafeActions = new Set(["status", "refresh", "details", "compact", "start", "help"]);
+		if (this.bridgeStopped && !stoppedSafeActions.has(action)) {
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
 			return;
 		}
 		switch (action) {
+			case "start":
+				await this.handleCommandMessage(chatId, "/start");
+				return;
+			case "help":
+				await this.sendHelp(chatId);
+				return;
 			case "prompt":
 				await this.bot.sendMessage(chatId, "Send any text to start a task.");
 				return;
@@ -757,6 +766,7 @@ class TelegramBridgeRuntime {
 		}
 		if (this.bridgeStopped && action !== "hub") {
 			await this.bot.answerCallbackQuery(callback.id, "Bridge is stopped");
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
 			return;
 		}
 
@@ -796,7 +806,7 @@ class TelegramBridgeRuntime {
 
 	private async handleCommandMessage(chatId: TelegramChatId, text: string): Promise<void> {
 		const [commandRaw, ...rest] = text.split(/\s+/);
-		const command = commandRaw.toLowerCase();
+		const command = (commandRaw.toLowerCase().split("@")[0] ?? commandRaw.toLowerCase()).trim();
 
 		if (command === "/start") {
 			this.bridgeStopped = false;
@@ -812,7 +822,7 @@ class TelegramBridgeRuntime {
 			return;
 		}
 		if (command === "/status") {
-			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: false });
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
 			return;
 		}
 		if (command === "/stop") {
@@ -820,7 +830,8 @@ class TelegramBridgeRuntime {
 			return;
 		}
 		if (this.bridgeStopped) {
-			await this.bot.sendMessage(chatId, "Bridge is stopped. Use /start to resume.");
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+			await this.ensureInputMenu(chatId, true);
 			return;
 		}
 		if (command === "/commands") {
@@ -883,9 +894,9 @@ class TelegramBridgeRuntime {
 		await this.sendStatusCard(chatId, {
 			header: `Control Hub · ${APP_NAME} v${VERSION}`,
 			includeKeyboard: true,
-			preferEditHub: true,
+			preferEditHub: false,
 		});
-		await this.ensureInputMenu(chatId, false);
+		await this.ensureInputMenu(chatId, true);
 	}
 
 	private async sendHelp(chatId: TelegramChatId): Promise<void> {
@@ -1208,6 +1219,7 @@ class TelegramBridgeRuntime {
 		}
 		if (this.bridgeStopped) {
 			await this.bot.answerCallbackQuery(callback.id, "Bridge is stopped");
+			await this.switchMenuMessageToHub(chatId, messageId);
 			return;
 		}
 		if (action === "view") {
@@ -1383,7 +1395,7 @@ class TelegramBridgeRuntime {
 		options?: { messageId?: number; refreshCatalog?: boolean },
 	): Promise<void> {
 		if (this.bridgeStopped) {
-			await this.bot.sendMessage(chatId, "Bridge is stopped. Use /start to resume.");
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
 			return;
 		}
 
@@ -1451,6 +1463,7 @@ class TelegramBridgeRuntime {
 
 		if (this.bridgeStopped) {
 			await this.bot.answerCallbackQuery(callback.id, "Bridge is stopped");
+			await this.switchMenuMessageToHub(chatId, messageId);
 			return;
 		}
 
@@ -1522,7 +1535,8 @@ class TelegramBridgeRuntime {
 
 	private async stopBridge(chatId: TelegramChatId): Promise<void> {
 		if (this.bridgeStopped && !this.activeTurn && this.queue.length === 0 && !this.rpcConnected) {
-			await this.bot.sendMessage(chatId, "Bridge already stopped. Use /start to resume.");
+			await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+			await this.ensureInputMenu(chatId, true);
 			return;
 		}
 
@@ -1583,6 +1597,8 @@ class TelegramBridgeRuntime {
 			parts.push(`Dropped queued tasks: ${droppedQueue}.`);
 		}
 		parts.push("Use /start to resume.");
+		await this.sendStatusCard(chatId, { includeKeyboard: true, preferEditHub: true });
+		await this.ensureInputMenu(chatId, true);
 		await this.bot.sendMessage(chatId, parts.join(" "));
 	}
 
@@ -1626,6 +1642,17 @@ class TelegramBridgeRuntime {
 	}
 
 	private buildHubKeyboard(mode: "ask" | "auto" | "yolo" | undefined, view: HubView): TelegramInlineKeyboardMarkup {
+		if (this.bridgeStopped) {
+			return {
+				inline_keyboard: [
+					[
+						{ text: "▶️ Start", callback_data: "hub:start" },
+						{ text: "🔄 Refresh", callback_data: "hub:refresh" },
+					],
+					[{ text: "❓ Help", callback_data: "hub:help" }],
+				],
+			};
+		}
 		const detailsToggle =
 			view === "details"
 				? { text: "◀ Compact", callback_data: "hub:compact" }

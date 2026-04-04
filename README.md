@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.14</h1>
+<h1>IOSM CLI 0.2.15</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 

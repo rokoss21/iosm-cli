@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-04-04
+
+### Changed
+
+- **Telegram stop/resume contour** — when bridge is stopped, Hub now switches to a dedicated stop-state action set (`Start`, `Refresh`, `Help`) instead of showing full active-run controls
+- **Telegram quick keyboard state** — reply keyboard now also switches to stop-state layout (`Hub`, `Start`, `Help`) and restores full actions after resume
+- **Telegram Hub navigation after restart** — `/start` now posts a fresh Hub card at the bottom of chat for immediate visibility
+
+### Fixed
+
+- **Telegram quick-action reliability** — removed over-aggressive quick-action debounce that could drop first button press and make actions appear to require a second tap
+- **Slash command parsing in Telegram** — `/start@botname` and similar bot-suffixed slash commands now route correctly
+- **Stopped-bridge menu routing** — command/model callbacks in stopped mode now return cleanly to Hub instead of leaving stale menu state
+
+### Tests
+
+- Revalidated telegram-related runtime changes with TypeScript check and interactive/command regression suites
+
 ## [0.2.14] - 2026-04-04
 
 ### Added
