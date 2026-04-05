@@ -125,6 +125,7 @@ const COMMAND_MENU_TTL_MS = 5 * 60 * 1000;
 const MODELS_PAGE_SIZE = 8;
 const MODEL_MENU_TTL_MS = 2 * 60 * 1000;
 const LIVE_STATUS_ANIMATION_MAX_THROTTLE_MS = 850;
+const TELEGRAM_API_MAX_429_RETRIES = 4;
 const INPUT_BUTTON_HUB = "🧭 Hub";
 const INPUT_BUTTON_START = "▶️ Start";
 const INPUT_BUTTON_NEW = "🆕 New";
@@ -272,34 +273,80 @@ class TelegramBotApi {
 	}
 
 	private async call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
-		const response = await fetch(`${this.endpoint}/${method}`, {
-			method: "POST",
-			headers: {
-				"content-type": "application/json",
-			},
-			body: JSON.stringify(payload),
-		});
-		const envelope = (await response.json()) as TelegramApiEnvelope<T>;
-		if (!response.ok || !envelope.ok || envelope.result === undefined) {
-			throw new Error(
-				`Telegram API ${method} failed: ${envelope.description ?? response.statusText} (${envelope.error_code ?? response.status})`,
-			);
+		for (let attempt = 0; ; attempt++) {
+			const response = await fetch(`${this.endpoint}/${method}`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(payload),
+			});
+			const envelope = await this.readEnvelope<T>(response);
+			if (response.ok && envelope.ok && envelope.result !== undefined) {
+				return envelope.result;
+			}
+			const errorCode = envelope.error_code ?? response.status;
+			const retryAfterMs = this.extractRetryAfterMs(response, envelope.description);
+			if (errorCode === 429 && retryAfterMs !== undefined && attempt < TELEGRAM_API_MAX_429_RETRIES) {
+				console.warn(
+					`[telegram] ${method} rate-limited, retrying in ${Math.ceil(retryAfterMs / 1000)}s (${attempt + 1}/${TELEGRAM_API_MAX_429_RETRIES})`,
+				);
+				await sleepTimeout(retryAfterMs);
+				continue;
+			}
+			throw new Error(`Telegram API ${method} failed: ${envelope.description ?? response.statusText} (${errorCode})`);
 		}
-		return envelope.result;
 	}
 
 	private async callMultipart<T>(method: string, form: FormData): Promise<T> {
-		const response = await fetch(`${this.endpoint}/${method}`, {
-			method: "POST",
-			body: form,
-		});
-		const envelope = (await response.json()) as TelegramApiEnvelope<T>;
-		if (!response.ok || !envelope.ok || envelope.result === undefined) {
-			throw new Error(
-				`Telegram API ${method} failed: ${envelope.description ?? response.statusText} (${envelope.error_code ?? response.status})`,
-			);
+		for (let attempt = 0; ; attempt++) {
+			const response = await fetch(`${this.endpoint}/${method}`, {
+				method: "POST",
+				body: form,
+			});
+			const envelope = await this.readEnvelope<T>(response);
+			if (response.ok && envelope.ok && envelope.result !== undefined) {
+				return envelope.result;
+			}
+			const errorCode = envelope.error_code ?? response.status;
+			const retryAfterMs = this.extractRetryAfterMs(response, envelope.description);
+			if (errorCode === 429 && retryAfterMs !== undefined && attempt < TELEGRAM_API_MAX_429_RETRIES) {
+				console.warn(
+					`[telegram] ${method} rate-limited, retrying in ${Math.ceil(retryAfterMs / 1000)}s (${attempt + 1}/${TELEGRAM_API_MAX_429_RETRIES})`,
+				);
+				await sleepTimeout(retryAfterMs);
+				continue;
+			}
+			throw new Error(`Telegram API ${method} failed: ${envelope.description ?? response.statusText} (${errorCode})`);
 		}
-		return envelope.result;
+	}
+
+	private async readEnvelope<T>(response: Response): Promise<TelegramApiEnvelope<T>> {
+		try {
+			return (await response.json()) as TelegramApiEnvelope<T>;
+		} catch {
+			return {
+				ok: false,
+				description: response.statusText,
+				error_code: response.status,
+			};
+		}
+	}
+
+	private extractRetryAfterMs(response: Response, description: string | undefined): number | undefined {
+		const headerValue = response.headers.get("retry-after");
+		if (headerValue) {
+			const headerSeconds = Number.parseInt(headerValue, 10);
+			if (Number.isFinite(headerSeconds) && headerSeconds > 0) {
+				return headerSeconds * 1000;
+			}
+		}
+		if (!description) return undefined;
+		const match = /retry after\s+(\d+)/i.exec(description);
+		if (!match) return undefined;
+		const seconds = Number.parseInt(match[1] ?? "", 10);
+		if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+		return seconds * 1000;
 	}
 }
 
@@ -381,13 +428,21 @@ class TelegramBridgeRuntime {
 		});
 
 		this.rpcClient.onEvent((event) => {
-			void this.onRpcEvent(event);
+			void this.onRpcEvent(event).catch((error) => {
+				console.error(`[telegram] rpc event handler error: ${error instanceof Error ? error.message : String(error)}`);
+			});
 		});
 		this.rpcClient.onExtensionUIRequest((request) => {
-			void this.onRpcExtensionUiRequest(request);
+			void this.onRpcExtensionUiRequest(request).catch((error) => {
+				console.error(`[telegram] rpc extension ui handler error: ${error instanceof Error ? error.message : String(error)}`);
+			});
 		});
 		this.rpcClient.onRequiresConfirmation((event) => {
-			void this.onRpcConfirmationRequest(event);
+			void this.onRpcConfirmationRequest(event).catch((error) => {
+				console.error(
+					`[telegram] rpc confirmation handler error: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
 		});
 
 		// Keep polling forever.
@@ -2289,6 +2344,55 @@ class TelegramBridgeRuntime {
 		return [`⏳ ${APP_NAME} · start · 0s · q${this.queue.length}`, `“${this.formatPromptPreview(prompt, 56)}”`].join("\n");
 	}
 
+	private isStatusMessageInvalidError(error: unknown): boolean {
+		const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+		return (
+			message.includes("message_id_invalid") ||
+			message.includes("message to edit not found") ||
+			message.includes("message can't be edited")
+		);
+	}
+
+	private extractTelegramRetryAfterMs(error: unknown): number | undefined {
+		const message = error instanceof Error ? error.message : String(error);
+		const match = /retry after\s+(\d+)/i.exec(message);
+		if (!match) return undefined;
+		const seconds = Number.parseInt(match[1] ?? "", 10);
+		if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+		return seconds * 1000;
+	}
+
+	private scheduleStatusEditRetry(turnId: number, retryAfterMs: number): void {
+		if (!this.activeTurn || this.activeTurn.turnId !== turnId) return;
+		if (this.activeTurn.statusEditPending) return;
+		this.activeTurn.statusEditPending = true;
+		this.activeTurn.statusEditTimer = setTimeout(() => {
+			if (this.activeTurn && this.activeTurn.turnId === turnId) {
+				this.activeTurn.statusEditPending = false;
+				void this.editLiveStatus(true);
+			}
+		}, retryAfterMs);
+	}
+
+	private async recreateLiveStatusMessage(target: ActiveTurnState, statusText: string): Promise<boolean> {
+		// Status message may be removed by user or become invalid in Telegram storage.
+		// Recreate it and continue editing against the new message_id.
+		if (!this.activeTurn || this.activeTurn.turnId !== target.turnId) return false;
+		try {
+			const fresh = await this.bot.sendMessage(target.chatId, statusText, {
+				replyMarkup: { inline_keyboard: [] },
+			});
+			target.statusMessageId = fresh.message_id;
+			target.lastStatusEditAt = Date.now();
+			return true;
+		} catch (error) {
+			console.warn(
+				`[telegram] status recreation failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return false;
+		}
+	}
+
 	private formatLiveStatus(turn: ActiveTurnState | undefined = this.activeTurn): string {
 		if (!turn) return "No active task.";
 		const elapsedMs = Date.now() - turn.startedAt;
@@ -2332,10 +2436,20 @@ class TelegramBridgeRuntime {
 			.then(() => {
 				target.lastStatusEditAt = Date.now();
 			})
-			.catch((error: unknown) => {
+			.catch(async (error: unknown) => {
 				const message = error instanceof Error ? error.message : String(error);
 				// Ignore no-op edit errors and transient "message is not modified".
 				if (!message.toLowerCase().includes("message is not modified")) {
+					const retryAfterMs = this.extractTelegramRetryAfterMs(error);
+					if (retryAfterMs) {
+						console.warn(`[telegram] status edit rate-limited, retrying in ${Math.ceil(retryAfterMs / 1000)}s`);
+						this.scheduleStatusEditRetry(turnId, retryAfterMs);
+						return;
+					}
+					if (this.isStatusMessageInvalidError(error)) {
+						const recovered = await this.recreateLiveStatusMessage(target, statusText);
+						if (recovered) return;
+					}
 					console.warn(`[telegram] status edit failed: ${message}`);
 				}
 			})
@@ -2386,16 +2500,23 @@ class TelegramBridgeRuntime {
 			await this.bot.editMessageText(finishedTurn.chatId, finishedTurn.statusMessageId, statusLabel, {
 				replyMarkup: { inline_keyboard: [] },
 			});
-		} catch {
-			// Best-effort.
+		} catch (error) {
+			// Best-effort, but recover from invalid status message ids to avoid losing final state.
+			if (this.isStatusMessageInvalidError(error)) {
+				await this.bot.sendMessage(finishedTurn.chatId, statusLabel).catch(() => {});
+			}
 		}
 
-		if (options?.error) {
-			await this.bot.sendMessage(finishedTurn.chatId, `Task failed: ${options.error}`);
-		} else if (finalText && finalText.trim().length > 0) {
-			await this.sendFinalOutput(finishedTurn.chatId, finalText);
-		} else if (!finishedTurn.aborted) {
-			await this.bot.sendMessage(finishedTurn.chatId, "Task completed with no assistant text output.");
+		try {
+			if (options?.error) {
+				await this.bot.sendMessage(finishedTurn.chatId, `Task failed: ${options.error}`);
+			} else if (finalText && finalText.trim().length > 0) {
+				await this.sendFinalOutput(finishedTurn.chatId, finalText);
+			} else if (!finishedTurn.aborted) {
+				await this.bot.sendMessage(finishedTurn.chatId, "Task completed with no assistant text output.");
+			}
+		} catch (error) {
+			console.warn(`[telegram] final output delivery failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 
 		await this.drainQueue();

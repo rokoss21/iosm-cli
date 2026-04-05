@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.4</h1>
+<h1>IOSM CLI 0.3.5</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,12 +32,11 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.4
+## ✦ What's New in 0.3.5
 
-- Added Windows shell command auto-adapter in runtime execution paths: cmd-style commands (`%VAR%`, `dir`, `C:\...`) and PowerShell-style commands (`$env:...`, `Get-*`) are now auto-routed to the correct interpreter even when IOSM runs via bash
-- Fixed Telegram/Windows remote execution friction where native Windows command syntax failed in bridge-driven shell calls
-- Applied adapter behavior consistently for foreground bash execution, bash tool execution, and detached background processes
-- Added regression tests for Windows command adaptation behavior
+- Added Telegram API rate-limit resilience: bridge now respects `retry after N` and auto-retries on HTTP `429` across all Telegram methods
+- Fixed live status update reliability: invalid or deleted status messages are now recreated automatically and status streaming continues
+- Hardened Telegram bridge runtime: event callbacks and final output delivery are now fail-safe so transient Telegram send/edit errors do not crash the process
 
 ## ✦ Major Additions in 0.2.16
 

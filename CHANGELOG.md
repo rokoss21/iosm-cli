@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-04-06
+
+### Fixed
+
+- **Telegram API 429 resilience** — added automatic `retry after N` backoff/retry handling for all Telegram API operations (including `sendMessage`, `editMessageText`, `sendDocument`, and control actions)
+- **Telegram status message recovery** — when live status edit target becomes invalid (`MESSAGE_ID_INVALID`, deleted or non-editable message), bridge now recreates status message and continues updates on a fresh `message_id`
+- **Bridge runtime stability under delivery failures** — wrapped RPC event callbacks and final output delivery with fail-safe guards to prevent bridge process crashes from transient Telegram delivery errors
+
 ## [0.3.4] - 2026-04-06
 
 ### Fixed
