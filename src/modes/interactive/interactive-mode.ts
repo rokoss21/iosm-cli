@@ -345,8 +345,15 @@ function deriveMetaRequiredTopLevelTaskCalls(
 ): number | undefined {
 	const requested = parseRequestedParallelAgentCount(userInput);
 	if (requested) return requested;
-	if (!taskPlanSnapshot) return undefined;
-	return Math.max(2, Math.min(3, taskPlanSnapshot.totalSteps));
+	if (taskPlanSnapshot) {
+		return Math.max(2, Math.min(3, taskPlanSnapshot.totalSteps));
+	}
+	const normalized = userInput.trim();
+	if (!normalized || normalized.startsWith("/")) return undefined;
+	// Language-agnostic conversational guard: direct question prompts should stay chat-first.
+	if (/[?？]\s*$/.test(normalized)) return undefined;
+	// Meta mode is orchestration-first for actionable work; enforce a minimal default fan-out.
+	return 2;
 }
 
 function extractTaskToolErrorText(result: unknown): string | undefined {
@@ -12402,14 +12409,10 @@ export class InteractiveMode {
 						return;
 					}
 					const explicitRequested = parseRequestedParallelAgentCount(userInput);
-					const hasComplexSignal =
-						/\b(audit|security|hardening|refactor|migration|orchestrat|parallel|delegate|multi[-\s]?agent)\b/i.test(
-							userInput,
-						);
 					const fallbackParallel = Math.max(
 						1,
 						explicitRequested ??
-							(hasComplexSignal
+							(details.nestedDelegationMissing
 								? Math.max(details.requiredTopLevelTasks, 6)
 								: Math.max(details.requiredTopLevelTasks, 3)),
 					);

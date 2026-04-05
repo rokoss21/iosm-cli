@@ -596,7 +596,7 @@ export class ToolExecutionComponent extends Container {
 		const noBg = (text: string) => text;
 
 		const useBuiltInRenderer = this.shouldUseBuiltInRenderer();
-		const usesBoxRenderer = this.toolName === "bash" || !useBuiltInRenderer;
+		const usesBoxRenderer = this.toolName === "bash" || (!useBuiltInRenderer && Boolean(this.toolDefinition));
 		const primaryComponent = usesBoxRenderer ? this.contentBox : this.contentText;
 		let customRendererHasContent = false;
 		this.hideComponent = false;

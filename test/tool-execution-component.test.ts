@@ -156,6 +156,30 @@ describe("ToolExecutionComponent custom renderer suppression", () => {
 		expect(rendered).toContain("•");
 		expect(rendered).toContain("✓");
 	});
+
+	test("renders unknown external tools with generic fallback output", () => {
+		const component = new ToolExecutionComponent(
+			"resolve-library-id",
+			{ libraryName: "react", query: "useEffect examples" },
+			{},
+			undefined,
+			createFakeTui(),
+		);
+
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "libraryId: /websites/react_dev" }],
+				details: {},
+				isError: false,
+			},
+			false,
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("resolve-library-id");
+		expect(rendered).toContain("libraryName");
+		expect(rendered).toContain("libraryId: /websites/react_dev");
+	});
 });
 
 describe("BashExecutionComponent UX", () => {

@@ -2707,7 +2707,7 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		}
 	});
 
-	test("passes through non-@agent requests unchanged in meta profile", async () => {
+	test("enforces orchestration correction for actionable non-@agent requests in meta profile", async () => {
 		const prompt = vi.fn(async () => { });
 		const subscribe = vi.fn(() => () => {});
 		const meta = vi.fn(async () => {});
@@ -2723,11 +2723,35 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 			"добавь интересную фичу в протокол",
 		);
 
-		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(prompt).toHaveBeenCalledTimes(2);
 		const [generatedPrompt] = prompt.mock.calls[0] as [string];
+		const [correctionPrompt] = prompt.mock.calls[1] as [string];
 		expect(generatedPrompt).toBe("добавь интересную фичу в протокол");
+		expect(correctionPrompt).toContain("[META_PARALLELISM_CORRECTION]");
+		expect(correctionPrompt).toContain("at least 2");
 		expect(subscribe).toHaveBeenCalledTimes(1);
 		expect(meta).not.toHaveBeenCalled();
+	});
+
+	test("keeps question-like non-@agent requests chat-first in meta profile", async () => {
+		const prompt = vi.fn(async () => { });
+		const subscribe = vi.fn(() => () => {});
+		const fakeThis: any = {
+			sessionManager: { getCwd: () => "/tmp/workspace" },
+			session: { prompt, subscribe },
+			activeProfileName: "meta",
+			resolveMentionedAgent: vi.fn(() => undefined),
+		};
+
+		await (InteractiveMode as any).prototype.promptWithTaskFallback.call(
+			fakeThis,
+			"почему это не работает?",
+		);
+
+		expect(prompt).toHaveBeenCalledTimes(1);
+		const [generatedPrompt] = prompt.mock.calls[0] as [string];
+		expect(generatedPrompt).toBe("почему это не работает?");
+		expect(subscribe).toHaveBeenCalledTimes(1);
 	});
 
 	test("triggers automatic meta correction follow-up when complex plan under-delegates", async () => {

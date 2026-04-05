@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-04-05
+
+### Fixed
+
+- **META orchestration default fan-out** — actionable META prompts without explicit `agents=N` now require at least two top-level `task` calls, preventing silent single-thread execution for orchestration-first requests
+- **Locale-agnostic META fallback** — replaced language-specific complexity keyword detection with runtime orchestration compliance signals (`required task calls`, nested delegation status) for stable behavior across languages
+- **MCP/external tool output rendering** — unknown external tools now use generic fallback rendering instead of empty tool boxes, restoring visible arguments/results in interactive UI
+
+### Tests
+
+- Updated META prompt fallback tests to cover actionable vs question-like prompts
+- Added regression test for unknown external tool result rendering in `ToolExecutionComponent`
+
 ## [0.3.2] - 2026-04-05
 
 ### Fixed

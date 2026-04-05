@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.2</h1>
+<h1>IOSM CLI 0.3.3</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,13 +32,12 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.2
+## ✦ What's New in 0.3.3
 
-- Canonical playbook filenames are now enforced during init flows: lowercase variants (`agents.md`, `iosm.md`) are automatically renamed to `AGENTS.md` and `IOSM.md`
-- Standard `/init` now always reads/writes through canonical `AGENTS.md` path, including existing repositories with mixed filename casing
-- IOSM guide writers now canonicalize `AGENTS.md` and `IOSM.md` before updates for consistent context loading across sessions
-- Improved runtime profile switching continuity by keeping `IOSM.md` context loaded in resource layer while preserving profile-aware prompt/UI filtering
-- Added regression tests covering filename normalization and profile-switch context behavior
+- Fixed META orchestration fallback so actionable requests without explicit `agents=N` now enforce multi-task fan-out instead of silently staying in a single-thread turn
+- Removed language-bound fallback heuristics in META enforcement and switched to runtime orchestration signals (`required task calls`, `nested delegation`) for consistent behavior across locales
+- Fixed MCP/external tool result rendering: unknown tools no longer render empty tool boxes and now show generic fallback output with arguments and result payload
+- Added regression tests for META prompt routing (actionable vs question-like prompts) and unknown external tool rendering
 
 ## ✦ Major Additions in 0.2.16
 
