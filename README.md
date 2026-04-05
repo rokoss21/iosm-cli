@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.15</h1>
+<h1>IOSM CLI 0.2.16</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -29,6 +29,23 @@
 Most AI CLIs are optimized for conversation. **IOSM CLI is optimized for controlled engineering execution** — working directly against your filesystem and shell, orchestrating parallel agents across complex tasks, tracking metrics and artifacts over time, and running improvement cycles that can be audited, repeated, and benchmarked.
 
 It is not a chat interface. It is a runtime.
+
+---
+
+## ✦ What's New in 0.2.16
+
+- Policy Engine v2 for deterministic layered permission resolution across interactive and RPC modes
+- Session/turn-scoped permission approvals to reduce repetitive confirmation prompts in ask mode
+- Security baseline for package and extension sources: trust ledger, host allowlist checks, fingerprint/integrity verification, explicit consent flow
+- MCP trust enforcement with per-tool policy decision tracing
+- Opt-in Linux sandbox execution with explicit `bwrap` requirement validation
+- Filesystem checkpointing (`snapshot`/`restore`) integrated into command execution flow with deterministic rollback order
+- ACP adapter mode (`--mode acp`) over existing RPC/event bus with capability degradation mapping
+- New built-in tools: `apply_patch`, `tool_search`, and `tool_suggest`
+- PTY-based unified execution runtime support for interactive process workflows
+- Faster session resume path via indexed session lookup
+- Schema-driven settings with generated configuration documentation and CI consistency checks
+- Improved task UX in interactive mode: structured checklist rendering for task-state operations instead of raw JSON payload dumps
 
 ---
 

@@ -11,7 +11,7 @@ import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
 import type { BuiltinCommandResult } from "../../core/command-dispatcher.js";
-import type { ToolPermissionRequest } from "../../core/tools/index.js";
+import type { PermissionGrantScope, ToolPermissionRequest } from "../../core/tools/index.js";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -38,6 +38,7 @@ export type RpcCommand =
 	| { id?: string; type: "cycle_thinking_level" }
 	| { id?: string; type: "set_permission_mode"; mode: "ask" | "auto" | "yolo" }
 	| { id?: string; type: "get_permission_mode" }
+	| { id?: string; type: "request_permissions"; request: ToolPermissionRequest; scope?: PermissionGrantScope }
 
 	// Queue modes
 	| { id?: string; type: "set_steering_mode"; mode: "all" | "one-at-a-time" }
@@ -54,6 +55,18 @@ export type RpcCommand =
 	// Bash
 	| { id?: string; type: "bash"; command: string }
 	| { id?: string; type: "abort_bash" }
+	| {
+			id?: string;
+			type: "exec_command";
+			command: string;
+			cwd?: string;
+			tty?: boolean;
+			shell?: string;
+			login?: boolean;
+			yieldTimeMs?: number;
+			maxOutputChars?: number;
+	  }
+	| { id?: string; type: "write_stdin"; sessionId: number; chars?: string; yieldTimeMs?: number; maxOutputChars?: number }
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
@@ -118,6 +131,13 @@ export interface RpcSessionState {
 	pendingMessageCount: number;
 }
 
+export interface RpcExecSessionPollResult {
+	output: string;
+	running: boolean;
+	sessionId?: number;
+	exitCode?: number | null;
+}
+
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
@@ -174,12 +194,19 @@ export type RpcResponse =
 			data: { mode: "ask" | "auto" | "yolo" };
 	  }
 	| {
-			id?: string;
-			type: "response";
-			command: "get_permission_mode";
-			success: true;
-			data: { mode: "ask" | "auto" | "yolo" };
-	  }
+				id?: string;
+				type: "response";
+				command: "get_permission_mode";
+				success: true;
+				data: { mode: "ask" | "auto" | "yolo" };
+		  }
+	| {
+				id?: string;
+				type: "response";
+				command: "request_permissions";
+				success: true;
+				data: { allowed: boolean; scope: PermissionGrantScope; reason?: string };
+		  }
 
 	// Queue modes
 	| { id?: string; type: "response"; command: "set_steering_mode"; success: true }
@@ -196,6 +223,8 @@ export type RpcResponse =
 	// Bash
 	| { id?: string; type: "response"; command: "bash"; success: true; data: BashResult }
 	| { id?: string; type: "response"; command: "abort_bash"; success: true }
+	| { id?: string; type: "response"; command: "exec_command"; success: true; data: RpcExecSessionPollResult }
+	| { id?: string; type: "response"; command: "write_stdin"; success: true; data: RpcExecSessionPollResult }
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
@@ -305,7 +334,7 @@ export type RpcExtensionUIRequest =
 /** Response to an extension UI request */
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
-	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| { type: "extension_ui_response"; id: string; confirmed: boolean; scope?: PermissionGrantScope }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================
@@ -318,6 +347,8 @@ export interface RpcRequiresConfirmationEvent {
 	message: string;
 	request: ToolPermissionRequest;
 	timeout?: number;
+	scopes?: PermissionGrantScope[];
+	defaultScope?: PermissionGrantScope;
 }
 
 // ============================================================================

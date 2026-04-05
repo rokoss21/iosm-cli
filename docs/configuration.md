@@ -202,6 +202,7 @@ Manage MCP servers from CLI and interactive mode:
 # CLI
 iosm mcp list
 iosm mcp add filesystem --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-filesystem --arg .
+iosm mcp add github --transport http --url https://mcp.example.com --tool-approval search=prompt --tool-approval get_file=approve
 iosm mcp tools
 
 # Interactive
@@ -209,6 +210,12 @@ iosm mcp tools
 /mcp add                      # guided wizard
 /mcp add filesystem --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-filesystem --arg .
 ```
+
+Per-tool approval mode is set with `--tool-approval <tool>=<mode>`:
+
+- `auto`: default policy behavior.
+- `prompt`: always require confirmation.
+- `approve`: auto-allow only for trusted MCP servers (`trust=true`); otherwise confirmation is required.
 
 MCP configs are loaded with project override precedence:
 

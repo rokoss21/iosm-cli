@@ -2,6 +2,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { convertToLlm, INTERNAL_UI_META_CUSTOM_TYPE } from "../src/core/messages.js";
 import {
+	coerceTaskPlanSnapshot,
 	extractTaskPlanFromAssistantMessage,
 	extractTaskPlanFromText,
 	formatTaskPlanMessageContent,
@@ -122,6 +123,41 @@ describe("task plan helpers", () => {
 	it("validates task plan snapshots", () => {
 		expect(isTaskPlanSnapshot(snapshot)).toBe(true);
 		expect(isTaskPlanSnapshot({ foo: "bar" })).toBe(false);
+	});
+
+	it("coerces relaxed task plan payloads", () => {
+		const coerced = coerceTaskPlanSnapshot({
+			tasks: [
+				{ subject: "Inspect runtime", status: "completed" },
+				{ step: "Implement UI", current: true },
+			],
+		});
+
+		expect(coerced).toEqual({
+			complexity: "complex",
+			steps: [
+				{ title: "Inspect runtime", status: "done" },
+				{ title: "Implement UI", status: "in_progress" },
+			],
+			currentStepIndex: 1,
+			completedSteps: 1,
+			totalSteps: 2,
+		});
+	});
+
+	it("coerces json string payloads", () => {
+		const coerced = coerceTaskPlanSnapshot(
+			JSON.stringify({
+				plan: [
+					{ title: "Scan repo", status: "done" },
+					{ title: "Ship patch", status: "pending" },
+				],
+			}),
+		);
+
+		expect(coerced?.steps).toHaveLength(2);
+		expect(coerced?.currentStepIndex).toBe(1);
+		expect(coerced?.completedSteps).toBe(1);
 	});
 });
 

@@ -8,6 +8,7 @@ import { spawn } from "child_process";
 import stripAnsi from "strip-ansi";
 import { getShellConfig, getShellEnv, killProcessTree, sanitizeBinaryOutput } from "../../utils/shell.js";
 import { startBackgroundProcess } from "../background-processes.js";
+import { isSandboxEnabledFromEnv, wrapCommandWithSandbox } from "../sandbox/executor.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
 import type { ToolPermissionGuard } from "./permissions.js";
 
@@ -74,7 +75,20 @@ const defaultBashOperations: BashOperations = {
 				return;
 			}
 
-			const child = spawn(shell, [...args, command], {
+			let wrapped;
+			try {
+				wrapped = wrapCommandWithSandbox({
+					command: shell,
+					args: [...args, command],
+					cwd,
+					enabled: isSandboxEnabledFromEnv(),
+				});
+			} catch (error) {
+				reject(error instanceof Error ? error : new Error(String(error)));
+				return;
+			}
+
+			const child = spawn(wrapped.command, wrapped.args, {
 				cwd,
 				detached: true,
 				env: env ?? getShellEnv(),

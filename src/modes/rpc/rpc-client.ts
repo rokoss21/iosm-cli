@@ -12,9 +12,11 @@ import type { SessionStats } from "../../core/agent-session.js";
 import type { BashResult } from "../../core/bash-executor.js";
 import type { BuiltinCommandResult } from "../../core/command-dispatcher.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import type { PermissionGrantScope, ToolPermissionRequest } from "../../core/tools/index.js";
 import type {
 	RpcBuiltinSlashCommand,
 	RpcCommand,
+	RpcExecSessionPollResult,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcRequiresConfirmationEvent,
@@ -296,6 +298,14 @@ export class RpcClient {
 		return this.getData<{ mode: "ask" | "auto" | "yolo" }>(response).mode;
 	}
 
+	async requestPermissions(
+		request: ToolPermissionRequest,
+		scope: PermissionGrantScope = "once",
+	): Promise<{ allowed: boolean; scope: PermissionGrantScope; reason?: string }> {
+		const response = await this.send({ type: "request_permissions", request, scope });
+		return this.getData(response);
+	}
+
 	/**
 	 * Set steering mode.
 	 */
@@ -352,6 +362,51 @@ export class RpcClient {
 	 */
 	async abortBash(): Promise<void> {
 		await this.send({ type: "abort_bash" });
+	}
+
+	/**
+	 * Execute a command in a resumable exec session.
+	 */
+	async execCommand(
+		command: string,
+		options?: {
+			cwd?: string;
+			tty?: boolean;
+			shell?: string;
+			login?: boolean;
+			yieldTimeMs?: number;
+			maxOutputChars?: number;
+		},
+	): Promise<RpcExecSessionPollResult> {
+		const response = await this.send({
+			type: "exec_command",
+			command,
+			cwd: options?.cwd,
+			tty: options?.tty,
+			shell: options?.shell,
+			login: options?.login,
+			yieldTimeMs: options?.yieldTimeMs,
+			maxOutputChars: options?.maxOutputChars,
+		});
+		return this.getData(response);
+	}
+
+	/**
+	 * Write to stdin of a running exec session and poll for new output.
+	 */
+	async writeStdin(
+		sessionId: number,
+		chars?: string,
+		options?: { yieldTimeMs?: number; maxOutputChars?: number },
+	): Promise<RpcExecSessionPollResult> {
+		const response = await this.send({
+			type: "write_stdin",
+			sessionId,
+			chars,
+			yieldTimeMs: options?.yieldTimeMs,
+			maxOutputChars: options?.maxOutputChars,
+		});
+		return this.getData(response);
 	}
 
 	/**

@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { dispatchBuiltinSlashCommand } from "../src/core/command-dispatcher.js";
 import { SettingsManager } from "../src/core/settings-manager.js";
 
 function createContext() {
 	const settingsManager = SettingsManager.inMemory();
+	const cwd = join(tmpdir(), `iosm-command-dispatcher-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+	mkdirSync(cwd, { recursive: true });
 	const modelA = { provider: "openai", id: "gpt-5.4", contextWindow: 200_000, reasoning: true } as any;
 	const modelB = { provider: "anthropic", id: "claude-sonnet-4-5", contextWindow: 200_000, reasoning: true } as any;
 	const entries: any[] = [
@@ -96,6 +101,7 @@ function createContext() {
 				entries.push(next);
 				return next.id;
 			}),
+			getCwd: vi.fn(() => cwd),
 		},
 	} as any;
 

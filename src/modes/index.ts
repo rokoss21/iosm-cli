@@ -4,7 +4,8 @@
 
 export { InteractiveMode, type InteractiveModeOptions } from "./interactive/interactive-mode.js";
 export { type PrintModeOptions, runPrintMode } from "./print-mode.js";
+export { runAcpMode, type AcpModeOptions } from "./acp/acp-mode.js";
 export { type ModelInfo, RpcClient, type RpcClientOptions, type RpcEventListener } from "./rpc/rpc-client.js";
 export { runRpcMode } from "./rpc/rpc-mode.js";
-export type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc/rpc-types.js";
+export type { RpcCommand, RpcExecSessionPollResult, RpcResponse, RpcSessionState } from "./rpc/rpc-types.js";
 export { runTelegramBridgeMode, type TelegramBridgeModeOptions } from "./telegram/telegram-bridge-mode.js";

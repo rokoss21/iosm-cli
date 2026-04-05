@@ -14,7 +14,9 @@ import {
 } from "./config.js";
 import type {
 	McpConnectionState,
+	McpPermissionDecision,
 	McpPermissionGuard,
+	McpPolicyDecisionTraceEvent,
 	McpResolvedServerConfig,
 	McpScope,
 	McpScopeTarget,
@@ -29,6 +31,7 @@ interface RuntimeToolRecord {
 	description?: string;
 	inputSchema: Record<string, unknown>;
 	exposedName: string;
+	approvalMode: "auto" | "prompt" | "approve";
 }
 
 interface RuntimeServerRecord {
@@ -50,6 +53,7 @@ export interface McpRuntimeOptions {
 	agentDir: string;
 	clientName: string;
 	clientVersion: string;
+	onPolicyDecision?: (event: McpPolicyDecisionTraceEvent) => void;
 }
 
 export class McpRuntime {
@@ -61,6 +65,7 @@ export class McpRuntime {
 	private toolDefinitions: McpToolDefinitionEntry[] = [];
 	private configErrors: string[] = [];
 	private permissionGuard?: McpPermissionGuard;
+	private readonly onPolicyDecision?: (event: McpPolicyDecisionTraceEvent) => void;
 	private queue: Promise<void> = Promise.resolve();
 
 	constructor(options: McpRuntimeOptions) {
@@ -68,6 +73,7 @@ export class McpRuntime {
 		this.agentDir = options.agentDir;
 		this.clientName = options.clientName;
 		this.clientVersion = options.clientVersion;
+		this.onPolicyDecision = options.onPolicyDecision;
 	}
 
 	setPermissionGuard(guard?: McpPermissionGuard): void {
@@ -205,6 +211,7 @@ export class McpRuntime {
 					description: tool.description,
 					inputSchema: this.normalizeInputSchema(tool.inputSchema),
 					exposedName: tool.name,
+					approvalMode: record.config.tools[tool.name]?.approvalMode ?? "auto",
 				}));
 
 			record.client = client;
@@ -329,9 +336,27 @@ export class McpRuntime {
 								summary,
 								requiredPermission: "read-only",
 								toolSource: "mcp",
+								mcpServerName: serverName,
+								mcpToolName: tool.name,
+								mcpServerTrusted: current.config.trust,
+								mcpApprovalMode: tool.approvalMode,
 							};
-							const allowed = await this.permissionGuard(request);
-							if (!allowed) {
+							const guardResult = await this.permissionGuard(request);
+							const normalized: McpPermissionDecision =
+								typeof guardResult === "boolean" ? { allowed: guardResult } : guardResult;
+							this.onPolicyDecision?.({
+								serverName,
+								sourceToolName: tool.name,
+								exposedToolName: exposedName,
+								allowed: normalized.allowed,
+								trusted: current.config.trust,
+								reason: normalized.reason,
+								effect: normalized.effect,
+								ruleId: normalized.ruleId,
+								policyLayer: normalized.policyLayer,
+								approvalMode: tool.approvalMode,
+							});
+							if (!normalized.allowed) {
 								throw new Error(`Permission denied for MCP tool ${serverName}/${tool.name}`);
 							}
 						}

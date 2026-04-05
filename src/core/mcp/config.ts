@@ -4,10 +4,12 @@ import type {
 	McpConfigFile,
 	McpMergedConfig,
 	McpResolvedServerConfig,
+	McpResolvedServerToolConfig,
 	McpScope,
 	McpScopeTarget,
 	McpScopedLoadResult,
 	McpServerConfig,
+	McpServerToolConfig,
 	McpTransport,
 } from "./types.js";
 
@@ -32,6 +34,44 @@ function sanitizeStringArray(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	const normalized = value.filter((item): item is string => typeof item === "string").map((item) => item.trim());
 	return [...new Set(normalized.filter((item) => item.length > 0))];
+}
+
+function asMcpToolApprovalMode(value: unknown): McpResolvedServerToolConfig["approvalMode"] | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "auto" || normalized === "prompt" || normalized === "approve") {
+		return normalized;
+	}
+	return undefined;
+}
+
+function sanitizeToolsConfig(value: unknown): Record<string, McpServerToolConfig> | undefined {
+	if (!isRecord(value)) return undefined;
+	const result: Record<string, McpServerToolConfig> = {};
+	for (const [toolName, rawConfig] of Object.entries(value)) {
+		const name = toolName.trim();
+		if (!name) continue;
+		if (!isRecord(rawConfig)) continue;
+		const approvalMode = asMcpToolApprovalMode(rawConfig.approvalMode);
+		if (!approvalMode) continue;
+		result[name] = { approvalMode };
+	}
+	return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizeResolvedToolsConfig(
+	value: Record<string, McpServerToolConfig> | undefined,
+): Record<string, McpResolvedServerToolConfig> {
+	const result: Record<string, McpResolvedServerToolConfig> = {};
+	if (!value) return result;
+	for (const [toolName, config] of Object.entries(value)) {
+		const name = toolName.trim();
+		if (!name) continue;
+		const approvalMode = asMcpToolApprovalMode(config.approvalMode);
+		if (!approvalMode) continue;
+		result[name] = { approvalMode };
+	}
+	return result;
 }
 
 function sanitizeStringRecord(value: unknown): Record<string, string> | undefined {
@@ -102,6 +142,7 @@ function parseMcpConfigFile(path: string): McpConfigFile {
 				trust: asBoolean(server.trust),
 				includeTools: sanitizeStringArray(server.includeTools),
 				excludeTools: sanitizeStringArray(server.excludeTools),
+				tools: sanitizeToolsConfig(server.tools),
 			};
 		}
 		result.mcpServers = normalizedServers;
@@ -193,6 +234,7 @@ function normalizeServerConfig(
 		trust: rawConfig.trust ?? false,
 		includeTools: sanitizeStringArray(rawConfig.includeTools),
 		excludeTools: sanitizeStringArray(rawConfig.excludeTools),
+		tools: normalizeResolvedToolsConfig(rawConfig.tools),
 	};
 }
 
@@ -246,6 +288,17 @@ function cleanServerConfigForSave(config: McpServerConfig): McpServerConfig {
 	if (config.trust !== undefined) cleaned.trust = config.trust;
 	if (config.includeTools && config.includeTools.length > 0) cleaned.includeTools = [...config.includeTools];
 	if (config.excludeTools && config.excludeTools.length > 0) cleaned.excludeTools = [...config.excludeTools];
+	if (config.tools) {
+		const tools: Record<string, McpServerToolConfig> = {};
+		for (const [toolName, toolConfig] of Object.entries(config.tools)) {
+			const approvalMode = asMcpToolApprovalMode(toolConfig.approvalMode);
+			if (!approvalMode) continue;
+			tools[toolName] = { approvalMode };
+		}
+		if (Object.keys(tools).length > 0) {
+			cleaned.tools = tools;
+		}
+	}
 	return cleaned;
 }
 

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { isSandboxEnabledFromEnv, wrapCommandWithSandbox } from "../sandbox/executor.js";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -194,7 +195,20 @@ export async function runVerificationCommand(input: RunVerificationCommandInput)
 		}
 
 		const startedAt = Date.now();
-		const child = spawn(input.command, input.args, {
+		let wrapped;
+		try {
+			wrapped = wrapCommandWithSandbox({
+				command: input.command,
+				args: input.args,
+				cwd: input.cwd,
+				enabled: isSandboxEnabledFromEnv(),
+			});
+		} catch (error) {
+			reject(error instanceof Error ? error : new Error(String(error)));
+			return;
+		}
+
+		const child = spawn(wrapped.command, wrapped.args, {
 			cwd: input.cwd,
 			stdio: ["pipe", "pipe", "pipe"],
 			env: input.env ? { ...process.env, ...input.env } : process.env,

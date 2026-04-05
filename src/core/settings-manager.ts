@@ -1,4 +1,5 @@
 import type { Transport } from "@mariozechner/pi-ai";
+import AjvModule from "ajv";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
@@ -90,6 +91,10 @@ export interface PermissionsSettings {
 	extensionToolEnforcement?: boolean; // default: false
 }
 
+export interface SandboxSettings {
+	enabled?: boolean; // default: false
+}
+
 export interface TelegramChatDefaultsSettings {
 	/** Minimum milliseconds between live status edits in Telegram */
 	statusEditThrottleMs?: number; // default: 1200
@@ -164,6 +169,7 @@ export interface Settings {
 	dbTools?: DbToolsSettings;
 	promptContext?: PromptContextSettings;
 	permissions?: PermissionsSettings;
+	sandbox?: SandboxSettings;
 	telegram?: TelegramSettings;
 }
 
@@ -172,6 +178,12 @@ const WEB_SEARCH_FALLBACK_MODES = ["searxng_ddg", "searxng_only", "none"] as con
 const WEB_SEARCH_SAFE_SEARCH_MODES = ["off", "moderate", "strict"] as const;
 const WEB_SEARCH_MAX_RESULTS_VALUES = [3, 5, 8, 10, 15] as const;
 const WEB_SEARCH_TIMEOUT_VALUES = [10, 20, 30, 45, 60] as const;
+const Ajv = (AjvModule as any).default || AjvModule;
+const settingsSchema = JSON.parse(readFileSync(new URL("./settings.schema.json", import.meta.url), "utf8")) as Record<
+	string,
+	unknown
+>;
+const SETTINGS_SCHEMA_VALIDATOR = new Ajv({ allErrors: true, allowUnionTypes: true }).compile(settingsSchema);
 
 function nearestAllowedValue(value: number, allowed: readonly number[], fallback: number): number {
 	if (!Number.isFinite(value)) return fallback;
@@ -362,7 +374,13 @@ export class SettingsManager {
 			return {};
 		}
 		const settings = JSON.parse(content);
-		return SettingsManager.migrateSettings(settings);
+		const migrated = SettingsManager.migrateSettings(settings);
+		if (!SETTINGS_SCHEMA_VALIDATOR(migrated)) {
+			const issue = SETTINGS_SCHEMA_VALIDATOR.errors?.[0];
+			const location = issue?.instancePath || issue?.schemaPath || "(unknown path)";
+			throw new Error(`Invalid settings schema at ${location}: ${issue?.message ?? "validation failed"}`);
+		}
+		return migrated;
 	}
 
 	private static tryLoadFromStorage(
@@ -794,6 +812,19 @@ export class SettingsManager {
 
 	getPermissionExtensionToolEnforcement(): boolean {
 		return this.settings.permissions?.extensionToolEnforcement ?? false;
+	}
+
+	getSandboxEnabled(): boolean {
+		return this.settings.sandbox?.enabled ?? false;
+	}
+
+	setSandboxEnabled(enabled: boolean): void {
+		if (!this.globalSettings.sandbox) {
+			this.globalSettings.sandbox = {};
+		}
+		this.globalSettings.sandbox.enabled = enabled;
+		this.markModified("sandbox", "enabled");
+		this.save();
 	}
 
 	setPermissionExtensionToolEnforcement(enabled: boolean): void {

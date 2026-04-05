@@ -81,6 +81,40 @@ describe("subagent orchestration", () => {
 		expect(getTeamRun(cwd, run.runId)?.tasks.find((task) => task.id === "task_1")?.status).toBe("running");
 	});
 
+	it("keeps retrying queued team status updates past prolonged lock contention", async () => {
+		const cwd = makeTempDir();
+		const run = createTeamRun({
+			cwd,
+			mode: "parallel",
+			agents: 1,
+			task: "long lock contention status update",
+			assignments: [{ profile: "full", cwd, dependsOn: [] }],
+		});
+		const runPath = join(cwd, ".iosm", "subagents", "teams", `${run.runId}.json`);
+		const release = lockfile.lockSync(runPath, { realpath: false });
+		try {
+			const immediate = updateTeamTaskStatus({
+				cwd,
+				runId: run.runId,
+				taskId: "task_1",
+				status: "running",
+			});
+			expect(immediate).toBeUndefined();
+			await new Promise((resolve) => setTimeout(resolve, 1_700));
+		} finally {
+			release();
+		}
+
+		const deadline = Date.now() + 2_500;
+		while (Date.now() < deadline) {
+			const loaded = getTeamRun(cwd, run.runId);
+			if (loaded?.tasks.find((task) => task.id === "task_1")?.status === "running") break;
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+
+		expect(getTeamRun(cwd, run.runId)?.tasks.find((task) => task.id === "task_1")?.status).toBe("running");
+	});
+
 	it("task tool writes done/error status to team runs when run_id/task_id are provided", async () => {
 		const cwd = makeTempDir();
 		const runOk = createTeamRun({
@@ -914,6 +948,103 @@ describe("subagent orchestration", () => {
 		await expect(execution).rejects.toThrow(/Operation aborted/i);
 		expect(runnerCalls).toBe(0);
 		expect(getTeamRun(cwd, run.runId)?.tasks.find((task) => task.id === "task_2")?.status).toBe("cancelled");
+	});
+
+	it("aborts promptly while waiting for orchestration run slot", async () => {
+		const cwd = makeTempDir();
+		const run = createTeamRun({
+			cwd,
+			mode: "parallel",
+			agents: 2,
+			maxParallel: 1,
+			task: "run-slot abort",
+			assignments: [
+				{ profile: "full", cwd, dependsOn: [] },
+				{ profile: "full", cwd, dependsOn: [] },
+			],
+		});
+		let runnerCalls = 0;
+		const tool = createTaskTool(cwd, async (options) => {
+			runnerCalls += 1;
+			if (options.prompt.includes("slot-one")) {
+				await new Promise((resolve) => setTimeout(resolve, 350));
+				return { output: "slot-one done" };
+			}
+			if (options.prompt.includes("slot-two")) {
+				return { output: "slot-two done" };
+			}
+			return { output: "unexpected" };
+		});
+
+		const first = tool.execute("call_slot_1", {
+			description: "slot holder",
+			prompt: "slot-one",
+			profile: "full",
+			run_id: run.runId,
+			task_id: "task_1",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const controller = new AbortController();
+		const startedAt = Date.now();
+		const second = tool.execute(
+			"call_slot_2",
+			{
+				description: "slot waiter",
+				prompt: "slot-two",
+				profile: "full",
+				run_id: run.runId,
+				task_id: "task_2",
+			},
+			controller.signal,
+		);
+		setTimeout(() => controller.abort(), 30);
+
+		await expect(second).rejects.toThrow(/Operation aborted/i);
+		expect(Date.now() - startedAt).toBeLessThan(320);
+		expect(runnerCalls).toBe(1);
+		await first;
+	});
+
+	it("aborts promptly while waiting for a write lock", async () => {
+		const cwd = makeTempDir();
+		let runnerCalls = 0;
+		const tool = createTaskTool(cwd, async (options) => {
+			runnerCalls += 1;
+			if (options.prompt.includes("lock-one")) {
+				await new Promise((resolve) => setTimeout(resolve, 350));
+				return { output: "lock-one done" };
+			}
+			if (options.prompt.includes("lock-two")) {
+				return { output: "lock-two done" };
+			}
+			return { output: "unexpected" };
+		});
+
+		const first = tool.execute("call_lock_1", {
+			description: "lock holder",
+			prompt: "lock-one",
+			profile: "full",
+			lock_key: "shared-lock",
+		});
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		const controller = new AbortController();
+		const startedAt = Date.now();
+		const second = tool.execute(
+			"call_lock_2",
+			{
+				description: "lock waiter",
+				prompt: "lock-two",
+				profile: "full",
+				lock_key: "shared-lock",
+			},
+			controller.signal,
+		);
+		setTimeout(() => controller.abort(), 30);
+
+		await expect(second).rejects.toThrow(/Operation aborted/i);
+		expect(Date.now() - startedAt).toBeLessThan(320);
+		expect(runnerCalls).toBe(1);
+		await first;
 	});
 
 	it("marks orchestration task cancelled and records aborted cause when aborted during execution", async () => {
@@ -1777,6 +1908,38 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedFailed ?? 0).toBe(0);
 	});
 
+	it("skips delegation enforcement retry when root already reports DELEGATION_IMPOSSIBLE", async () => {
+		const cwd = makeTempDir();
+		let sawEnforcementPrompt = false;
+		let rootCalls = 0;
+
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
+				sawEnforcementPrompt = true;
+			}
+			if (options.prompt.includes("root-task")) {
+				rootCalls += 1;
+				return {
+					output: "DELEGATION_IMPOSSIBLE: single focused change in one file.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_delegate_impossible_first_pass", {
+			description: "delegate impossible first pass",
+			prompt: "root-task",
+			profile: "full",
+			delegate_parallel_hint: 4,
+		});
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+
+		expect(sawEnforcementPrompt).toBe(false);
+		expect(rootCalls).toBe(1);
+		expect(text).toContain("DELEGATION_IMPOSSIBLE");
+	});
+
 	it("auto-synthesizes strict meta delegates when non-trivial work omits delegate blocks", async () => {
 		const cwd = makeTempDir();
 		let sawEnforcementPrompt = false;
@@ -2555,6 +2718,33 @@ describe("subagent orchestration", () => {
 				prompt: "write files",
 				profile: "full",
 				agent: "bg_writer",
+			}),
+		).rejects.toThrow(/Background policy violation/);
+	});
+
+	it("rejects background mode when custom toolset includes apply_patch", async () => {
+		const cwd = makeTempDir();
+		const tool = createTaskTool(cwd, async () => ({ output: "ok" }), {
+			resolveCustomSubagent: (name) =>
+				name === "bg_patcher"
+					? {
+							name: "bg_patcher",
+							description: "background patcher",
+							sourcePath: "fixture",
+							profile: "explore",
+							tools: ["read", "apply_patch"],
+							instructions: "Patch files",
+							background: true,
+						}
+					: undefined,
+		});
+
+		await expect(
+			tool.execute("call_bg_apply_patch_policy", {
+				description: "apply_patch background policy check",
+				prompt: "patch files",
+				profile: "explore",
+				agent: "bg_patcher",
 			}),
 		).rejects.toThrow(/Background policy violation/);
 	});

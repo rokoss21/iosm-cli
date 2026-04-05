@@ -1,9 +1,17 @@
 import type { ToolDefinition } from "../extensions/index.js";
-import type { ToolPermissionRequest } from "../tools/permissions.js";
+import type { McpToolApprovalMode, ToolPermissionRequest } from "../tools/permissions.js";
 
 export type McpScope = "user" | "project";
 export type McpScopeTarget = McpScope | "all";
 export type McpTransport = "stdio" | "sse" | "http";
+
+export interface McpServerToolConfig {
+	approvalMode?: McpToolApprovalMode;
+}
+
+export interface McpResolvedServerToolConfig {
+	approvalMode: McpToolApprovalMode;
+}
 
 export interface McpServerConfig {
 	transport?: McpTransport;
@@ -19,6 +27,7 @@ export interface McpServerConfig {
 	trust?: boolean;
 	includeTools?: string[];
 	excludeTools?: string[];
+	tools?: Record<string, McpServerToolConfig>;
 }
 
 export interface McpConfigFile {
@@ -41,6 +50,7 @@ export interface McpResolvedServerConfig {
 	trust: boolean;
 	includeTools: string[];
 	excludeTools: string[];
+	tools: Record<string, McpResolvedServerToolConfig>;
 }
 
 export type McpConnectionState = "disabled" | "connecting" | "connected" | "error";
@@ -83,4 +93,28 @@ export interface McpToolDefinitionEntry {
 	definition: ToolDefinition;
 }
 
-export type McpPermissionGuard = (request: ToolPermissionRequest) => Promise<boolean> | boolean;
+export interface McpPermissionDecision {
+	allowed: boolean;
+	reason?: string;
+	effect?: "allow" | "deny" | "ask";
+	ruleId?: string;
+	policyLayer?: string;
+	approvalMode?: McpToolApprovalMode;
+}
+
+export interface McpPolicyDecisionTraceEvent {
+	serverName: string;
+	sourceToolName: string;
+	exposedToolName: string;
+	allowed: boolean;
+	trusted: boolean;
+	approvalMode?: McpToolApprovalMode;
+	reason?: string;
+	effect?: "allow" | "deny" | "ask";
+	ruleId?: string;
+	policyLayer?: string;
+}
+
+export type McpPermissionGuard = (
+	request: ToolPermissionRequest,
+) => Promise<boolean | McpPermissionDecision> | boolean | McpPermissionDecision;

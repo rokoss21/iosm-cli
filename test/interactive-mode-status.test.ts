@@ -4325,6 +4325,38 @@ describe("InteractiveMode.requestToolPermission", () => {
 			permissionDenyRules: [],
 			permissionAllowRules: [],
 			permissionMode: "ask",
+			turnAllowedToolSignatures: new Set<string>(),
+			sessionAllowedToolSignatures: new Set<string>(),
+			shadowGuard: { shouldDenyTool: () => false },
+			matchesPermissionRule: (InteractiveMode as any).prototype.matchesPermissionRule,
+			getToolPermissionSignature: (InteractiveMode as any).prototype.getToolPermissionSignature,
+			withPermissionDialogLock: async (fn: () => Promise<boolean>) => fn(),
+			showWarning: vi.fn(),
+			showExtensionSelector,
+		};
+
+		const request = {
+			toolName: "bash",
+			cwd: "/tmp/project",
+			input: { command: "npm test" },
+			summary: "run npm test",
+		};
+
+		const first = await (InteractiveMode as any).prototype.requestToolPermission.call(fakeThis, request);
+		const second = await (InteractiveMode as any).prototype.requestToolPermission.call(fakeThis, request);
+
+		expect(first).toBe(true);
+		expect(second).toBe(true);
+		expect(showExtensionSelector).toHaveBeenCalledTimes(1);
+	});
+
+	test("ask mode can remember command approval for current turn", async () => {
+		const showExtensionSelector = vi.fn(async () => "Allow this turn");
+		const fakeThis: any = {
+			permissionDenyRules: [],
+			permissionAllowRules: [],
+			permissionMode: "ask",
+			turnAllowedToolSignatures: new Set<string>(),
 			sessionAllowedToolSignatures: new Set<string>(),
 			shadowGuard: { shouldDenyTool: () => false },
 			matchesPermissionRule: (InteractiveMode as any).prototype.matchesPermissionRule,

@@ -42,8 +42,8 @@ type PendingStatusUpdate = {
 	attempts: number;
 };
 
-const statusUpdateRetryDelayMs = 25;
-const maxQueuedStatusAttempts = 50;
+const statusUpdateRetryBaseDelayMs = 25;
+const statusUpdateRetryMaxDelayMs = 1_000;
 const pendingStatusUpdates = new Map<string, PendingStatusUpdate>();
 let pendingStatusFlushTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -63,7 +63,12 @@ function pendingStatusKey(input: { cwd: string; runId: string; taskId: string })
 	return `${resolve(input.cwd).toLowerCase()}::${input.runId}::${input.taskId}`;
 }
 
-function schedulePendingStatusFlush(delayMs = statusUpdateRetryDelayMs): void {
+function statusRetryDelayMs(attempts: number): number {
+	const exponent = Math.min(6, Math.max(0, attempts));
+	return Math.min(statusUpdateRetryBaseDelayMs * 2 ** exponent, statusUpdateRetryMaxDelayMs);
+}
+
+function schedulePendingStatusFlush(delayMs = statusUpdateRetryBaseDelayMs): void {
 	if (pendingStatusFlushTimer) return;
 	pendingStatusFlushTimer = setTimeout(() => {
 		pendingStatusFlushTimer = undefined;
@@ -95,23 +100,22 @@ function queuePendingStatusUpdate(input: {
 
 function flushPendingStatusUpdates(): void {
 	if (pendingStatusUpdates.size === 0) return;
+	let nextDelayMs = statusUpdateRetryMaxDelayMs;
 	for (const [key, pending] of Array.from(pendingStatusUpdates.entries())) {
-		if (pending.attempts >= maxQueuedStatusAttempts) {
-			pendingStatusUpdates.delete(key);
-			continue;
-		}
 		const result = tryUpdateTeamTaskStatus(pending.input);
 		if (result === "locked") {
+			const attempts = pending.attempts + 1;
 			pendingStatusUpdates.set(key, {
 				input: pending.input,
-				attempts: pending.attempts + 1,
+				attempts,
 			});
+			nextDelayMs = Math.min(nextDelayMs, statusRetryDelayMs(attempts));
 			continue;
 		}
 		pendingStatusUpdates.delete(key);
 	}
 	if (pendingStatusUpdates.size > 0) {
-		schedulePendingStatusFlush();
+		schedulePendingStatusFlush(nextDelayMs);
 	}
 }
 

@@ -15,13 +15,20 @@ import * as crypto from "node:crypto";
 import * as readline from "readline";
 import type { AgentSession } from "../../core/agent-session.js";
 import { dispatchBuiltinSlashCommand } from "../../core/command-dispatcher.js";
+import type { McpPermissionDecision, McpRuntime } from "../../core/mcp/index.js";
+import { evaluatePermissionWithPolicy, type PolicyEngineV2 } from "../../core/policy/index.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
+import { UnifiedExecManager } from "../../core/unified-exec.js";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
 } from "../../core/extensions/index.js";
-import type { ToolPermissionRequest } from "../../core/tools/index.js";
+import {
+	type PermissionGrantScope,
+	PermissionGrantStore,
+	type ToolPermissionRequest,
+} from "../../core/tools/index.js";
 import { type Theme, theme } from "../interactive/theme/theme.js";
 import type {
 	RpcCommand,
@@ -54,10 +61,11 @@ const VALID_RPC_COMMAND_TYPES = new Set<string>([
 	"set_model", "cycle_model", "get_available_models",
 	"set_thinking_level", "cycle_thinking_level",
 	"set_permission_mode", "get_permission_mode",
+	"request_permissions",
 	"set_steering_mode", "set_follow_up_mode",
 	"compact", "set_auto_compaction",
 	"set_auto_retry", "abort_retry",
-	"bash", "abort_bash",
+	"bash", "abort_bash", "exec_command", "write_stdin",
 	"get_session_stats", "export_html", "switch_session", "fork",
 	"get_fork_messages", "get_last_assistant_text", "set_session_name",
 	"get_messages", "get_commands", "get_builtin_commands", "run_builtin_command",
@@ -74,6 +82,7 @@ const REQUIRED_STRING_FIELDS: Partial<Record<string, string[]>> = {
 	set_steering_mode: ["mode"],
 	set_follow_up_mode: ["mode"],
 	bash: ["command"],
+	exec_command: ["command"],
 	switch_session: ["sessionPath"],
 	fork: ["entryId"],
 	set_session_name: ["name"],
@@ -86,11 +95,39 @@ const REQUIRED_BOOLEAN_FIELDS: Partial<Record<string, string[]>> = {
 	set_auto_retry: ["enabled"],
 };
 
+/** Fields that must be numbers for specific command types */
+const REQUIRED_NUMBER_FIELDS: Partial<Record<string, string[]>> = {
+	write_stdin: ["sessionId"],
+};
+
+/** Fields that must be objects for specific command types */
+const REQUIRED_OBJECT_FIELDS: Partial<Record<string, string[]>> = {
+	request_permissions: ["request"],
+};
+
+/** Optional fields that must be numbers when present */
+const OPTIONAL_NUMBER_FIELDS: Partial<Record<string, string[]>> = {
+	exec_command: ["yieldTimeMs", "maxOutputChars"],
+	write_stdin: ["yieldTimeMs", "maxOutputChars"],
+};
+
+/** Optional fields that must be strings when present */
+const OPTIONAL_STRING_FIELDS: Partial<Record<string, string[]>> = {
+	exec_command: ["cwd", "shell"],
+	write_stdin: ["chars"],
+	request_permissions: ["scope"],
+};
+
+/** Optional fields that must be booleans when present */
+const OPTIONAL_BOOLEAN_FIELDS: Partial<Record<string, string[]>> = {
+	exec_command: ["tty", "login"],
+};
+
 /**
  * Validates a parsed RPC command object at runtime.
  * Returns an error string if invalid, undefined if valid.
  */
-function validateRpcCommand(parsed: unknown): string | undefined {
+export function validateRpcCommand(parsed: unknown): string | undefined {
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		return "Command must be a JSON object.";
 	}
@@ -118,10 +155,46 @@ function validateRpcCommand(parsed: unknown): string | undefined {
 		}
 	}
 
+	for (const field of REQUIRED_NUMBER_FIELDS[type] ?? []) {
+		if (typeof obj[field] !== "number" || Number.isNaN(obj[field])) {
+			return `Command "${type}" requires a numeric field "${field}".`;
+		}
+	}
+
+	for (const field of REQUIRED_OBJECT_FIELDS[type] ?? []) {
+		if (typeof obj[field] !== "object" || obj[field] === null || Array.isArray(obj[field])) {
+			return `Command "${type}" requires an object field "${field}".`;
+		}
+	}
+
+	for (const field of OPTIONAL_NUMBER_FIELDS[type] ?? []) {
+		if (field in obj && obj[field] !== undefined && (typeof obj[field] !== "number" || Number.isNaN(obj[field]))) {
+			return `Command "${type}" expects "${field}" to be numeric when provided.`;
+		}
+	}
+
+	for (const field of OPTIONAL_STRING_FIELDS[type] ?? []) {
+		if (field in obj && obj[field] !== undefined && typeof obj[field] !== "string") {
+			return `Command "${type}" expects "${field}" to be a string when provided.`;
+		}
+	}
+
+	for (const field of OPTIONAL_BOOLEAN_FIELDS[type] ?? []) {
+		if (field in obj && obj[field] !== undefined && typeof obj[field] !== "boolean") {
+			return `Command "${type}" expects "${field}" to be a boolean when provided.`;
+		}
+	}
+
+	if (type === "request_permissions" && obj.scope !== undefined) {
+		if (obj.scope !== "once" && obj.scope !== "turn" && obj.scope !== "session") {
+			return 'Command "request_permissions" expects "scope" to be one of: once, turn, session.';
+		}
+	}
+
 	return undefined;
 }
 
-const DANGEROUS_TOOL_NAMES = new Set(["bash", "edit", "write", "git_write", "fs_ops", "db_run"]);
+const DANGEROUS_TOOL_NAMES = new Set(["bash", "edit", "write", "apply_patch", "git_write", "fs_ops", "db_run"]);
 
 function matchesPermissionRule(rule: string, request: ToolPermissionRequest): boolean {
 	const [ruleToolRaw, ...rest] = rule.split(":");
@@ -138,11 +211,26 @@ function buildPermissionPromptLabel(request: ToolPermissionRequest): string {
 	return `${request.toolName}${tierLabel}${sourceLabel}: ${request.summary}`;
 }
 
+function normalizePermissionGrantScope(value: unknown): PermissionGrantScope {
+	if (value === "turn" || value === "session" || value === "once") {
+		return value;
+	}
+	return "once";
+}
+
+export interface RpcModeOptions {
+	policyEngine?: PolicyEngineV2;
+	mcpRuntime?: McpRuntime;
+	profileName?: string;
+}
+
 /**
  * Run in RPC mode.
  * Listens for JSON commands on stdin, outputs events and responses on stdout.
  */
-export async function runRpcMode(session: AgentSession): Promise<never> {
+export async function runRpcMode(session: AgentSession, options: RpcModeOptions = {}): Promise<never> {
+	const execManager = new UnifiedExecManager();
+
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | RpcRequiresConfirmationEvent | object) => {
 		console.log(JSON.stringify(obj));
 	};
@@ -167,6 +255,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 		string,
 		{ resolve: (value: any) => void; reject: (error: Error) => void }
 	>();
+	const permissionGrants = new PermissionGrantStore();
 
 	// Shutdown request flag
 	let shutdownRequested = false;
@@ -215,7 +304,9 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 		});
 	}
 
-	async function requestToolPermissionFromHost(request: ToolPermissionRequest): Promise<boolean> {
+	async function requestToolPermissionFromHost(
+		request: ToolPermissionRequest,
+	): Promise<{ allowed: boolean; scope: PermissionGrantScope }> {
 		const id = crypto.randomUUID();
 		const title = "Permission required";
 		const message = buildPermissionPromptLabel(request);
@@ -224,51 +315,104 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			id,
 			message,
 			request,
+			scopes: ["once", "turn", "session"],
+			defaultScope: "once",
 		} satisfies RpcRequiresConfirmationEvent);
 
 		return createDialogPromise(
 			{ timeout: 5 * 60 * 1000 },
-			false,
+			{ allowed: false, scope: "once" as PermissionGrantScope },
 			{ method: "confirm_permission", title, message, request, timeout: 5 * 60 * 1000 },
-			(response) => ("cancelled" in response && response.cancelled ? false : "confirmed" in response ? response.confirmed : false),
+			(response) => {
+				if ("cancelled" in response && response.cancelled) {
+					return { allowed: false, scope: "once" as PermissionGrantScope };
+				}
+				if (!("confirmed" in response) || !response.confirmed) {
+					return { allowed: false, scope: "once" as PermissionGrantScope };
+				}
+				const scope =
+					response.scope === "turn" || response.scope === "session" || response.scope === "once"
+						? response.scope
+						: ("once" as PermissionGrantScope);
+				return { allowed: true, scope };
+			},
 			id,
 		);
 	}
 
+	const evaluateRequest = async (request: ToolPermissionRequest): Promise<McpPermissionDecision> => {
+		if (permissionGrants.isAllowed(request)) {
+			return { allowed: true, reason: "Allowed by cached turn/session grant.", effect: "allow" };
+		}
+		options.policyEngine?.refresh();
+		if (options.policyEngine) {
+			const evaluated = evaluatePermissionWithPolicy(options.policyEngine, request, {
+				profile: options.profileName,
+				runtimeMode: "rpc",
+				permissionMode: session.settingsManager.getPermissionMode(),
+				strictExtensionToolEnforcement: session.settingsManager.getPermissionExtensionToolEnforcement(),
+			});
+			if (evaluated.outcome === "allow") {
+				return {
+					allowed: true,
+					reason: evaluated.reason,
+					effect: evaluated.decision.effect,
+					ruleId: evaluated.decision.rule?.id,
+					policyLayer: evaluated.decision.layer,
+				};
+			}
+			if (evaluated.outcome === "deny") {
+				return {
+					allowed: false,
+					reason: evaluated.reason,
+					effect: evaluated.decision.effect,
+					ruleId: evaluated.decision.rule?.id,
+					policyLayer: evaluated.decision.layer,
+				};
+			}
+		} else {
+			const denyRules = session.settingsManager.getPermissionDenyRules();
+			for (const rule of denyRules) {
+				if (matchesPermissionRule(rule, request)) {
+					return { allowed: false, reason: `Denied by legacy rule: ${rule}`, effect: "deny" };
+				}
+			}
+
+			const allowRules = session.settingsManager.getPermissionAllowRules();
+			for (const rule of allowRules) {
+				if (matchesPermissionRule(rule, request)) {
+					return { allowed: true, reason: `Allowed by legacy rule: ${rule}`, effect: "allow" };
+				}
+			}
+
+			const mode = session.settingsManager.getPermissionMode();
+			if (mode === "yolo") {
+				return { allowed: true, reason: "Permission mode is yolo.", effect: "allow" };
+			}
+			if (!DANGEROUS_TOOL_NAMES.has(request.toolName)) {
+				return { allowed: true, reason: "RPC mode auto-approves non-dangerous tools.", effect: "allow" };
+			}
+			if (mode === "auto" && (request.toolName === "edit" || request.toolName === "write" || request.toolName === "apply_patch")) {
+				return { allowed: true, reason: "Permission mode auto allows edit/write/apply_patch.", effect: "allow" };
+			}
+		}
+
+		const confirmed = await requestToolPermissionFromHost(request);
+		if (confirmed.allowed) {
+			permissionGrants.allow(request, confirmed.scope);
+		}
+		return {
+			allowed: confirmed.allowed,
+			reason: confirmed.allowed ? "Confirmed by RPC host." : "Denied by RPC host.",
+			effect: "ask",
+		};
+	};
+
 	session.setToolPermissionHandler(async (request) => {
-		const denyRules = session.settingsManager.getPermissionDenyRules();
-		for (const rule of denyRules) {
-			if (matchesPermissionRule(rule, request)) {
-				return false;
-			}
-		}
-
-		const allowRules = session.settingsManager.getPermissionAllowRules();
-		for (const rule of allowRules) {
-			if (matchesPermissionRule(rule, request)) {
-				return true;
-			}
-		}
-
-		const mode = session.settingsManager.getPermissionMode();
-		if (mode === "yolo") {
-			return true;
-		}
-
-		// Non-destructive tools stay non-interactive in RPC mode.
-		if (!DANGEROUS_TOOL_NAMES.has(request.toolName)) {
-			return true;
-		}
-
-		if (mode === "auto") {
-			// Keep parity with interactive defaults: edit/write are auto-approved.
-			if (request.toolName === "edit" || request.toolName === "write") {
-				return true;
-			}
-		}
-
-		return requestToolPermissionFromHost(request);
+		const decision = await evaluateRequest(request);
+		return decision.allowed;
 	});
+	options.mcpRuntime?.setPermissionGuard((request) => evaluateRequest(request));
 
 	/**
 	 * Create an extension UI context that uses the RPC protocol.
@@ -470,6 +614,9 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 
 	// Output all agent events as JSON
 	session.subscribe((event) => {
+		if (event.type === "agent_start") {
+			permissionGrants.resetTurn();
+		}
 		output(event);
 	});
 
@@ -593,6 +740,19 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				return success(id, "get_permission_mode", { mode: session.settingsManager.getPermissionMode() });
 			}
 
+			case "request_permissions": {
+				const decision = await evaluateRequest(command.request);
+				const scope = normalizePermissionGrantScope(command.scope);
+				if (decision.allowed) {
+					permissionGrants.allow(command.request, scope);
+				}
+				return success(id, "request_permissions", {
+					allowed: decision.allowed,
+					scope,
+					reason: decision.reason,
+				});
+			}
+
 			// =================================================================
 			// Queue Modes
 			// =================================================================
@@ -647,6 +807,29 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			case "abort_bash": {
 				session.abortBash();
 				return success(id, "abort_bash");
+			}
+
+			case "exec_command": {
+				const result = await execManager.execCommand({
+					command: command.command,
+					cwd: command.cwd,
+					tty: command.tty,
+					login: command.login,
+					shell: command.shell,
+					yieldTimeMs: command.yieldTimeMs,
+					maxOutputChars: command.maxOutputChars,
+				});
+				return success(id, "exec_command", result);
+			}
+
+			case "write_stdin": {
+				const result = await execManager.writeStdin({
+					sessionId: command.sessionId,
+					chars: command.chars,
+					yieldTimeMs: command.yieldTimeMs,
+					maxOutputChars: command.maxOutputChars,
+				});
+				return success(id, "write_stdin", result);
 			}
 
 			// =================================================================
@@ -755,6 +938,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				const result = await dispatchBuiltinSlashCommand(command.commandText, {
 					session,
 					settingsManager: session.settingsManager,
+					policyEngine: options.policyEngine,
 				});
 				return success(id, "run_builtin_command", result);
 			}
@@ -777,6 +961,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 		if (currentRunner?.hasHandlers("session_shutdown")) {
 			await currentRunner.emit({ type: "session_shutdown" });
 		}
+		execManager.dispose();
 
 		// Close readline interface to stop waiting for input
 		rl.close();
@@ -788,6 +973,10 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 		input: process.stdin,
 		output: process.stdout,
 		terminal: false,
+	});
+
+	process.once("exit", () => {
+		execManager.dispose();
 	});
 
 	rl.on("line", async (line: string) => {

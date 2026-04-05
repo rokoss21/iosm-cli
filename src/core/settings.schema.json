@@ -1,0 +1,71 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "IOSM Settings Schema",
+	"type": "object",
+	"additionalProperties": true,
+	"properties": {
+		"permissionMode": {
+			"type": "string",
+			"enum": ["ask", "auto", "yolo"],
+			"default": "ask",
+			"description": "Default permission behavior for tool execution."
+		},
+		"permissionAllow": {
+			"type": "array",
+			"items": { "type": "string" },
+			"default": [],
+			"description": "Legacy allow rules in <tool:match> format. Migrated into policy v2 at runtime."
+		},
+		"permissionDeny": {
+			"type": "array",
+			"items": { "type": "string" },
+			"default": [],
+			"description": "Legacy deny rules in <tool:match> format. Migrated into policy v2 at runtime."
+		},
+		"permissions": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"extensionToolEnforcement": {
+					"type": "boolean",
+					"default": false,
+					"description": "Require requiredPermission metadata for extension tools in auto mode."
+				}
+			}
+		},
+		"sandbox": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable Linux bubblewrap sandbox for process-based tools."
+				}
+			}
+		},
+		"webSearch": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Enable built-in web search tool integration."
+				},
+				"providerMode": {
+					"type": "string",
+					"enum": ["auto", "tavily"],
+					"default": "auto",
+					"description": "Primary web search provider selection strategy."
+				},
+				"fallbackMode": {
+					"type": "string",
+					"enum": ["searxng_ddg", "searxng_only", "none"],
+					"default": "searxng_ddg",
+					"description": "Fallback provider policy when primary lookup fails."
+				}
+			}
+		}
+	}
+}

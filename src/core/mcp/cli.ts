@@ -23,6 +23,7 @@ export type ParseResult<T> =
 const VALID_TRANSPORTS = new Set<McpTransport>(["stdio", "sse", "http"]);
 const VALID_SCOPES = new Set<McpScopeTarget>(["user", "project", "all"]);
 const VALID_SERVER_NAME = /^[a-zA-Z0-9._-]+$/;
+const VALID_APPROVAL_MODES = new Set(["auto", "prompt", "approve"]);
 
 function parseKeyValue(token: string, flagName: string): { key: string; value: string } | { error: string } {
 	const separatorIndex = token.indexOf("=");
@@ -39,6 +40,11 @@ function parseKeyValue(token: string, flagName: string): { key: string; value: s
 
 function normalizeScope(value: string): McpScopeTarget | undefined {
 	return VALID_SCOPES.has(value as McpScopeTarget) ? (value as McpScopeTarget) : undefined;
+}
+
+function normalizeToolApprovalMode(value: string): "auto" | "prompt" | "approve" | undefined {
+	const normalized = value.trim().toLowerCase();
+	return VALID_APPROVAL_MODES.has(normalized) ? (normalized as "auto" | "prompt" | "approve") : undefined;
 }
 
 export function parseMcpTargetCommand(args: string[], defaultScope: McpScopeTarget = "all"): ParseResult<ParsedMcpTargetCommand> {
@@ -102,6 +108,7 @@ export function parseMcpAddCommand(args: string[]): ParseResult<ParsedMcpAddComm
 	const commandArgs: string[] = [];
 	const includeTools: string[] = [];
 	const excludeTools: string[] = [];
+	const toolApprovals: NonNullable<McpServerConfig["tools"]> = {};
 	const env: Record<string, string> = {};
 	const headers: Record<string, string> = {};
 	const positional: string[] = [];
@@ -218,6 +225,22 @@ export function parseMcpAddCommand(args: string[]): ParseResult<ParsedMcpAddComm
 			index += 1;
 			continue;
 		}
+		if (token === "--tool-approval") {
+			const value = rest[index + 1];
+			if (!value) return { ok: false, error: "Missing value for --tool-approval." };
+			const parsed = parseKeyValue(value, "--tool-approval");
+			if ("error" in parsed) return { ok: false, error: parsed.error };
+			const mode = normalizeToolApprovalMode(parsed.value);
+			if (!mode) {
+				return {
+					ok: false,
+					error: `Invalid --tool-approval mode "${parsed.value}". Use auto, prompt, or approve.`,
+				};
+			}
+			toolApprovals[parsed.key] = { approvalMode: mode };
+			index += 1;
+			continue;
+		}
 		if (token.startsWith("-")) {
 			return { ok: false, error: `Unknown option ${token}.` };
 		}
@@ -254,6 +277,7 @@ export function parseMcpAddCommand(args: string[]): ParseResult<ParsedMcpAddComm
 		enabled,
 		includeTools: includeTools.length > 0 ? includeTools : undefined,
 		excludeTools: excludeTools.length > 0 ? excludeTools : undefined,
+		tools: Object.keys(toolApprovals).length > 0 ? toolApprovals : undefined,
 		env: Object.keys(env).length > 0 ? env : undefined,
 		headers: Object.keys(headers).length > 0 ? headers : undefined,
 	};
@@ -284,6 +308,7 @@ export function getMcpCommandHelp(prefix: string, options: McpCommandHelpOptions
 		`Examples:`,
 		`  ${cmd} add filesystem --transport stdio --command npx --arg -y --arg @modelcontextprotocol/server-filesystem --arg .`,
 		`  ${cmd} add github --scope user --transport http --url https://mcp.example.com --header Authorization=Bearer\ \${GITHUB_TOKEN}`,
+		`  ${cmd} add github --transport http --url https://mcp.example.com --tool-approval search=prompt`,
 		`  ${cmd} disable filesystem --scope project`,
 		`  ${cmd} tools`,
 	];

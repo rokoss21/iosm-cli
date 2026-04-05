@@ -200,6 +200,7 @@ const toolDescriptions: Record<string, string> = {
 	bash: "Execute bash commands (ls, grep, find, etc.); supports detached mode via run_in_background",
 	edit: "Make surgical edits to files (find exact text and replace)",
 	write: "Create or overwrite files",
+	apply_patch: "Apply structured multi-file patches using strict apply_patch grammar (add/update/delete/move files)",
 	grep: "Search file contents for patterns (respects .gitignore)",
 	find: "Find files by glob pattern (respects .gitignore)",
 	ls: "List directory contents",
@@ -232,6 +233,8 @@ const toolDescriptions: Record<string, string> = {
 	todo_write:
 		"Create or update persistent task checklist state for the current workspace/session (pending, in_progress, completed)",
 	todo_read: "Read the current persistent task checklist state for the current workspace/session",
+	tool_search: "Search available tools by name/description and active status",
+	tool_suggest: "Suggest the best tools for a described task based on capability matching",
 	task: "Run a specialized subagent (supports profile, cwd, lock_key for optional write serialization, run_id/task_id, model override, background mode for detached runs, and agent=<custom name from .iosm/agents>)",
 };
 
@@ -353,6 +356,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const hasBash = tools.includes("bash");
 	const hasEdit = tools.includes("edit");
 	const hasWrite = tools.includes("write");
+	const hasApplyPatch = tools.includes("apply_patch");
 	const hasGrep = tools.includes("grep");
 	const hasFind = tools.includes("find");
 	const hasLs = tools.includes("ls");
@@ -530,7 +534,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	}
 
 	// Read before edit guideline
-	if (hasRead && hasEdit) {
+	if (hasRead && (hasEdit || hasApplyPatch)) {
 		addGuideline("Use read to examine files before editing. You must use this tool instead of cat or sed.");
 	}
 	if (hasRead) {
@@ -540,6 +544,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	// Edit guideline
 	if (hasEdit) {
 		addGuideline("Use edit for precise changes (old text must match exactly)");
+	}
+	if (hasApplyPatch) {
+		addGuideline("Use apply_patch for deterministic multi-file edits, moves, and delete/create operations.");
 	}
 
 	// Write guideline
@@ -588,7 +595,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	}
 
 	// Output guideline (only when actually writing or executing)
-	if (hasEdit || hasWrite) {
+	if (hasEdit || hasWrite || hasApplyPatch) {
 		addGuideline(
 			"When summarizing your actions, output plain text directly - do NOT use cat or bash to display what you did",
 		);

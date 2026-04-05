@@ -44,6 +44,8 @@ const READ_EXPLORATION_TOOLS = [
 	"fetch",
 	"web_search",
 	"git_read",
+	"tool_search",
+	"tool_suggest",
 ] as const;
 
 const WRITE_ENGINEERING_TOOLS = [
@@ -51,6 +53,7 @@ const WRITE_ENGINEERING_TOOLS = [
 	"bash",
 	"edit",
 	"write",
+	"apply_patch",
 	"git_write",
 	"fs_ops",
 	"test_run",

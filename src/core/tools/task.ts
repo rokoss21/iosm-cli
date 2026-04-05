@@ -260,7 +260,7 @@ const systemPromptByProfile: Record<string, string> = {
 	full: "You are a software engineering agent. Execute the task end-to-end.",
 };
 
-const writeCapableTools = new Set(["bash", "edit", "write", "git_write", "fs_ops"]);
+const writeCapableTools = new Set(["bash", "edit", "write", "apply_patch", "git_write", "fs_ops"]);
 const backgroundUnsafeTools = new Set(writeCapableTools);
 const writeCapableProfiles = new Set(
 	(Object.keys(toolsByProfile) as AgentProfileName[]).filter((profileName) =>
@@ -321,21 +321,44 @@ type ParsedDelegationRequests = {
 
 class Semaphore {
 	private active = 0;
-	private readonly queue: Array<() => void> = [];
+	private readonly queue: Array<{
+		resolve: () => void;
+		reject: (error: Error) => void;
+		signal?: AbortSignal;
+		onAbort?: () => void;
+	}> = [];
 
 	constructor(private readonly limit: number) {}
 
-	async acquire(): Promise<() => void> {
+	async acquire(signal?: AbortSignal): Promise<() => void> {
+		if (signal?.aborted) {
+			throw new Error("Operation aborted");
+		}
 		if (this.active < this.limit) {
 			this.active += 1;
 			return () => this.release();
 		}
 
-		await new Promise<void>((resolve) => {
-			this.queue.push(() => {
-				this.active += 1;
-				resolve();
-			});
+		await new Promise<void>((resolve, reject) => {
+			const waiter: {
+				resolve: () => void;
+				reject: (error: Error) => void;
+				signal?: AbortSignal;
+				onAbort?: () => void;
+			} = { resolve, reject, signal };
+			if (signal) {
+				const onAbort = () => {
+					const index = this.queue.indexOf(waiter);
+					if (index >= 0) {
+						this.queue.splice(index, 1);
+					}
+					signal.removeEventListener("abort", onAbort);
+					reject(new Error("Operation aborted"));
+				};
+				waiter.onAbort = onAbort;
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
+			this.queue.push(waiter);
 		});
 
 		return () => this.release();
@@ -345,7 +368,11 @@ class Semaphore {
 		this.active = Math.max(0, this.active - 1);
 		const next = this.queue.shift();
 		if (next) {
-			next();
+			if (next.signal && next.onAbort) {
+				next.signal.removeEventListener("abort", next.onAbort);
+			}
+			this.active += 1;
+			next.resolve();
 		}
 	}
 
@@ -356,15 +383,43 @@ class Semaphore {
 
 class Mutex {
 	private locked = false;
-	private readonly waiters: Array<() => void> = [];
+	private readonly waiters: Array<{
+		resolve: () => void;
+		reject: (error: Error) => void;
+		signal?: AbortSignal;
+		onAbort?: () => void;
+	}> = [];
 
-	async acquire(): Promise<() => void> {
+	async acquire(signal?: AbortSignal): Promise<() => void> {
+		if (signal?.aborted) {
+			throw new Error("Operation aborted");
+		}
 		if (!this.locked) {
 			this.locked = true;
 			return () => this.release();
 		}
 
-		await new Promise<void>((resolve) => this.waiters.push(resolve));
+		await new Promise<void>((resolve, reject) => {
+			const waiter: {
+				resolve: () => void;
+				reject: (error: Error) => void;
+				signal?: AbortSignal;
+				onAbort?: () => void;
+			} = { resolve, reject, signal };
+			if (signal) {
+				const onAbort = () => {
+					const index = this.waiters.indexOf(waiter);
+					if (index >= 0) {
+						this.waiters.splice(index, 1);
+					}
+					signal.removeEventListener("abort", onAbort);
+					reject(new Error("Operation aborted"));
+				};
+				waiter.onAbort = onAbort;
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
+			this.waiters.push(waiter);
+		});
 		this.locked = true;
 		return () => this.release();
 	}
@@ -373,7 +428,11 @@ class Mutex {
 		this.locked = false;
 		const next = this.waiters.shift();
 		if (next) {
-			next();
+			if (next.signal && next.onAbort) {
+				next.signal.removeEventListener("abort", next.onAbort);
+			}
+			this.locked = true;
+			next.resolve();
 		}
 	}
 
@@ -1688,7 +1747,7 @@ export function createTaskTool(
 							};
 						}
 						const lock = getOrCreateWriteLock(trimmed);
-						const release = await lock.acquire();
+						const release = await lock.acquire(runtimeAbortSignal);
 						heldWriteLocks.set(normalizedKey, { count: 1, release });
 						return () => {
 							const current = heldWriteLocks.get(normalizedKey);
@@ -1752,10 +1811,10 @@ export function createTaskTool(
 							? getOrCreateOrchestrationSemaphore(cwd, orchestrationRunId)
 							: undefined;
 					if (orchestrationSemaphore) {
-						releaseRunSlot = await orchestrationSemaphore.acquire();
+						releaseRunSlot = await orchestrationSemaphore.acquire(runtimeAbortSignal);
 						throwIfAborted();
 					}
-					releaseSlot = await subagentSemaphore.acquire();
+					releaseSlot = await subagentSemaphore.acquire(runtimeAbortSignal);
 					throwIfAborted();
 					updateTrackedTaskStatus("running");
 						if (writeCapableProfiles.has(effectiveProfile)) {
@@ -2080,7 +2139,12 @@ export function createTaskTool(
 							output,
 							effectiveDelegationDepth > 0 ? effectiveMaxDelegations : 0,
 						);
-						if (minDelegationsPreferred > 0 && parsedDelegation.requests.length < minDelegationsPreferred) {
+						let impossibleMatch = output.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
+						const shouldRetryDelegationEnforcement =
+							minDelegationsPreferred > 0 &&
+							parsedDelegation.requests.length < minDelegationsPreferred &&
+							!impossibleMatch;
+						if (shouldRetryDelegationEnforcement) {
 							emitProgress({
 								kind: "subagent_progress",
 								phase: "running",
@@ -2106,6 +2170,7 @@ export function createTaskTool(
 									output,
 									effectiveDelegationDepth > 0 ? effectiveMaxDelegations : 0,
 								);
+							impossibleMatch = output.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
 						}
 
 						if (
@@ -2113,7 +2178,6 @@ export function createTaskTool(
 							parsedDelegation.requests.length === 0 &&
 							strictDelegationContract
 						) {
-							const impossibleMatch = output.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
 							if (!impossibleMatch) {
 								const synthesizedRequests = synthesizeDelegationRequests({
 									description,
@@ -2134,7 +2198,6 @@ export function createTaskTool(
 						}
 
 						if (minDelegationsPreferred > 0 && parsedDelegation.requests.length < minDelegationsPreferred) {
-							const impossibleMatch = output.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
 							const impossibleReason = impossibleMatch?.[1]?.trim() ?? "not provided";
 							if (strictDelegationContract && parsedDelegation.requests.length === 0 && !impossibleMatch) {
 								throw new Error(
@@ -2838,9 +2901,13 @@ export function createTaskTool(
 										childOutput,
 										effectiveDelegationDepth > 1 ? effectiveMaxDelegations : 0,
 									);
-									if (
+									let childImpossibleMatch = childOutput.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
+									const shouldRetryChildDelegationEnforcement =
 										childMinDelegationsPreferred > 0 &&
-										parsedChildDelegation.requests.length < childMinDelegationsPreferred
+										parsedChildDelegation.requests.length < childMinDelegationsPreferred &&
+										!childImpossibleMatch;
+									if (
+										shouldRetryChildDelegationEnforcement
 									) {
 										emitProgress({
 											kind: "subagent_progress",
@@ -2870,14 +2937,14 @@ export function createTaskTool(
 											childOutput,
 											effectiveDelegationDepth > 1 ? effectiveMaxDelegations : 0,
 										);
+										childImpossibleMatch = childOutput.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
 									}
 									if (
 										childMinDelegationsPreferred > 0 &&
 										parsedChildDelegation.requests.length === 0 &&
 										strictDelegationContract
 									) {
-										const impossibleMatch = childOutput.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
-										if (!impossibleMatch) {
+										if (!childImpossibleMatch) {
 											const synthesizedChildRequests = synthesizeDelegationRequests({
 												description: request.description,
 												prompt: request.prompt,
@@ -2900,12 +2967,11 @@ export function createTaskTool(
 											childMinDelegationsPreferred > 0 &&
 											parsedChildDelegation.requests.length < childMinDelegationsPreferred
 										) {
-											const impossibleMatch = childOutput.match(/^\s*DELEGATION_IMPOSSIBLE\s*:\s*(.+)$/im);
-											const impossibleReason = impossibleMatch?.[1]?.trim() ?? "not provided";
+											const impossibleReason = childImpossibleMatch?.[1]?.trim() ?? "not provided";
 											if (
 												strictDelegationContract &&
 												parsedChildDelegation.requests.length === 0 &&
-												!impossibleMatch
+												!childImpossibleMatch
 											) {
 												throw new Error(
 													`Delegation contract violated for child ${index + 1}: expected >=${childMinDelegationsPreferred} nested delegates, got ${parsedChildDelegation.requests.length}. ` +

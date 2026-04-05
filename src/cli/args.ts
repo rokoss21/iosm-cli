@@ -17,7 +17,7 @@ import {
 } from "../config.js";
 import { allTools, type ToolName } from "../core/tools/index.js";
 
-export type Mode = "text" | "json" | "rpc" | "telegram";
+export type Mode = "text" | "json" | "rpc" | "acp" | "telegram";
 
 export interface Args {
 	provider?: string;
@@ -49,6 +49,7 @@ export interface Args {
 	noThemes?: boolean;
 	listModels?: string | true;
 	offline?: boolean;
+	sandbox?: boolean;
 	sessionTrace?: boolean;
 	sessionTraceDir?: string;
 	verbose?: boolean;
@@ -84,7 +85,7 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "telegram") {
+			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "acp" || mode === "telegram") {
 				result.mode = mode;
 			}
 		} else if (arg === "--continue" || arg === "-c") {
@@ -174,6 +175,10 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.profile = args[++i];
 		} else if (arg === "--offline") {
 			result.offline = true;
+		} else if (arg === "--sandbox") {
+			result.sandbox = true;
+		} else if (arg === "--no-sandbox") {
+			result.sandbox = false;
 		} else if (arg === "--session-trace") {
 			result.sessionTrace = true;
 		} else if (arg === "--session-trace-dir" && i + 1 < args.length) {
@@ -225,7 +230,7 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: IOSM agent prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt
-  --mode <mode>                  Output mode: text (default), json, rpc, or telegram
+  --mode <mode>                  Output mode: text (default), json, rpc, acp, or telegram
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
@@ -236,7 +241,7 @@ ${chalk.bold("Options:")}
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools                     Disable all built-in tools
   --tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
-                                 Available: read, bash, edit, write, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read, git_write, fs_ops, test_run, lint_run, typecheck_run, db_run, todo_read, todo_write
+                                 Available: read, bash, edit, write, apply_patch, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read, git_write, fs_ops, test_run, lint_run, typecheck_run, db_run, todo_read, todo_write, tool_search, tool_suggest
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -252,6 +257,8 @@ ${chalk.bold("Options:")}
   --plan                         Plan mode: explore read-only, show plan, wait for approval before executing
   --profile <name>               Agent profile: full, plan, iosm, meta (main modes) + explore, iosm_analyst, iosm_verifier, cycle_planner
   --offline                      Disable startup network operations (same as ${ENV_OFFLINE}=1)
+  --sandbox                      Enable Linux bubblewrap sandbox for process tools (fails if bwrap unavailable)
+  --no-sandbox                   Explicitly disable sandbox even if enabled in settings
   --session-trace                Enable full session trace JSONL logging
   --session-trace-dir <dir>      Directory for session trace logs (default: ~/${CONFIG_DIR_NAME}/agent/session-traces)
   --help, -h                     Show this help
@@ -363,6 +370,7 @@ ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   bash   - Execute bash commands
   edit   - Edit files with find/replace
   write  - Write files (creates/overwrites)
+  apply_patch - Structured patch application tool with formal grammar
   grep   - Search file contents (read-only, off by default)
   find   - Find files by glob pattern (read-only, off by default)
   ls     - List directory contents (read-only, off by default)
@@ -384,5 +392,9 @@ ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   lint_run - Structured lint execution (auto/npm/pnpm/yarn/bun/eslint/prettier/stylelint)
   typecheck_run - Structured typecheck execution (auto/npm/pnpm/yarn/bun/tsc/vue_tsc/pyright/mypy)
   db_run - Structured database operations (query/exec/schema/migrate/explain over named profiles)
+  todo_write - Persist task checklist items
+  todo_read - Read persisted task checklist
+  tool_search - Search available tools by capability
+  tool_suggest - Recommend tools for a described task
 `);
 }

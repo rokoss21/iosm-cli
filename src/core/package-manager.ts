@@ -7,6 +7,7 @@ import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { CONFIG_DIR_NAME, ENV_OFFLINE } from "../config.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
+import { SourceSecurityManager, type SecurityConsentRequest } from "./security/index.js";
 import type { PackageSource, SettingsManager } from "./settings-manager.js";
 
 const NETWORK_TIMEOUT_MS = 10000;
@@ -67,6 +68,10 @@ interface PackageManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	sourceSecurityManager?: SourceSecurityManager;
+	allowedSourceHosts?: string[];
+	trustConsentProvider?: (request: SecurityConsentRequest) => Promise<boolean>;
+	allowNonInteractiveTrustOverride?: boolean;
 }
 
 type SourceScope = "user" | "project" | "temporary";
@@ -638,11 +643,21 @@ export class DefaultPackageManager implements PackageManager {
 	private settingsManager: SettingsManager;
 	private globalNpmRoot: string | undefined;
 	private progressCallback: ProgressCallback | undefined;
+	private sourceSecurityManager: SourceSecurityManager;
+	private allowNonInteractiveTrustOverride: boolean;
 
 	constructor(options: PackageManagerOptions) {
 		this.cwd = options.cwd;
 		this.agentDir = options.agentDir;
 		this.settingsManager = options.settingsManager;
+		this.sourceSecurityManager =
+			options.sourceSecurityManager ??
+			new SourceSecurityManager({
+				agentDir: this.agentDir,
+				allowedHosts: options.allowedSourceHosts,
+				consentProvider: options.trustConsentProvider,
+			});
+		this.allowNonInteractiveTrustOverride = options.allowNonInteractiveTrustOverride ?? false;
 	}
 
 	setProgressCallback(callback: ProgressCallback | undefined): void {
@@ -857,7 +872,7 @@ export class DefaultPackageManager implements PackageManager {
 		if (parsed.type === "npm") {
 			if (parsed.pinned) return;
 			await this.withProgress("update", source, `Updating ${source}...`, async () => {
-				await this.installNpm(parsed, scope, false);
+				await this.installNpm(parsed, scope, false, "update");
 			});
 			return;
 		}
@@ -1156,7 +1171,128 @@ export class DefaultPackageManager implements PackageManager {
 		return { name, version };
 	}
 
-	private async installNpm(source: NpmSource, scope: SourceScope, temporary: boolean): Promise<void> {
+	private async ensureSourceTrust(
+		sourceRaw: string,
+		parsed: ParsedSource,
+		action: "install" | "update",
+		options?: {
+			repositoryDir?: string;
+		},
+	): Promise<void> {
+		if (parsed.type === "local") {
+			return;
+		}
+
+		if (parsed.type === "npm") {
+			const fingerprint = await this.resolveNpmFingerprint(parsed);
+			await this.sourceSecurityManager.verify({
+				action,
+				sourceType: "npm",
+				source: sourceRaw,
+				identity: fingerprint.identity,
+				host: fingerprint.host,
+				fingerprint: fingerprint.fingerprint,
+				allowOverride: this.allowNonInteractiveTrustOverride,
+			});
+			return;
+		}
+
+		const gitFingerprint = this.resolveGitFingerprint(parsed, options?.repositoryDir);
+		await this.sourceSecurityManager.verify({
+			action,
+			sourceType: "git",
+			source: sourceRaw,
+			identity: gitFingerprint.identity,
+			host: gitFingerprint.host,
+			fingerprint: gitFingerprint.fingerprint,
+			allowOverride: this.allowNonInteractiveTrustOverride,
+		});
+	}
+
+	private async resolveNpmFingerprint(source: NpmSource): Promise<{
+		identity: string;
+		fingerprint: string;
+		host: string;
+	}> {
+		const { name, version } = this.parseNpmSpec(source.spec);
+		const encodedName = encodeURIComponent(name).replace("%40", "@");
+		const endpoint = version
+			? `https://registry.npmjs.org/${encodedName}/${encodeURIComponent(version)}`
+			: `https://registry.npmjs.org/${encodedName}/latest`;
+		const response = await fetch(endpoint, {
+			signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+		});
+		if (!response.ok) {
+			throw new Error(`Failed to resolve npm package metadata for ${name}: ${response.status}`);
+		}
+		const payload = (await response.json()) as {
+			name?: string;
+			version?: string;
+			dist?: { integrity?: string; tarball?: string };
+		};
+		const resolvedName = payload.name ?? name;
+		const resolvedVersion = payload.version ?? version ?? "unknown";
+		const integrity = payload.dist?.integrity?.trim();
+		const tarball = payload.dist?.tarball?.trim();
+		if (!integrity && !tarball) {
+			throw new Error(`npm integrity metadata is missing for ${resolvedName}@${resolvedVersion}`);
+		}
+		return {
+			identity: `${resolvedName}@${resolvedVersion}`,
+			fingerprint: integrity ?? `tarball:${tarball}`,
+			host: "registry.npmjs.org",
+		};
+	}
+
+	private resolveGitFingerprint(
+		source: GitSource,
+		repositoryDir?: string,
+	): { identity: string; fingerprint: string; host: string } {
+		let lsRemote:
+			| {
+					status: number | null;
+					stderr: string | Buffer;
+					stdout: string | Buffer;
+			  }
+			| undefined;
+
+		if (repositoryDir && existsSync(join(repositoryDir, ".git"))) {
+			lsRemote = spawnSync("git", ["ls-remote", "origin", "HEAD"], {
+				encoding: "utf8",
+				timeout: NETWORK_TIMEOUT_MS,
+				cwd: repositoryDir,
+			});
+		}
+
+		if (!lsRemote || lsRemote.status !== 0) {
+			lsRemote = spawnSync("git", ["ls-remote", source.repo, "HEAD"], {
+				encoding: "utf8",
+				timeout: NETWORK_TIMEOUT_MS,
+			});
+		}
+		if (lsRemote.status !== 0) {
+			const stderr = typeof lsRemote.stderr === "string" ? lsRemote.stderr.trim() : "";
+			throw new Error(`Failed to resolve git fingerprint for ${source.repo}: ${stderr || "git ls-remote failed"}`);
+		}
+		const output = typeof lsRemote.stdout === "string" ? lsRemote.stdout.trim() : "";
+		const commit = output.split(/\s+/)[0];
+		if (!commit) {
+			throw new Error(`Failed to parse git fingerprint for ${source.repo}`);
+		}
+		return {
+			identity: `${source.host}/${source.path}`,
+			fingerprint: commit,
+			host: source.host.toLowerCase(),
+		};
+	}
+
+	private async installNpm(
+		source: NpmSource,
+		scope: SourceScope,
+		temporary: boolean,
+		action: "install" | "update" = "install",
+	): Promise<void> {
+		await this.ensureSourceTrust(`npm:${source.spec}`, source, action);
 		if (scope === "user" && !temporary) {
 			await this.runCommand("npm", ["install", "-g", source.spec]);
 			return;
@@ -1179,6 +1315,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
+		await this.ensureSourceTrust(source.repo, source, "install");
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			return;
@@ -1204,6 +1341,9 @@ export class DefaultPackageManager implements PackageManager {
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);
 			return;
+		}
+		if (scope !== "temporary") {
+			await this.ensureSourceTrust(source.repo, source, "update", { repositoryDir: targetDir });
 		}
 
 		// Fetch latest from remote (handles force-push by getting new history)

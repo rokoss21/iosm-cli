@@ -1,4 +1,12 @@
 export {
+	createApplyPatchTool,
+	type ApplyPatchOperations,
+	type ApplyPatchToolDetails,
+	type ApplyPatchToolInput,
+	type ApplyPatchToolOptions,
+	applyPatchTool,
+} from "./apply-patch.js";
+export {
 	createAstGrepTool,
 	type AstGrepToolInput,
 	astGrepTool,
@@ -189,10 +197,25 @@ export {
 	writeTool,
 } from "./write.js";
 export {
+	type PermissionGrantScope,
+	PermissionGrantStore,
+	type McpToolApprovalMode,
+	getToolPermissionSignature,
 	type ToolPermissionGuard,
 	type ToolPermissionRequest,
 	type ToolRequiredPermission,
 } from "./permissions.js";
+export {
+	createToolSearchTool,
+	type ToolSearchCatalogEntry,
+	type ToolSearchInput,
+	type ToolSearchOptions,
+} from "./tool-search.js";
+export {
+	createToolSuggestTool,
+	type ToolSuggestInput,
+	type ToolSuggestOptions,
+} from "./tool-suggest.js";
 export {
 	createTodoWriteTool,
 	createTodoReadTool,
@@ -238,6 +261,7 @@ export {
 } from "./typecheck-run.js";
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { applyPatchTool, createApplyPatchTool, type ApplyPatchToolOptions } from "./apply-patch.js";
 import { astGrepTool, createAstGrepTool } from "./ast-grep.js";
 import { type BashToolOptions, bashTool, createBashTool } from "./bash.js";
 import { combyTool, createCombyTool } from "./comby.js";
@@ -268,6 +292,8 @@ import {
 	type SemanticSearchToolOptions,
 	semanticSearchTool,
 } from "./semantic-search.js";
+import { createToolSearchTool, type ToolSearchCatalogEntry, toolSearchTool as defaultToolSearchTool } from "./tool-search.js";
+import { createToolSuggestTool, toolSuggestTool as defaultToolSuggestTool } from "./tool-suggest.js";
 import { createWriteTool, type WriteToolOptions, writeTool } from "./write.js";
 import { createYqTool, yqTool } from "./yq.js";
 import { todoWriteTool, todoReadTool } from "./todo.js";
@@ -280,34 +306,20 @@ export type Tool = AgentTool<any>;
 // Default tools for full access mode (using process.cwd())
 export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
 
-// Read-only tools for exploration without modification (using process.cwd())
-export const readOnlyTools: Tool[] = [
-	readTool,
-	grepTool,
-	findTool,
-	lsTool,
-	rgTool,
-	fdTool,
-	astGrepTool,
-	combyTool,
-	jqTool,
-	yqTool,
-	semgrepTool,
-	sedTool,
-	semanticSearchTool,
-	createFetchTool(process.cwd(), {
-		resolveAllowedMethods: () => getAllowedFetchMethodsForProfile("plan"),
-	}),
-	webSearchTool,
-	gitReadTool,
-];
+function buildCatalogFromTools(tools: Record<string, Tool>, activeNames?: Set<string>): ToolSearchCatalogEntry[] {
+	return Object.entries(tools).map(([name, tool]) => ({
+		name,
+		description: tool.description,
+		active: activeNames ? activeNames.has(name) : true,
+	}));
+}
 
-// All available tools (using process.cwd())
-export const allTools = {
+const prebuiltBaseTools = {
 	read: readTool,
 	bash: bashTool,
 	edit: editTool,
 	write: writeTool,
+	apply_patch: applyPatchTool,
 	grep: grepTool,
 	find: findTool,
 	ls: lsTool,
@@ -333,6 +345,52 @@ export const allTools = {
 	todo_read: todoReadTool,
 };
 
+let prebuiltToolSearch: Tool = defaultToolSearchTool;
+let prebuiltToolSuggest: Tool = defaultToolSuggestTool;
+const resolvePrebuiltCatalog = (): ToolSearchCatalogEntry[] =>
+	buildCatalogFromTools({
+		...prebuiltBaseTools,
+		tool_search: prebuiltToolSearch,
+		tool_suggest: prebuiltToolSuggest,
+	});
+
+prebuiltToolSearch = createToolSearchTool({ resolveCatalog: resolvePrebuiltCatalog });
+prebuiltToolSuggest = createToolSuggestTool({ resolveCatalog: resolvePrebuiltCatalog });
+
+// All available tools (using process.cwd())
+export const allTools = {
+	...prebuiltBaseTools,
+	tool_search: prebuiltToolSearch,
+	tool_suggest: prebuiltToolSuggest,
+};
+
+export const toolSearchTool = prebuiltToolSearch;
+export const toolSuggestTool = prebuiltToolSuggest;
+
+// Read-only tools for exploration without modification (using process.cwd())
+export const readOnlyTools: Tool[] = [
+	readTool,
+	grepTool,
+	findTool,
+	lsTool,
+	rgTool,
+	fdTool,
+	astGrepTool,
+	combyTool,
+	jqTool,
+	yqTool,
+	semgrepTool,
+	sedTool,
+	semanticSearchTool,
+	createFetchTool(process.cwd(), {
+		resolveAllowedMethods: () => getAllowedFetchMethodsForProfile("plan"),
+	}),
+	webSearchTool,
+	gitReadTool,
+	prebuiltToolSearch,
+	prebuiltToolSuggest,
+];
+
 export type ToolName = keyof typeof allTools;
 
 export interface ToolsOptions {
@@ -344,6 +402,8 @@ export interface ToolsOptions {
 	edit?: EditToolOptions;
 	/** Options for the write tool */
 	write?: WriteToolOptions;
+	/** Options for the apply_patch tool */
+	applyPatch?: ApplyPatchToolOptions;
 	/** Options for the semantic_search tool */
 	semantic?: SemanticSearchToolOptions;
 	/** Options for the fetch tool */
@@ -356,6 +416,10 @@ export interface ToolsOptions {
 	fsOps?: FsOpsToolOptions;
 	/** Options for the db_run tool */
 	dbRun?: DbRunToolOptions;
+	/** Optional dynamic catalog source used by tool_search/tool_suggest. */
+	toolCatalog?: {
+		resolveCatalog?: () => ToolSearchCatalogEntry[];
+	};
 }
 
 /**
@@ -379,8 +443,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		resolveAllowedMethods:
 			options?.fetch?.resolveAllowedMethods ?? (() => getAllowedFetchMethodsForProfile("plan")),
 	};
-
-	return [
+	const baseReadOnlyTools: Tool[] = [
 		createReadTool(cwd, options?.read),
 		createGrepTool(cwd),
 		createFindTool(cwd),
@@ -398,17 +461,33 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		createWebSearchTool(cwd, options?.webSearch),
 		createGitReadTool(cwd),
 	];
+
+	let dynamicToolSearch: Tool = defaultToolSearchTool;
+	let dynamicToolSuggest: Tool = defaultToolSuggestTool;
+	const resolveCatalog =
+		options?.toolCatalog?.resolveCatalog ??
+		(() =>
+			buildCatalogFromTools({
+				...Object.fromEntries(baseReadOnlyTools.map((tool) => [tool.name, tool])),
+				tool_search: dynamicToolSearch,
+				tool_suggest: dynamicToolSuggest,
+			}));
+
+	dynamicToolSearch = createToolSearchTool({ resolveCatalog });
+	dynamicToolSuggest = createToolSuggestTool({ resolveCatalog });
+	return [...baseReadOnlyTools, dynamicToolSearch, dynamicToolSuggest];
 }
 
 /**
  * Create all tools configured for a specific working directory.
  */
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
-	return {
+	const baseTools = {
 		read: createReadTool(cwd, options?.read),
 		bash: createBashTool(cwd, options?.bash),
 		edit: createEditTool(cwd, options?.edit),
 		write: createWriteTool(cwd, options?.write),
+		apply_patch: createApplyPatchTool(cwd, options?.applyPatch),
 		grep: createGrepTool(cwd),
 		find: createFindTool(cwd),
 		ls: createLsTool(cwd),
@@ -433,6 +512,26 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		todo_write: todoWriteTool,
 		todo_read: todoReadTool,
 	};
+
+	let dynamicToolSearch: Tool = defaultToolSearchTool;
+	let dynamicToolSuggest: Tool = defaultToolSuggestTool;
+	const resolveCatalog =
+		options?.toolCatalog?.resolveCatalog ??
+		(() =>
+			buildCatalogFromTools({
+				...baseTools,
+				tool_search: dynamicToolSearch,
+				tool_suggest: dynamicToolSuggest,
+			}));
+
+	dynamicToolSearch = createToolSearchTool({ resolveCatalog });
+	dynamicToolSuggest = createToolSuggestTool({ resolveCatalog });
+
+	return {
+		...baseTools,
+		tool_search: dynamicToolSearch,
+		tool_suggest: dynamicToolSuggest,
+	} satisfies Record<ToolName, Tool>;
 }
 
 /**

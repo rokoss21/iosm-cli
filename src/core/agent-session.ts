@@ -385,23 +385,18 @@ function buildMetaProfileOrchestrationDirective(text: string): string | undefine
 
 	return [
 		"[META_ORCHESTRATION_DIRECTIVE]",
-		"Session profile is meta. The main/root agent remains the orchestrator for this request.",
+		"Session profile is meta. The root agent remains the orchestrator for this request.",
 		"First classify the user request.",
 		"If the request is conversational or non-repository (for example: quick Q&A, opinion, preference, explanation, rewrite, translation, casual chat), DO NOT orchestrate and DO NOT call `task`.",
 		"For non-repository requests, answer directly as a normal chat assistant in the user's language.",
-		"For non-repository requests, do not run tools, do not inspect repository files, and do not perform reconnaissance unless the user explicitly asks for it.",
-		"Do not output internal reasoning, classification notes, or status preambles (for example: 'The user is asking...' or 'Let me analyze...'). Return only the final user-facing answer.",
+		"For non-repository requests, do not run tools or repository reconnaissance unless the user explicitly asks for it.",
+		"Do not output internal reasoning or status preambles; return only the final user-facing answer.",
 		"Only apply the orchestration rules below when the request is actionable repository work (requires reading/modifying/running/verifying workspace code or project artifacts).",
 		"For actionable repository work, keep recon bounded and read-only, just enough to identify the workstreams.",
 		"The main emphasis of meta mode is parallelism through top-level agents and nested delegates.",
 		"For any non-trivial work, the main/root agent MUST orchestrate with multiple top-level `task` calls in the parent turn when independent streams exist.",
-		"For any child workstream that still contains multiple independent slices, require nested delegation rather than letting one child do everything alone.",
-		"Do NOT collapse the whole task into one root implementation subagent.",
-		"Do NOT hand the entire job to a single write-capable specialist such as iosm_change_executor when the work can be partitioned.",
-		"Use specialist/custom agents as focused workstreams within a broader execution graph, not as the sole executor for the entire non-trivial task.",
-		"If you need clarification first, ask it concisely; once clarified, continue with orchestration.",
-		"If the user specified agent/delegate counts or parallelism constraints, treat them as hard execution requirements.",
-		"For non-trivial work where implementation, tests, verification, docs, or risk analysis can be separated, prefer 3 or more focused task calls rather than 1, and prefer additional delegate fan-out inside those tasks when it shortens the critical path safely.",
+		"For independent streams, emit task calls in the same turn when feasible; for child streams with independent slices, require nested delegation.",
+		"If user-specified agent/delegate counts or parallelism constraints exist, treat them as hard execution requirements.",
 		"If you truly cannot split the work into multiple top-level tasks or nested delegates, include one line: DELEGATION_IMPOSSIBLE: <precise reason>.",
 	].join("\n");
 }
@@ -529,6 +524,7 @@ const BUILTIN_TOOL_REQUIRED_PERMISSIONS: Record<string, ToolRequiredPermission> 
 	bash: "danger-full-access",
 	edit: "workspace-write",
 	write: "workspace-write",
+	apply_patch: "workspace-write",
 	fetch: "read-only",
 	web_search: "read-only",
 	git_write: "workspace-write",
@@ -1374,6 +1370,14 @@ export class AgentSession {
 		}
 		this._sessionTraceEnabled = true;
 		this._refreshSessionTracePath("session_trace_enabled");
+	}
+
+	/** Append an arbitrary runtime trace event when session tracing is enabled. */
+	appendRuntimeTrace(type: string, payload: Record<string, unknown>): void {
+		this._appendSessionTrace({
+			type,
+			...payload,
+		});
 	}
 
 	/** Current session display name, if set */
@@ -3693,21 +3697,24 @@ export class AgentSession {
 		const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 		const baseTools = this._baseToolsOverride
 			? this._baseToolsOverride
-				: createAllTools(this._cwd, {
-					read: { autoResizeImages },
-					bash: {
-						commandPrefix: shellCommandPrefix,
-						permissionGuard: async (request) => this._evaluateToolPermission(request),
-					},
-					edit: {
-						permissionGuard: async (request) => this._evaluateToolPermission(request),
-					},
-					write: {
-						permissionGuard: async (request) => this._evaluateToolPermission(request),
-					},
-					semantic: {
-						authStorage: this._modelRegistry.authStorage,
-					},
+					: createAllTools(this._cwd, {
+						read: { autoResizeImages },
+						bash: {
+							commandPrefix: shellCommandPrefix,
+							permissionGuard: async (request) => this._evaluateToolPermission(request),
+						},
+						edit: {
+							permissionGuard: async (request) => this._evaluateToolPermission(request),
+						},
+						write: {
+							permissionGuard: async (request) => this._evaluateToolPermission(request),
+						},
+						applyPatch: {
+							permissionGuard: async (request) => this._evaluateToolPermission(request),
+						},
+						semantic: {
+							authStorage: this._modelRegistry.authStorage,
+						},
 					fetch: {
 						resolveAllowedMethods: () => getAllowedFetchMethodsForProfile(this._profileName),
 						permissionGuard: async (request) => this._evaluateToolPermission(request),
@@ -3735,11 +3742,21 @@ export class AgentSession {
 					fsOps: {
 						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
-					dbRun: {
-						resolveRuntimeConfig: () => this.settingsManager.getDbToolsSettings(),
-						permissionGuard: async (request) => this._evaluateToolPermission(request),
-					},
-				});
+						dbRun: {
+							resolveRuntimeConfig: () => this.settingsManager.getDbToolsSettings(),
+							permissionGuard: async (request) => this._evaluateToolPermission(request),
+						},
+						toolCatalog: {
+							resolveCatalog: () => {
+								const activeToolNames = new Set(this.getActiveToolNames());
+								return this.getAllTools().map((tool) => ({
+									name: tool.name,
+									description: tool.description,
+									active: activeToolNames.has(tool.name),
+								}));
+							},
+						},
+					});
 
 		this._baseToolRegistry = new Map(Object.entries(baseTools).map(([name, tool]) => [name, tool as AgentTool]));
 

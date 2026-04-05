@@ -18,6 +18,8 @@ describe("mcp cli parser", () => {
 			"--arg",
 			".",
 			"--disable",
+			"--tool-approval",
+			"read=prompt",
 		]);
 
 		expect(parsed.ok).toBe(true);
@@ -28,6 +30,9 @@ describe("mcp cli parser", () => {
 		expect(parsed.value.config.command).toBe("npx");
 		expect(parsed.value.config.args).toEqual(["-y", "@modelcontextprotocol/server-filesystem", "."]);
 		expect(parsed.value.config.enabled).toBe(false);
+		expect(parsed.value.config.tools).toEqual({
+			read: { approvalMode: "prompt" },
+		});
 	});
 
 	it("parses http add command with headers and env", () => {
@@ -66,5 +71,40 @@ describe("mcp cli parser", () => {
 		expect(parsed.ok).toBe(false);
 		if (parsed.ok || "help" in parsed) return;
 		expect(parsed.error).toContain("Invalid server name");
+	});
+
+	it("rejects invalid --tool-approval mode", () => {
+		const parsed = parseMcpAddCommand([
+			"filesystem",
+			"--transport",
+			"stdio",
+			"--command",
+			"npx",
+			"--tool-approval",
+			"read=always",
+		]);
+		expect(parsed.ok).toBe(false);
+		if (parsed.ok || "help" in parsed) return;
+		expect(parsed.error).toContain("Invalid --tool-approval mode");
+	});
+
+	it("parses multiple --tool-approval flags", () => {
+		const parsed = parseMcpAddCommand([
+			"github",
+			"--transport",
+			"http",
+			"--url",
+			"https://mcp.example.com",
+			"--tool-approval",
+			"search=prompt",
+			"--tool-approval",
+			"get_file=approve",
+		]);
+		expect(parsed.ok).toBe(true);
+		if (!parsed.ok) return;
+		expect(parsed.value.config.tools).toEqual({
+			search: { approvalMode: "prompt" },
+			get_file: { approvalMode: "approve" },
+		});
 	});
 });

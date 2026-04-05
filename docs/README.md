@@ -13,8 +13,10 @@ Comprehensive documentation for `iosm-cli` — an AI-powered engineering agent w
 | [Orchestration & Subagents](./orchestration-and-subagents.md) | Task delegation, parallel execution, custom agents |
 | [Extensions & Packages](./extensions-packages-themes.md) | Extension API, skills, themes, package management |
 | [Configuration](./configuration.md) | Settings hierarchy, environment variables, profiles |
+| [Configuration (Generated)](./configuration.generated.md) | Schema-derived settings reference generated from `settings.schema.json` |
 | [Sessions & Export](./sessions-traces-export.md) | Persistence, branching, traces, HTML export, sharing |
 | [JSON/RPC/SDK](./rpc-json-sdk.md) | Programmatic integrations, event streaming, SDK |
+| [ACP RPC Mapping](./acp-rpc-mapping.md) | ACP adapter protocol surface and RPC compatibility mapping |
 | [Development & Testing](./development-and-testing.md) | Contributing, testing, architecture |
 
 ## Related Resources

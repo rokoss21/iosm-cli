@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-04-05
+
+### Added
+
+- **Policy Engine v2** — added TOML-backed layered policy resolver with deterministic precedence and legacy compatibility bridge for existing permission rules
+- **ACP mode** — added `--mode acp` adapter over RPC/event bus with capability negotiation and compatibility degradation handling
+- **Tooling expansion** — added built-in `apply_patch`, `tool_search`, and `tool_suggest` tools
+- **Unified execution runtime** — added PTY-capable unified execution support for interactive command sessions (`exec` + stdin streaming workflow)
+- **Session resume indexing** — added indexed session lookup to avoid full filesystem scans on large session sets
+- **Schema-driven settings docs pipeline** — added generated configuration docs and CI validation scripts for settings/schema drift detection
+
+### Changed
+
+- **Permission flow** — unified permission evaluation across interactive and RPC runtimes through policy-backed evaluator
+- **Permission UX** — added turn-scoped and session-scoped approval behavior to reduce repeated prompts in ask mode while preserving safety controls
+- **MCP governance** — enforced source trust checks and logged per-tool policy decision traces for MCP tool calls
+- **Task UI in interactive mode** — task-state operations now render as structured checklists (`done / in progress / pending`) instead of raw JSON argument dumps
+- **Package/tool security baseline** — install/update/extensions/tool-manager paths now use trust-ledger and source security checks (host allowlist, fingerprint/integrity, consent gates)
+- **Linux sandbox execution** — added explicit opt-in sandbox path using `bwrap` with hard failure when required runtime is unavailable
+- **Command rollback safety** — integrated filesystem checkpoint snapshot/restore with deterministic rollback ordering in command dispatch flow
+
+### Documentation
+
+- Updated README release marker and release highlights for `0.2.16`
+- Added docs navigation entries for ACP mapping and generated configuration reference
+- Refreshed configuration documentation from schema generation pipeline
+
+### Tests
+
+- Expanded coverage for policy engine behavior, ACP mode, apply_patch grammar/runtime, tool_search/tool_suggest flow, session index resume path, and unified execution runtime
+- Revalidated interactive task-plan/task-checklist rendering and orchestration-related interactive regressions
+
 ## [0.2.15] - 2026-04-04
 
 ### Changed

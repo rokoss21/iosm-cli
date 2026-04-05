@@ -110,6 +110,11 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("telegram");
 		});
 
+		test("parses --mode acp", () => {
+			const result = parseArgs(["--mode", "acp"]);
+			expect(result.mode).toBe("acp");
+		});
+
 		test("parses --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.session).toBe("/path/to/session.jsonl");
@@ -248,6 +253,18 @@ describe("parseArgs", () => {
 		test("parses --offline flag", () => {
 			const result = parseArgs(["--offline"]);
 			expect(result.offline).toBe(true);
+		});
+	});
+
+	describe("--sandbox flag", () => {
+		test("parses --sandbox", () => {
+			const result = parseArgs(["--sandbox"]);
+			expect(result.sandbox).toBe(true);
+		});
+
+		test("parses --no-sandbox", () => {
+			const result = parseArgs(["--no-sandbox"]);
+			expect(result.sandbox).toBe(false);
 		});
 	});
 

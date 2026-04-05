@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { isSandboxEnabledFromEnv, wrapCommandWithSandbox } from "../sandbox/executor.js";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -77,7 +78,20 @@ function runGitCommand(
 			return;
 		}
 
-		const child = spawn("git", args, {
+		let wrapped;
+		try {
+			wrapped = wrapCommandWithSandbox({
+				command: "git",
+				args,
+				cwd,
+				enabled: isSandboxEnabledFromEnv(),
+			});
+		} catch (error) {
+			reject(error instanceof Error ? error : new Error(String(error)));
+			return;
+		}
+
+		const child = spawn(wrapped.command, wrapped.args, {
 			cwd,
 			stdio: ["ignore", "pipe", "pipe"],
 			env: executionOptions?.env ? { ...process.env, ...executionOptions.env } : process.env,

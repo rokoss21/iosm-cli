@@ -186,6 +186,7 @@ import {
 	resolveCustomSubagentReference,
 	type CustomSubagentEntry,
 } from "../../core/subagents.js";
+import { evaluatePermissionWithPolicy, type PolicyEngineV2 } from "../../core/policy/index.js";
 import { getSubagentRun, listSubagentRuns } from "../../core/subagent-runs.js";
 import {
 	getBackgroundProcess,
@@ -210,8 +211,12 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { SettingsManager, type PackageSource } from "../../core/settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
-import type { ToolPermissionRequest } from "../../core/tools/index.js";
-import { isTaskPlanSnapshot, TASK_PLAN_CUSTOM_TYPE, type TaskPlanSnapshot } from "../../core/task-plan.js";
+import { getToolPermissionSignature, type ToolPermissionRequest } from "../../core/tools/index.js";
+import {
+	coerceTaskPlanSnapshot,
+	TASK_PLAN_CUSTOM_TYPE,
+	type TaskPlanSnapshot,
+} from "../../core/task-plan.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import {
 	buildIosmAutomationPrompt,
@@ -728,9 +733,12 @@ async function promptMetaWithParallelismGuard(input: {
 
 	const unsubscribe = input.session.subscribe((event) => {
 		if (event.type === "message_end" && event.message.role === "custom") {
-			if (event.message.customType === TASK_PLAN_CUSTOM_TYPE && isTaskPlanSnapshot(event.message.details)) {
-				taskPlanSnapshot = event.message.details;
-				maybeScheduleCorrection();
+			if (event.message.customType === TASK_PLAN_CUSTOM_TYPE) {
+				const snapshot = coerceTaskPlanSnapshot(event.message.details);
+				if (snapshot) {
+					taskPlanSnapshot = snapshot;
+					maybeScheduleCorrection();
+				}
 			}
 			return;
 		}
@@ -1375,6 +1383,8 @@ export interface InteractiveModeOptions {
 	profile?: string;
 	/** MCP runtime for /mcp command and dynamic MCP tool updates */
 	mcpRuntime?: McpRuntime;
+	/** Shared policy engine for permission and source security */
+	policyEngine?: PolicyEngineV2;
 }
 
 type RunningSubagentState = {
@@ -1453,6 +1463,7 @@ export class InteractiveMode {
 	private permissionAllowRules: string[] = [];
 	private permissionDenyRules: string[] = [];
 	private permissionPromptLock: Promise<void> = Promise.resolve();
+	private turnAllowedToolSignatures = new Set<string>();
 	private sessionAllowedToolSignatures = new Set<string>();
 	private contractService: ContractService;
 	private singularService: SingularService;
@@ -1496,6 +1507,7 @@ export class InteractiveMode {
 	// Skill commands: command name -> skill file path
 	private skillCommands = new Map<string, string>();
 	private mcpRuntime?: McpRuntime;
+	private policyEngine?: PolicyEngineV2;
 
 	// Agent subscription unsubscribe function
 	private unsubscribe?: () => void;
@@ -1620,6 +1632,7 @@ export class InteractiveMode {
 		this.activeProfileName = profile.name;
 		this.profilePromptSuffix = profile.systemPromptAppend || undefined;
 		this.mcpRuntime = options.mcpRuntime;
+		this.policyEngine = options.policyEngine;
 		this.contractService = new ContractService({ cwd: this.sessionManager.getCwd() });
 		this.singularService = new SingularService({ cwd: this.sessionManager.getCwd() });
 
@@ -1631,8 +1644,9 @@ export class InteractiveMode {
 		this.session.setIosmAutopilotEnabled(this.activeProfileName === "iosm");
 		this.syncRuntimePromptSuffix();
 		this.permissionMode = this.settingsManager.getPermissionMode();
-		this.permissionAllowRules = this.settingsManager.getPermissionAllowRules();
-		this.permissionDenyRules = this.settingsManager.getPermissionDenyRules();
+		this.policyEngine?.refresh();
+		this.permissionAllowRules = this.policyEngine?.getLegacyRules("allow") ?? this.settingsManager.getPermissionAllowRules();
+		this.permissionDenyRules = this.policyEngine?.getLegacyRules("deny") ?? this.settingsManager.getPermissionDenyRules();
 		this.session.setToolPermissionHandler((request) => this.requestToolPermission(request));
 		this.mcpRuntime?.setPermissionGuard((request) => this.requestToolPermission(request));
 
@@ -1680,8 +1694,7 @@ export class InteractiveMode {
 	}
 
 	private getToolPermissionSignature(request: ToolPermissionRequest): string {
-		const summary = request.summary.trim().replace(/\s+/g, " ");
-		return `${request.toolName}:${summary}`;
+		return getToolPermissionSignature(request);
 	}
 
 	private matchesPermissionRule(rule: string, request: ToolPermissionRequest): boolean {
@@ -1716,7 +1729,7 @@ export class InteractiveMode {
 		if (
 			this.activeProfileName === "meta" &&
 			!this.currentTurnSawTaskToolCall &&
-			(request.toolName === "bash" || request.toolName === "edit" || request.toolName === "write")
+			(request.toolName === "bash" || request.toolName === "edit" || request.toolName === "write" || request.toolName === "apply_patch")
 		) {
 			this.showWarning(
 				`META mode orchestration guard: direct ${request.toolName} is blocked before the first task call in a turn. Launch subagents via task or switch profile to full.`,
@@ -1726,7 +1739,7 @@ export class InteractiveMode {
 
 		if (
 			isReadOnlyProfileName(this.activeProfileName) &&
-			(request.toolName === "bash" || request.toolName === "edit" || request.toolName === "write")
+			(request.toolName === "bash" || request.toolName === "edit" || request.toolName === "write" || request.toolName === "apply_patch")
 		) {
 			this.showWarning(
 				`Tool ${request.toolName} is disabled in ${this.activeProfileName} profile. Switch to full/meta/iosm for mutating operations.`,
@@ -1734,51 +1747,72 @@ export class InteractiveMode {
 			return false;
 		}
 
-		for (const rule of this.permissionDenyRules) {
-			if (this.matchesPermissionRule(rule, request)) {
-				this.showWarning(`Denied by rule: ${rule}`);
+		if (this.policyEngine) {
+			this.policyEngine.refresh();
+			const evaluated = evaluatePermissionWithPolicy(this.policyEngine, request, {
+				profile: this.activeProfileName,
+				runtimeMode: "interactive",
+				permissionMode: this.permissionMode,
+				strictExtensionToolEnforcement,
+			});
+			if (evaluated.outcome === "deny") {
+				this.showWarning(evaluated.reason);
 				return false;
 			}
-		}
-
-		for (const rule of this.permissionAllowRules) {
-			if (this.matchesPermissionRule(rule, request)) {
+			if (evaluated.outcome === "allow") {
 				return true;
 			}
-		}
-
-		if (strictExtensionToolEnforcement && request.toolSource === "extension") {
-			if (this.permissionMode === "auto") {
-				if (request.requiredPermission === "read-only") {
-					return true;
-				}
-				if (!request.requiredPermission) {
-					this.showWarning(
-						`Extension tool ${request.toolName} is missing requiredPermission metadata. Add an allow rule or switch to ask/yolo mode.`,
-					);
+		} else {
+			for (const rule of this.permissionDenyRules) {
+				if (this.matchesPermissionRule(rule, request)) {
+					this.showWarning(`Denied by rule: ${rule}`);
 					return false;
 				}
 			}
-		}
 
-		if (this.permissionMode === "yolo") {
-			return true;
-		}
-		if (this.permissionMode === "auto") {
-			// Auto mode mirrors "accept edits": allow edit/write without prompts,
-			// still ask for shell execution.
-			if (request.toolName === "edit" || request.toolName === "write") {
+			for (const rule of this.permissionAllowRules) {
+				if (this.matchesPermissionRule(rule, request)) {
+					return true;
+				}
+			}
+
+			if (strictExtensionToolEnforcement && request.toolSource === "extension") {
+				if (this.permissionMode === "auto") {
+					if (request.requiredPermission === "read-only") {
+						return true;
+					}
+					if (!request.requiredPermission) {
+						this.showWarning(
+							`Extension tool ${request.toolName} is missing requiredPermission metadata. Add an allow rule or switch to ask/yolo mode.`,
+						);
+						return false;
+					}
+				}
+			}
+
+			if (this.permissionMode === "yolo") {
 				return true;
+			}
+			if (this.permissionMode === "auto") {
+				// Auto mode mirrors "accept edits": allow edit/write without prompts,
+				// still ask for shell execution.
+					if (request.toolName === "edit" || request.toolName === "write" || request.toolName === "apply_patch") {
+						return true;
+					}
 			}
 		}
 
 		const signature = this.getToolPermissionSignature(request);
+		if (this.turnAllowedToolSignatures?.has(signature)) {
+			return true;
+		}
 		if (this.sessionAllowedToolSignatures.has(signature)) {
 			return true;
 		}
 
 		return this.withPermissionDialogLock(async () => {
 			if (this.permissionMode === "yolo") return true;
+			if (this.turnAllowedToolSignatures?.has(signature)) return true;
 			if (this.sessionAllowedToolSignatures.has(signature)) return true;
 
 			const tierLabel = request.requiredPermission ? ` [${request.requiredPermission}]` : "";
@@ -1786,12 +1820,19 @@ export class InteractiveMode {
 			const label = `${request.toolName}${tierLabel}${sourceLabel}: ${request.summary}`;
 			const choice = await this.showExtensionSelector("Permission required", [
 				"Allow once",
+				"Allow this turn",
 				"Deny",
 				"Always allow this command (session)",
 			]);
 			if (!choice || choice === "Deny") {
 				this.showWarning(`Permission denied: ${label}`);
 				return false;
+			}
+			if (choice === "Allow this turn") {
+				if (!this.turnAllowedToolSignatures) {
+					this.turnAllowedToolSignatures = new Set<string>();
+				}
+				this.turnAllowedToolSignatures.add(signature);
 			}
 			if (choice === "Always allow this command (session)") {
 				this.sessionAllowedToolSignatures.add(signature);
@@ -1856,6 +1897,55 @@ export class InteractiveMode {
 		return `Permissions: ${this.permissionMode}${this.permissionAllowRules.length > 0 ? ` · allow rules: ${this.permissionAllowRules.length}` : ""}${this.permissionDenyRules.length > 0 ? ` · deny rules: ${this.permissionDenyRules.length}` : ""}${hookSegment}`;
 	}
 
+	private refreshPermissionRulesFromPolicy(): void {
+		if (!this.policyEngine) return;
+		this.policyEngine.refresh();
+		this.permissionAllowRules = this.policyEngine.getLegacyRules("allow");
+		this.permissionDenyRules = this.policyEngine.getLegacyRules("deny");
+	}
+
+	private addPermissionRule(kind: "allow" | "deny", rawRule: string): boolean {
+		const normalized = rawRule.trim();
+		if (!normalized || !normalized.includes(":")) return false;
+		if (this.policyEngine) {
+			const added = this.policyEngine.addLegacyRule(kind, normalized);
+			this.refreshPermissionRulesFromPolicy();
+			return added;
+		}
+		if (kind === "allow") {
+			if (this.permissionAllowRules.includes(normalized)) return false;
+			this.permissionAllowRules.push(normalized);
+			this.settingsManager.setPermissionAllowRules(this.permissionAllowRules);
+			return true;
+		}
+		if (this.permissionDenyRules.includes(normalized)) return false;
+		this.permissionDenyRules.push(normalized);
+		this.settingsManager.setPermissionDenyRules(this.permissionDenyRules);
+		return true;
+	}
+
+	private removePermissionRule(kind: "allow" | "deny", rawRule: string): boolean {
+		const normalized = rawRule.trim();
+		if (!normalized) return false;
+		if (this.policyEngine) {
+			const removed = this.policyEngine.removeLegacyRule(kind, normalized);
+			this.refreshPermissionRulesFromPolicy();
+			return removed;
+		}
+		if (kind === "allow") {
+			const next = this.permissionAllowRules.filter((rule) => rule !== normalized);
+			if (next.length === this.permissionAllowRules.length) return false;
+			this.permissionAllowRules = next;
+			this.settingsManager.setPermissionAllowRules(this.permissionAllowRules);
+			return true;
+		}
+		const next = this.permissionDenyRules.filter((rule) => rule !== normalized);
+		if (next.length === this.permissionDenyRules.length) return false;
+		this.permissionDenyRules = next;
+		this.settingsManager.setPermissionDenyRules(this.permissionDenyRules);
+		return true;
+	}
+
 	private async runPermissionRulesMenu(kind: "allow" | "deny"): Promise<void> {
 		while (true) {
 			const isAllow = kind === "allow";
@@ -1893,17 +1983,7 @@ export class InteractiveMode {
 					this.showWarning(`Invalid rule "${rawRule || "(empty)"}". Expected <tool:match>.`);
 					continue;
 				}
-				if (isAllow) {
-					if (!this.permissionAllowRules.includes(rawRule)) {
-						this.permissionAllowRules.push(rawRule);
-						this.settingsManager.setPermissionAllowRules(this.permissionAllowRules);
-					}
-				} else {
-					if (!this.permissionDenyRules.includes(rawRule)) {
-						this.permissionDenyRules.push(rawRule);
-						this.settingsManager.setPermissionDenyRules(this.permissionDenyRules);
-					}
-				}
+				this.addPermissionRule(isAllow ? "allow" : "deny", rawRule);
 				this.showStatus(`Added ${kind} rule: ${rawRule}`);
 				continue;
 			}
@@ -1919,13 +1999,7 @@ export class InteractiveMode {
 				);
 				if (!pickedRule) continue;
 
-				if (isAllow) {
-					this.permissionAllowRules = this.permissionAllowRules.filter((rule) => rule !== pickedRule);
-					this.settingsManager.setPermissionAllowRules(this.permissionAllowRules);
-				} else {
-					this.permissionDenyRules = this.permissionDenyRules.filter((rule) => rule !== pickedRule);
-					this.settingsManager.setPermissionDenyRules(this.permissionDenyRules);
-				}
+				this.removePermissionRule(isAllow ? "allow" : "deny", pickedRule);
 				this.showStatus(`Removed ${kind} rule: ${pickedRule}`);
 			}
 		}
@@ -2001,6 +2075,7 @@ export class InteractiveMode {
 	}
 
 	private async handlePermissionsCommand(text: string): Promise<void> {
+		this.refreshPermissionRulesFromPolicy();
 		const args = this.parseSlashArgs(text).slice(1);
 		const value = args[0]?.toLowerCase();
 		if (!value) {
@@ -2048,10 +2123,7 @@ export class InteractiveMode {
 					this.showWarning("Usage: /permissions allow add <tool:match>");
 					return;
 				}
-				if (!this.permissionAllowRules.includes(rawRule)) {
-					this.permissionAllowRules.push(rawRule);
-					this.settingsManager.setPermissionAllowRules(this.permissionAllowRules);
-				}
+				this.addPermissionRule("allow", rawRule);
 				this.showStatus(`Added allow rule: ${rawRule}`);
 				return;
 			}
@@ -2061,8 +2133,7 @@ export class InteractiveMode {
 					this.showWarning("Usage: /permissions allow remove <tool:match>");
 					return;
 				}
-				this.permissionAllowRules = this.permissionAllowRules.filter((r) => r !== rawRule);
-				this.settingsManager.setPermissionAllowRules(this.permissionAllowRules);
+				this.removePermissionRule("allow", rawRule);
 				this.showStatus(`Removed allow rule: ${rawRule}`);
 				return;
 			}
@@ -2085,10 +2156,7 @@ export class InteractiveMode {
 					this.showWarning("Usage: /permissions deny add <tool:match>");
 					return;
 				}
-				if (!this.permissionDenyRules.includes(rawRule)) {
-					this.permissionDenyRules.push(rawRule);
-					this.settingsManager.setPermissionDenyRules(this.permissionDenyRules);
-				}
+				this.addPermissionRule("deny", rawRule);
 				this.showStatus(`Added deny rule: ${rawRule}`);
 				return;
 			}
@@ -2098,8 +2166,7 @@ export class InteractiveMode {
 					this.showWarning("Usage: /permissions deny remove <tool:match>");
 					return;
 				}
-				this.permissionDenyRules = this.permissionDenyRules.filter((r) => r !== rawRule);
-				this.settingsManager.setPermissionDenyRules(this.permissionDenyRules);
+				this.removePermissionRule("deny", rawRule);
 				this.showStatus(`Removed deny rule: ${rawRule}`);
 				return;
 			}
@@ -4803,6 +4870,7 @@ export class InteractiveMode {
 			case "agent_start":
 				this.currentTurnSawAssistantMessage = false;
 				this.currentTurnSawTaskToolCall = false;
+				this.turnAllowedToolSignatures.clear();
 				// Restore main escape handler if retry handler is still active
 				// (retry success event fires later, but we need main handler now)
 				if (this.retryEscapeHandler) {
@@ -5438,16 +5506,19 @@ export class InteractiveMode {
 			case "custom": {
 				this.handleInternalUiMetaMessage(message);
 				if (message.display) {
-					if (message.customType === TASK_PLAN_CUSTOM_TYPE && isTaskPlanSnapshot(message.details)) {
-						const component = new TaskPlanMessageComponent(message.details);
-						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
-					} else {
-						const renderer = this.session.extensionRunner?.getMessageRenderer(message.customType);
-						const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
-						component.setExpanded(this.toolOutputExpanded);
-						this.chatContainer.addChild(component);
+					if (message.customType === TASK_PLAN_CUSTOM_TYPE) {
+						const snapshot = coerceTaskPlanSnapshot(message.details);
+						if (snapshot) {
+							const component = new TaskPlanMessageComponent(snapshot);
+							component.setExpanded(this.toolOutputExpanded);
+							this.chatContainer.addChild(component);
+							break;
+						}
 					}
+					const renderer = this.session.extensionRunner?.getMessageRenderer(message.customType);
+					const component = new CustomMessageComponent(message, renderer, this.getMarkdownThemeWithSettings());
+					component.setExpanded(this.toolOutputExpanded);
+					this.chatContainer.addChild(component);
 				}
 				break;
 			}
@@ -15522,6 +15593,28 @@ export class InteractiveMode {
 			cwd,
 			agentDir: getAgentDir(),
 			settingsManager: this.settingsManager,
+			allowedSourceHosts: this.policyEngine?.getAllowedSourceHosts(),
+			trustConsentProvider: async (request) => {
+				const details = [
+					`Source: ${request.source}`,
+					`Host: ${request.host}`,
+					`Identity: ${request.identity}`,
+					`Fingerprint: ${request.fingerprint}`,
+				];
+				if (request.previousFingerprint) {
+					details.push(`Previous fingerprint: ${request.previousFingerprint}`);
+				}
+				const answer = await this.showExtensionSelector(
+					`Trust ${request.sourceType} ${request.action}?`,
+					["Trust and continue", "Deny"],
+				);
+				if (answer !== "Trust and continue") {
+					this.showWarning(`Blocked untrusted source: ${request.source}`);
+					return false;
+				}
+				this.showCommandTextBlock("Trust Decision", details.join("\n"));
+				return true;
+			},
 		});
 	}
 

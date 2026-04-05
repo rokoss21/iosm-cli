@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.js";
 import {
 	type BashExecutionMessage,
@@ -25,6 +25,8 @@ import {
 } from "./messages.js";
 
 export const CURRENT_SESSION_VERSION = 3;
+const SESSION_INDEX_FILENAME = "session-index.jsonl";
+const SESSION_INDEX_MAX_ALL_MESSAGES_CHARS = 40_000;
 
 export interface SessionHeader {
 	type: "session";
@@ -172,6 +174,19 @@ export interface SessionInfo {
 	parentSessionPath?: string;
 	created: Date;
 	modified: Date;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText: string;
+}
+
+interface SessionIndexRecord {
+	path: string;
+	id: string;
+	cwd: string;
+	name?: string;
+	parentSessionPath?: string;
+	created: string;
+	modified: string;
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
@@ -608,6 +623,100 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	} catch {
 		return null;
 	}
+}
+
+function getSessionIndexPath(): string {
+	return join(getSessionsDir(), SESSION_INDEX_FILENAME);
+}
+
+function toSessionIndexRecord(info: SessionInfo): SessionIndexRecord {
+	const allMessagesText =
+		info.allMessagesText.length > SESSION_INDEX_MAX_ALL_MESSAGES_CHARS
+			? info.allMessagesText.slice(0, SESSION_INDEX_MAX_ALL_MESSAGES_CHARS)
+			: info.allMessagesText;
+	return {
+		path: info.path,
+		id: info.id,
+		cwd: info.cwd,
+		name: info.name,
+		parentSessionPath: info.parentSessionPath,
+		created: info.created.toISOString(),
+		modified: info.modified.toISOString(),
+		messageCount: info.messageCount,
+		firstMessage: info.firstMessage,
+		allMessagesText,
+	};
+}
+
+function parseSessionIndexRecord(raw: unknown): SessionInfo | null {
+	if (!raw || typeof raw !== "object") return null;
+	const record = raw as Partial<SessionIndexRecord>;
+	if (
+		typeof record.path !== "string" ||
+		typeof record.id !== "string" ||
+		typeof record.cwd !== "string" ||
+		typeof record.created !== "string" ||
+		typeof record.modified !== "string" ||
+		typeof record.messageCount !== "number" ||
+		typeof record.firstMessage !== "string" ||
+		typeof record.allMessagesText !== "string"
+	) {
+		return null;
+	}
+
+	const created = new Date(record.created);
+	const modified = new Date(record.modified);
+	if (Number.isNaN(created.getTime()) || Number.isNaN(modified.getTime())) {
+		return null;
+	}
+
+	return {
+		path: record.path,
+		id: record.id,
+		cwd: record.cwd,
+		name: typeof record.name === "string" ? record.name : undefined,
+		parentSessionPath: typeof record.parentSessionPath === "string" ? record.parentSessionPath : undefined,
+		created,
+		modified,
+		messageCount: Math.max(0, Math.trunc(record.messageCount)),
+		firstMessage: record.firstMessage || "(no messages)",
+		allMessagesText: record.allMessagesText,
+	};
+}
+
+function loadSessionIndex(indexPath: string): { records: Map<string, SessionInfo>; loaded: boolean } {
+	if (!existsSync(indexPath)) {
+		return { records: new Map(), loaded: false };
+	}
+
+	try {
+		const raw = readFileSync(indexPath, "utf8");
+		const records = new Map<string, SessionInfo>();
+		for (const line of raw.split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const parsed = JSON.parse(line) as unknown;
+				const info = parseSessionIndexRecord(parsed);
+				if (!info) continue;
+				records.set(info.path, info);
+			} catch {
+				// Skip malformed index lines and continue.
+			}
+		}
+		return { records, loaded: true };
+	} catch {
+		return { records: new Map(), loaded: false };
+	}
+}
+
+function writeSessionIndex(indexPath: string, sessions: SessionInfo[]): void {
+	const dir = dirname(indexPath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	const lines = sessions.map((session) => JSON.stringify(toSessionIndexRecord(session)));
+	const content = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+	writeFileSync(indexPath, content, "utf8");
 }
 
 export type SessionListProgress = (loaded: number, total: number) => void;
@@ -1368,37 +1477,61 @@ export class SessionManager {
 			const entries = await readdir(sessionsDir, { withFileTypes: true });
 			const dirs = entries.filter((e) => e.isDirectory()).map((e) => join(sessionsDir, e.name));
 
-			// Count total files first for accurate progress
-			let totalFiles = 0;
-			const dirFiles: string[][] = [];
+			const allFiles: string[] = [];
 			for (const dir of dirs) {
 				try {
 					const files = (await readdir(dir)).filter((f) => f.endsWith(".jsonl"));
-					dirFiles.push(files.map((f) => join(dir, f)));
-					totalFiles += files.length;
+					for (const file of files) {
+						allFiles.push(join(dir, file));
+					}
 				} catch {
-					dirFiles.push([]);
+					// Skip unreadable directory.
 				}
 			}
 
-			// Process all files with progress tracking
+			const totalFiles = allFiles.length;
+			const indexPath = getSessionIndexPath();
+			const index = loadSessionIndex(indexPath);
 			let loaded = 0;
-			const sessions: SessionInfo[] = [];
-			const allFiles = dirFiles.flat();
 
 			const results = await Promise.all(
 				allFiles.map(async (file) => {
-					const info = await buildSessionInfo(file);
+					let refreshed = false;
+					let info: SessionInfo | null = null;
+					const indexed = index.records.get(file);
+					if (indexed) {
+						try {
+							const fileStats = await stat(file);
+							if (fileStats.mtime.getTime() <= indexed.modified.getTime()) {
+								info = indexed;
+							}
+						} catch {
+							// File disappeared or became unreadable; ignore indexed entry.
+						}
+					}
+
+					if (!info) {
+						refreshed = true;
+						info = await buildSessionInfo(file);
+					}
+
 					loaded++;
 					onProgress?.(loaded, totalFiles);
-					return info;
+					return { info, refreshed };
 				}),
 			);
 
-			for (const info of results) {
-				if (info) {
-					sessions.push(info);
+			const sessions: SessionInfo[] = [];
+			let shouldRewriteIndex = !index.loaded || index.records.size !== totalFiles;
+			for (const result of results) {
+				if (result.refreshed) shouldRewriteIndex = true;
+				if (result.info) {
+					sessions.push(result.info);
 				}
+			}
+
+			if (shouldRewriteIndex) {
+				writeSessionIndex(indexPath, sessions);
 			}
 
 			sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());

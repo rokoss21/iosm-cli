@@ -1,16 +1,19 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSession } from "./agent-session.js";
 import { getShareViewerUrl } from "../config.js";
+import { createFsCheckpointSnapshot, restoreFsCheckpointSnapshot, type FsCheckpointMetadata } from "./checkpoint/fs-checkpoint.js";
 import { getChangelogPath, parseChangelog } from "../utils/changelog.js";
+import type { PolicyEngineV2 } from "./policy/index.js";
 import type { SettingsManager } from "./settings-manager.js";
 import type { SessionEntry, SessionTreeNode } from "./session-manager.js";
 
 export interface BuiltinCommandContext {
 	session: AgentSession;
 	settingsManager: SettingsManager;
+	policyEngine?: PolicyEngineV2;
 }
 
 export interface BuiltinCommandResult {
@@ -71,10 +74,10 @@ export function parseSlashArgs(input: string): string[] {
 	return args;
 }
 
-function formatPermissionStatus(settingsManager: SettingsManager): string {
+function formatPermissionStatus(settingsManager: SettingsManager, policyEngine?: PolicyEngineV2): string {
 	const mode = settingsManager.getPermissionMode();
-	const allowRules = settingsManager.getPermissionAllowRules();
-	const denyRules = settingsManager.getPermissionDenyRules();
+	const allowRules = policyEngine?.getLegacyRules("allow") ?? settingsManager.getPermissionAllowRules();
+	const denyRules = policyEngine?.getLegacyRules("deny") ?? settingsManager.getPermissionDenyRules();
 	return `Permissions: ${mode}${allowRules.length > 0 ? ` · allow rules: ${allowRules.length}` : ""}${denyRules.length > 0 ? ` · deny rules: ${denyRules.length}` : ""}`;
 }
 
@@ -190,6 +193,38 @@ interface SessionCheckpoint {
 	timestamp: string;
 }
 
+interface CheckpointSnapshotIndex {
+	snapshots: Record<string, FsCheckpointMetadata>;
+}
+
+function getCheckpointIndexPath(cwd: string): string {
+	return join(cwd, ".iosm", "checkpoints", "index.json");
+}
+
+function readCheckpointSnapshotIndex(cwd: string): CheckpointSnapshotIndex {
+	const path = getCheckpointIndexPath(cwd);
+	if (!existsSync(path)) {
+		return { snapshots: {} };
+	}
+	try {
+		const raw = readFileSync(path, "utf8");
+		const parsed = JSON.parse(raw) as Partial<CheckpointSnapshotIndex>;
+		const snapshots = parsed.snapshots && typeof parsed.snapshots === "object" ? parsed.snapshots : {};
+		return { snapshots: snapshots as Record<string, FsCheckpointMetadata> };
+	} catch {
+		return { snapshots: {} };
+	}
+}
+
+function writeCheckpointSnapshotIndex(cwd: string, index: CheckpointSnapshotIndex): void {
+	const path = getCheckpointIndexPath(cwd);
+	const dir = join(cwd, ".iosm", "checkpoints");
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
+	writeFileSync(path, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+}
+
 function parseCheckpointNameFromLabel(label: string | undefined): string | undefined {
 	if (!label) return undefined;
 	if (!label.startsWith(CHECKPOINT_LABEL_PREFIX)) return undefined;
@@ -283,7 +318,8 @@ export async function dispatchBuiltinSlashCommand(
 	}
 	const command = commandToken.slice(1);
 	const rest = args.slice(1);
-	const { session, settingsManager } = context;
+	const { session, settingsManager, policyEngine } = context;
+	policyEngine?.refresh();
 
 	if (command === "help") {
 		return {
@@ -325,7 +361,7 @@ export async function dispatchBuiltinSlashCommand(
 	if (command === "permissions") {
 		const value = rest[0]?.toLowerCase();
 		if (!value || value === "status") {
-			return { handled: true, level: "status", message: formatPermissionStatus(settingsManager) };
+			return { handled: true, level: "status", message: formatPermissionStatus(settingsManager, policyEngine) };
 		}
 		if (value === "ask" || value === "auto" || value === "yolo") {
 			settingsManager.setPermissionMode(value);
@@ -334,7 +370,9 @@ export async function dispatchBuiltinSlashCommand(
 		if (value === "allow" || value === "deny") {
 			const action = rest[1]?.toLowerCase();
 			const isAllow = value === "allow";
-			let rules = isAllow ? settingsManager.getPermissionAllowRules() : settingsManager.getPermissionDenyRules();
+			let rules = isAllow
+				? (policyEngine?.getLegacyRules("allow") ?? settingsManager.getPermissionAllowRules())
+				: (policyEngine?.getLegacyRules("deny") ?? settingsManager.getPermissionDenyRules());
 
 			if (action === "list") {
 				if (rules.length === 0) {
@@ -355,7 +393,10 @@ export async function dispatchBuiltinSlashCommand(
 				}
 				if (!rules.includes(normalizedRule)) {
 					rules = [...rules, normalizedRule];
-					if (isAllow) {
+					if (policyEngine) {
+						policyEngine.setLegacyRules(isAllow ? "allow" : "deny", rules);
+						policyEngine.refresh();
+					} else if (isAllow) {
 						settingsManager.setPermissionAllowRules(rules);
 					} else {
 						settingsManager.setPermissionDenyRules(rules);
@@ -374,7 +415,10 @@ export async function dispatchBuiltinSlashCommand(
 					};
 				}
 				rules = rules.filter((rule) => rule !== rawRule);
-				if (isAllow) {
+				if (policyEngine) {
+					policyEngine.setLegacyRules(isAllow ? "allow" : "deny", rules);
+					policyEngine.refresh();
+				} else if (isAllow) {
 					settingsManager.setPermissionAllowRules(rules);
 				} else {
 					settingsManager.setPermissionDenyRules(rules);
@@ -425,7 +469,7 @@ export async function dispatchBuiltinSlashCommand(
 			`Streaming: ${session.isStreaming ? "yes" : "no"}`,
 			`Compacting: ${session.isCompacting ? "yes" : "no"}`,
 			`Queued messages: ${session.pendingMessageCount}`,
-			formatPermissionStatus(settingsManager),
+			formatPermissionStatus(settingsManager, policyEngine),
 		];
 		return { handled: true, level: "status", text: lines.join("\n") };
 	}
@@ -593,8 +637,26 @@ export async function dispatchBuiltinSlashCommand(
 			return { handled: true, level: "warning", message: "Invalid checkpoint name. Use 1-80 visible characters." };
 		}
 
-		session.sessionManager.appendLabelChange(leafId, buildCheckpointLabel(name));
-		return { handled: true, level: "status", message: `Checkpoint saved: ${name} (${leafId})` };
+		const labelEntryId = session.sessionManager.appendLabelChange(leafId, buildCheckpointLabel(name));
+		try {
+			const cwd = typeof session.sessionManager.getCwd === "function" ? session.sessionManager.getCwd() : process.cwd();
+			const snapshot = await createFsCheckpointSnapshot(cwd, name, labelEntryId);
+			const index = readCheckpointSnapshotIndex(cwd);
+			index.snapshots[labelEntryId] = snapshot;
+			writeCheckpointSnapshotIndex(cwd, index);
+			return {
+				handled: true,
+				level: "status",
+				message: `Checkpoint saved: ${name} (${leafId})`,
+				text: `Filesystem snapshot: ${snapshot.backend} @ ${snapshot.snapshotDir}`,
+			};
+		} catch (error) {
+			return {
+				handled: true,
+				level: "warning",
+				message: `Checkpoint label saved, but filesystem snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
 	}
 
 	if (command === "rollback") {
@@ -636,6 +698,12 @@ export async function dispatchBuiltinSlashCommand(
 		}
 
 		try {
+			const cwd = typeof session.sessionManager.getCwd === "function" ? session.sessionManager.getCwd() : process.cwd();
+			const checkpointIndex = readCheckpointSnapshotIndex(cwd);
+			const snapshot = checkpointIndex.snapshots[target.labelEntryId];
+			if (snapshot) {
+				await restoreFsCheckpointSnapshot(cwd, snapshot);
+			}
 			const result = await session.navigateTree(target.targetId, { summarize: false });
 			if (result.cancelled || result.aborted) {
 				return { handled: true, level: "warning", message: "Rollback cancelled." };
@@ -644,7 +712,9 @@ export async function dispatchBuiltinSlashCommand(
 				handled: true,
 				level: "status",
 				message: `Rolled back to checkpoint: ${target.name}`,
-				text: result.editorText,
+				text: snapshot
+					? `${result.editorText}\n\nFilesystem restored from ${snapshot.backend} snapshot.`
+					: result.editorText,
 			};
 		} catch (error) {
 			return {

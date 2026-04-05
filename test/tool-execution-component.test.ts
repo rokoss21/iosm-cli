@@ -104,6 +104,55 @@ describe("ToolExecutionComponent custom renderer suppression", () => {
 		expect(rendered).toContain("*.ts");
 		expect(rendered).toContain("src");
 	});
+
+	test("renders todo_read as a checklist instead of raw json", () => {
+		const component = new ToolExecutionComponent("todo_read", {}, {}, undefined, createFakeTui());
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "Tasks loaded" }],
+				details: {
+					tasks: [
+						{ id: "audit-auth", subject: "Audit auth", status: "in_progress", activeForm: "Auditing auth" },
+						{ id: "tests", subject: "Add regression tests", status: "completed" },
+						{ id: "docs", subject: "Update docs", status: "pending" },
+					],
+				},
+				isError: false,
+			},
+			false,
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("[tasks]");
+		expect(rendered).toContain("Audit auth");
+		expect(rendered).toContain("Add regression tests");
+		expect(rendered).toContain("Update docs");
+		expect(rendered).toContain("✓");
+		expect(rendered).toContain("→");
+		expect(rendered).toContain("•");
+		expect(rendered).not.toContain("\"tasks\"");
+	});
+
+	test("renders todo_write markdown args as checklist preview", () => {
+		const component = new ToolExecutionComponent(
+			"todo_write",
+			{
+				tasks: "- [in_progress] Harden policy resolver\n- [pending] Add tests\n- [done] Review logs",
+			},
+			{},
+			undefined,
+			createFakeTui(),
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("[tasks]");
+		expect(rendered).toContain("Harden policy resolver");
+		expect(rendered).toContain("Add tests");
+		expect(rendered).toContain("Review logs");
+		expect(rendered).toContain("→");
+		expect(rendered).toContain("•");
+		expect(rendered).toContain("✓");
+	});
 });
 
 describe("BashExecutionComponent UX", () => {

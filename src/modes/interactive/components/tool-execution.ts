@@ -65,6 +65,192 @@ function str(value: unknown): string | null {
 	return null; // Invalid type
 }
 
+type ChecklistStatus = "pending" | "in_progress" | "done" | "blocked";
+
+interface ChecklistItem {
+	id?: string;
+	title: string;
+	status: ChecklistStatus;
+	activeForm?: string;
+}
+
+function normalizeChecklistStatus(value: unknown): ChecklistStatus {
+	if (typeof value !== "string") return "pending";
+	const token = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+	switch (token) {
+		case "done":
+		case "complete":
+		case "completed":
+		case "success":
+		case "checked":
+		case "x":
+			return "done";
+		case "in_progress":
+		case "inprogress":
+		case "active":
+		case "current":
+		case "doing":
+			return "in_progress";
+		case "blocked":
+		case "waiting":
+		case "on_hold":
+		case "paused":
+			return "blocked";
+		default:
+			return "pending";
+	}
+}
+
+function buildChecklistItem(value: unknown): ChecklistItem | undefined {
+	if (typeof value === "string") {
+		const title = value.trim();
+		if (!title) return undefined;
+		return { title, status: "pending" };
+	}
+	if (!value || typeof value !== "object") {
+		return undefined;
+	}
+	const candidate = value as Record<string, unknown>;
+	const title =
+		(typeof candidate.subject === "string" && candidate.subject.trim()) ||
+		(typeof candidate.title === "string" && candidate.title.trim()) ||
+		(typeof candidate.step === "string" && candidate.step.trim()) ||
+		(typeof candidate.text === "string" && candidate.text.trim()) ||
+		(typeof candidate.description === "string" && candidate.description.trim()) ||
+		undefined;
+	if (!title) return undefined;
+
+	const id = typeof candidate.id === "string" && candidate.id.trim() ? candidate.id.trim() : undefined;
+	const activeForm =
+		typeof candidate.activeForm === "string" && candidate.activeForm.trim()
+			? candidate.activeForm.trim()
+			: undefined;
+
+	if (typeof candidate.completed === "boolean") {
+		return {
+			id,
+			title,
+			status: candidate.completed ? "done" : "pending",
+			activeForm,
+		};
+	}
+
+	return {
+		id,
+		title,
+		status: normalizeChecklistStatus(candidate.status),
+		activeForm,
+	};
+}
+
+function parseChecklistMarkdown(markdown: string): ChecklistItem[] {
+	const lines = markdown
+		.split(/\r?\n/g)
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0);
+	const items: ChecklistItem[] = [];
+	for (const line of lines) {
+		const checklistMatch =
+			line.match(/^(?:[-*]|\d+[.)])\s*\[([^\]]+)\]\s+(.+)$/) ?? line.match(/^\[([^\]]+)\]\s+(.+)$/);
+		if (checklistMatch) {
+			const title = checklistMatch[2]?.trim();
+			if (!title) continue;
+			items.push({
+				title,
+				status: normalizeChecklistStatus(checklistMatch[1]),
+			});
+			continue;
+		}
+
+		const bulletMatch = line.match(/^(?:[-*]|\d+[.)])\s+(.+)$/);
+		if (!bulletMatch) continue;
+		const title = bulletMatch[1]?.trim();
+		if (!title) continue;
+		items.push({
+			title,
+			status: "pending",
+		});
+	}
+	return items;
+}
+
+function extractChecklistItems(value: unknown): ChecklistItem[] {
+	if (typeof value === "string") {
+		return parseChecklistMarkdown(value);
+	}
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.map((item) => buildChecklistItem(item)).filter((item): item is ChecklistItem => !!item);
+}
+
+function countChecklistByStatus(items: ChecklistItem[]): {
+	done: number;
+	inProgress: number;
+	pending: number;
+	blocked: number;
+} {
+	const counts = { done: 0, inProgress: 0, pending: 0, blocked: 0 };
+	for (const item of items) {
+		if (item.status === "done") {
+			counts.done += 1;
+			continue;
+		}
+		if (item.status === "in_progress") {
+			counts.inProgress += 1;
+			continue;
+		}
+		if (item.status === "blocked") {
+			counts.blocked += 1;
+			continue;
+		}
+		counts.pending += 1;
+	}
+	return counts;
+}
+
+function checklistStatusMarker(status: ChecklistStatus): string {
+	switch (status) {
+		case "done":
+			return "✓";
+		case "in_progress":
+			return "→";
+		case "blocked":
+			return "!";
+		case "pending":
+		default:
+			return "•";
+	}
+}
+
+function styleChecklistMarker(status: ChecklistStatus, marker: string): string {
+	switch (status) {
+		case "done":
+			return theme.fg("success", marker);
+		case "in_progress":
+			return theme.fg("accent", marker);
+		case "blocked":
+			return theme.fg("warning", marker);
+		case "pending":
+		default:
+			return theme.fg("muted", marker);
+	}
+}
+
+function checklistStatusLabel(status: ChecklistStatus): string {
+	switch (status) {
+		case "done":
+			return "done";
+		case "in_progress":
+			return "in progress";
+		case "blocked":
+			return "blocked";
+		case "pending":
+		default:
+			return "pending";
+	}
+}
+
 type ToolRenderState = "pending" | "success" | "error";
 
 function hasAnsiEscape(input: string): boolean {
@@ -1009,6 +1195,56 @@ export class ToolExecutionComponent extends Container {
 						warnings.push("some lines truncated");
 					}
 					text += `\n${theme.fg("warning", `[Truncated: ${warnings.join(", ")}]`)}`;
+				}
+			}
+		} else if (this.toolName === "todo_write" || this.toolName === "todo_read") {
+			const isWrite = this.toolName === "todo_write";
+			const details = this.result?.details as Record<string, unknown> | undefined;
+			const tasksFromDetails = extractChecklistItems(details?.tasks);
+			const tasksFromArgs = isWrite ? extractChecklistItems(this.args?.tasks) : [];
+			const tasks = tasksFromDetails.length > 0 ? tasksFromDetails : tasksFromArgs;
+			const counts = countChecklistByStatus(tasks);
+			const summaryParts: string[] = [];
+			if (counts.inProgress > 0) summaryParts.push(`${counts.inProgress} in progress`);
+			if (counts.pending > 0) summaryParts.push(`${counts.pending} pending`);
+			if (counts.done > 0) summaryParts.push(`${counts.done} done`);
+			if (counts.blocked > 0) summaryParts.push(`${counts.blocked} blocked`);
+			const summary = summaryParts.length > 0 ? summaryParts.join(", ") : "no tasks";
+			const subject = isWrite ? "Update task checklist" : "Read task checklist";
+
+			if (this.isPartial) {
+				text = toolHeader("tasks", subject, "pending");
+			} else if (this.result?.isError) {
+				text = toolHeader("tasks", subject, "error");
+			} else if (this.result) {
+				text = toolHeader("tasks", theme.fg("accent", subject), "success", `(${tasks.length} total: ${summary})`);
+			} else {
+				text = toolHeader("tasks", subject, "pending");
+			}
+
+			if (tasks.length > 0) {
+				const maxLines = this.expanded ? tasks.length : 10;
+				const displayTasks = tasks.slice(0, maxLines);
+				const remaining = tasks.length - maxLines;
+				const lines = displayTasks.map((task) => {
+					const marker = styleChecklistMarker(task.status, checklistStatusMarker(task.status));
+					const idPrefix = task.id ? `${theme.fg("dim", `[${task.id}]`)} ` : "";
+					const label = theme.fg("toolOutput", task.title);
+					const statusSuffix = theme.fg("dim", ` (${checklistStatusLabel(task.status)})`);
+					const activeSuffix =
+						task.status === "in_progress" && task.activeForm ? theme.fg("muted", ` — ${task.activeForm}`) : "";
+					return `${marker} ${idPrefix}${label}${statusSuffix}${activeSuffix}`;
+				});
+				text += `\n\n${lines.join("\n")}`;
+				if (remaining > 0) {
+					text += expandHint(remaining, tasks.length);
+				}
+			}
+
+			if (this.result) {
+				const output = this.getTextOutput().trim();
+				if (output && (tasks.length === 0 || this.result.isError)) {
+					text += `\n\n${theme.fg(this.result.isError ? "error" : "toolOutput", output)}`;
 				}
 			}
 		} else {

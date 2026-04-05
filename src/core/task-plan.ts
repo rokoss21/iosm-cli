@@ -19,6 +19,16 @@ export interface TaskPlanSnapshot {
 	totalSteps: number;
 }
 
+type CoercibleTaskPlanInput = {
+	complexity?: unknown;
+	steps?: unknown;
+	plan?: unknown;
+	items?: unknown;
+	tasks?: unknown;
+	currentStepIndex?: unknown;
+	current_step_index?: unknown;
+};
+
 interface ExtractFromTextResult {
 	cleanedText: string;
 	planSnapshots: TaskPlanSnapshot[];
@@ -55,6 +65,7 @@ function normalizeStatus(raw: string): TaskPlanStepStatus | undefined {
 		case "done":
 		case "complete":
 		case "completed":
+		case "success":
 			return "done";
 		case "blocked":
 		case "waiting":
@@ -64,6 +75,114 @@ function normalizeStatus(raw: string): TaskPlanStepStatus | undefined {
 		default:
 			return undefined;
 	}
+}
+
+function coerceStep(input: unknown): TaskPlanStep | undefined {
+	if (typeof input === "string") {
+		const title = input.trim();
+		if (!title) return undefined;
+		return { title, status: "pending" };
+	}
+	if (typeof input !== "object" || input === null) return undefined;
+
+	const candidate = input as Record<string, unknown>;
+	const title =
+		(typeof candidate.title === "string" && candidate.title.trim()) ||
+		(typeof candidate.step === "string" && candidate.step.trim()) ||
+		(typeof candidate.text === "string" && candidate.text.trim()) ||
+		(typeof candidate.subject === "string" && candidate.subject.trim()) ||
+		(typeof candidate.description === "string" && candidate.description.trim()) ||
+		undefined;
+	if (!title) return undefined;
+
+	let status: TaskPlanStepStatus | undefined;
+	if (typeof candidate.status === "string") {
+		status = normalizeStatus(candidate.status);
+	}
+	if (!status && typeof candidate.completed === "boolean") {
+		status = candidate.completed ? "done" : "pending";
+	}
+	if (!status && typeof candidate.done === "boolean") {
+		status = candidate.done ? "done" : "pending";
+	}
+	if (!status && typeof candidate.current === "boolean" && candidate.current) {
+		status = "in_progress";
+	}
+
+	return {
+		title,
+		status: status ?? "pending",
+	};
+}
+
+function coerceSteps(input: unknown): TaskPlanStep[] {
+	if (!Array.isArray(input)) return [];
+	return input.map((step) => coerceStep(step)).filter((step): step is TaskPlanStep => !!step);
+}
+
+export function coerceTaskPlanSnapshot(value: unknown): TaskPlanSnapshot | undefined {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (!trimmed) return undefined;
+		try {
+			return coerceTaskPlanSnapshot(JSON.parse(trimmed));
+		} catch {
+			return undefined;
+		}
+	}
+
+	if (typeof value !== "object" || value === null) {
+		return undefined;
+	}
+
+	const candidate = value as CoercibleTaskPlanInput;
+	const complexity =
+		typeof candidate.complexity === "string" ? candidate.complexity.trim().toLowerCase() : undefined;
+	if (complexity === "simple") {
+		return undefined;
+	}
+
+	let steps = coerceSteps(candidate.steps);
+	if (steps.length === 0) steps = coerceSteps(candidate.plan);
+	if (steps.length === 0) steps = coerceSteps(candidate.items);
+	if (steps.length === 0) steps = coerceSteps(candidate.tasks);
+	if (steps.length === 0) {
+		return undefined;
+	}
+
+	const explicitCurrent =
+		typeof candidate.currentStepIndex === "number"
+			? candidate.currentStepIndex
+			: typeof candidate.current_step_index === "number"
+				? candidate.current_step_index
+				: undefined;
+	let currentStepIndex: number | null = null;
+	if (
+		typeof explicitCurrent === "number" &&
+		Number.isInteger(explicitCurrent) &&
+		explicitCurrent >= 0 &&
+		explicitCurrent < steps.length
+	) {
+		currentStepIndex = explicitCurrent;
+	}
+	if (currentStepIndex === null) {
+		const inProgress = steps.findIndex((step) => step.status === "in_progress");
+		if (inProgress !== -1) {
+			currentStepIndex = inProgress;
+		} else {
+			const pending = steps.findIndex((step) => step.status === "pending");
+			currentStepIndex = pending === -1 ? null : pending;
+		}
+	}
+
+	const completedSteps = steps.filter((step) => step.status === "done").length;
+	return {
+		complexity: "complex",
+		steps,
+		currentStepIndex,
+		completedSteps,
+		totalSteps: steps.length,
+	};
 }
 
 function parsePlanBody(body: string): ParsePlanBodyResult {

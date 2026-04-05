@@ -57,6 +57,7 @@ import {
 	type SemanticStatusResult,
 } from "./core/semantic/index.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
+import { PolicyEngineV2 } from "./core/policy/index.js";
 import { DefaultResourceLoader } from "./core/resource-loader.js";
 import { type CreateAgentSessionOptions, createAgentSession } from "./core/sdk.js";
 import { getProfileNames, isValidProfileName } from "./core/agent-profiles.js";
@@ -65,7 +66,7 @@ import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
-import { InteractiveMode, runPrintMode, runRpcMode, runTelegramBridgeMode } from "./modes/index.js";
+import { InteractiveMode, runAcpMode, runPrintMode, runRpcMode, runTelegramBridgeMode } from "./modes/index.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import {
 	buildIosmAgentVerificationPrompt,
@@ -208,6 +209,7 @@ interface PackageCommandOptions {
 	source?: string;
 	local: boolean;
 	help: boolean;
+	yesTrust: boolean;
 	invalidOption?: string;
 }
 
@@ -277,6 +279,7 @@ Install a package and add it to settings.
 
 Options:
   -l, --local    Install project-locally (${CONFIG_DIR_NAME}/settings.json)
+  --yes-trust    Non-interactive trust override for source/integrity checks
 
 Examples:
   ${APP_NAME} install npm:@foo/bar
@@ -308,6 +311,9 @@ Example:
 
 Update installed packages.
 If <source> is provided, only that package is updated.
+
+Options:
+  --yes-trust    Non-interactive trust override for source/integrity checks
 `);
 			return;
 
@@ -329,6 +335,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 
 	let local = false;
 	let help = false;
+	let yesTrust = false;
 	let invalidOption: string | undefined;
 	let source: string | undefined;
 
@@ -347,6 +354,11 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			continue;
 		}
 
+		if (arg === "--yes-trust") {
+			yesTrust = true;
+			continue;
+		}
+
 		if (arg.startsWith("-")) {
 			invalidOption = invalidOption ?? arg;
 			continue;
@@ -357,7 +369,26 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		}
 	}
 
-	return { command, source, local, help, invalidOption };
+	return { command, source, local, help, yesTrust, invalidOption };
+}
+
+async function requestTrustConsentFromTerminal(question: string): Promise<boolean> {
+	if (!process.stdin.isTTY || !process.stdout.isTTY) {
+		return false;
+	}
+	const rl = createInterface({
+		input: process.stdin,
+		output: process.stdout,
+	});
+	try {
+		const answer = await new Promise<string>((resolve) => {
+			rl.question(`${question} [y/N] `, resolve);
+		});
+		const normalized = answer.trim().toLowerCase();
+		return normalized === "y" || normalized === "yes";
+	} finally {
+		rl.close();
+	}
 }
 
 async function handlePackageCommand(args: string[]): Promise<boolean> {
@@ -390,7 +421,27 @@ async function handlePackageCommand(args: string[]): Promise<boolean> {
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	reportSettingsErrors(settingsManager, "package command");
-	const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+	const policyEngine = new PolicyEngineV2({ cwd, agentDir, settingsManager });
+	const packageManager = new DefaultPackageManager({
+		cwd,
+		agentDir,
+		settingsManager,
+		allowedSourceHosts: policyEngine.getAllowedSourceHosts(),
+		allowNonInteractiveTrustOverride: options.yesTrust,
+		trustConsentProvider: async (request) => {
+			if (options.yesTrust) return true;
+			if (!process.stdin.isTTY || !process.stdout.isTTY) {
+				return false;
+			}
+			const reasonLabel =
+				request.reason === "fingerprint-change"
+					? `fingerprint changed (${request.previousFingerprint ?? "unknown"} -> ${request.fingerprint})`
+					: `new source fingerprint ${request.fingerprint}`;
+			return requestTrustConsentFromTerminal(
+				`Trust ${request.sourceType} source "${request.source}" on host ${request.host} (${reasonLabel})?`,
+			);
+		},
+	});
 
 	packageManager.setProgressCallback((event) => {
 		if (event.type === "start") {
@@ -1342,7 +1393,22 @@ async function handleConfigCommand(args: string[]): Promise<boolean> {
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	reportSettingsErrors(settingsManager, "config command");
-	const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
+	const policyEngine = new PolicyEngineV2({ cwd, agentDir, settingsManager });
+	const packageManager = new DefaultPackageManager({
+		cwd,
+		agentDir,
+		settingsManager,
+		allowedSourceHosts: policyEngine.getAllowedSourceHosts(),
+		trustConsentProvider: async (request) => {
+			const reasonLabel =
+				request.reason === "fingerprint-change"
+					? `fingerprint changed (${request.previousFingerprint ?? "unknown"} -> ${request.fingerprint})`
+					: `new source fingerprint ${request.fingerprint}`;
+			return requestTrustConsentFromTerminal(
+				`Trust ${request.sourceType} source "${request.source}" on host ${request.host} (${reasonLabel})?`,
+			);
+		},
+	});
 
 	const resolvedPaths = await packageManager.resolve();
 
@@ -1760,6 +1826,7 @@ export async function main(args: string[]) {
 	const agentDir = getAgentDir();
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	reportSettingsErrors(settingsManager, "startup");
+	const policyEngine = new PolicyEngineV2({ cwd, agentDir, settingsManager });
 	const authStorage = AuthStorage.create();
 	const modelRegistry = new ModelRegistry(authStorage, getModelsPath());
 	await hydrateAuthenticatedProviderModelsOnStartup(modelRegistry);
@@ -1836,8 +1903,8 @@ export async function main(args: string[]) {
 		return;
 	}
 
-	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
-	if (parsed.mode !== "rpc") {
+	// Read piped stdin content (if any) - skip for RPC/ACP modes which use stdin for protocol transport
+	if (parsed.mode !== "rpc" && parsed.mode !== "acp") {
 		const stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined) {
 			// Force print mode since interactive mode requires a TTY for keyboard input
@@ -1861,14 +1928,16 @@ export async function main(args: string[]) {
 		process.exit(0);
 	}
 
-	if (parsed.mode === "rpc" && parsed.fileArgs.length > 0) {
-		console.error(chalk.red("Error: @file arguments are not supported in RPC mode"));
+	if ((parsed.mode === "rpc" || parsed.mode === "acp") && parsed.fileArgs.length > 0) {
+		console.error(chalk.red("Error: @file arguments are not supported in RPC/ACP mode"));
 		process.exit(1);
 	}
 
 	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, settingsManager.getImageAutoResize());
 	const isInteractive = !parsed.print && parsed.mode === undefined;
 	const mode = parsed.mode || "text";
+	const sandboxEnabled = parsed.sandbox ?? settingsManager.getSandboxEnabled();
+	process.env.IOSM_SANDBOX_ENABLED = sandboxEnabled ? "1" : "0";
 	initTheme(settingsManager.getTheme(), isInteractive);
 
 	// Show deprecation warnings in interactive mode
@@ -1911,7 +1980,7 @@ export async function main(args: string[]) {
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
 	sessionOptions.resourceLoader = resourceLoader;
-	sessionOptions.enableAskUserTool = isInteractive || mode === "rpc";
+	sessionOptions.enableAskUserTool = isInteractive || mode === "rpc" || mode === "acp";
 
 	// Handle CLI --api-key as runtime override (not persisted)
 	if (parsed.apiKey) {
@@ -1925,12 +1994,19 @@ export async function main(args: string[]) {
 	}
 
 	let mcpRuntime: McpRuntime | undefined;
+	let sessionTraceSink: { appendRuntimeTrace: (type: string, payload: Record<string, unknown>) => void } | undefined;
 	try {
 		mcpRuntime = new McpRuntime({
 			cwd,
 			agentDir,
 			clientName: APP_NAME,
 			clientVersion: VERSION,
+			onPolicyDecision: (event) => {
+				sessionTraceSink?.appendRuntimeTrace("policy_decision", {
+					scope: "mcp",
+					...event,
+				});
+			},
 		});
 		await mcpRuntime.refresh();
 		printMcpConfigWarnings(mcpRuntime.getErrors());
@@ -1940,10 +2016,11 @@ export async function main(args: string[]) {
 		}
 
 		const { session, modelFallbackMessage } = await createAgentSession(sessionOptions);
+		sessionTraceSink = session;
 
 		// RPC mode must start even without a preselected model so remote clients
 		// (for example Telegram bridge) can choose one later via /model.
-		if (!isInteractive && mode !== "rpc" && !session.model) {
+		if (!isInteractive && mode !== "rpc" && mode !== "acp" && !session.model) {
 			console.error(chalk.red("No model selected."));
 			console.error(chalk.yellow("\nSelect one explicitly:"));
 			console.error(`  ${APP_NAME} --provider <provider> --model <model-id> ...`);
@@ -1969,7 +2046,17 @@ export async function main(args: string[]) {
 		}
 
 		if (mode === "rpc") {
-			await runRpcMode(session);
+			await runRpcMode(session, {
+				mcpRuntime,
+				policyEngine,
+				profileName: sessionOptions.profile,
+			});
+		} else if (mode === "acp") {
+			await runAcpMode(session, {
+				mcpRuntime,
+				policyEngine,
+				profileName: sessionOptions.profile,
+			});
 		} else if (isInteractive) {
 			if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 				const modelList = scopedModels
@@ -1992,6 +2079,7 @@ export async function main(args: string[]) {
 				planMode: parsed.plan,
 				profile: sessionOptions.profile,
 				mcpRuntime,
+				policyEngine,
 			});
 			await mode.run();
 		} else {
