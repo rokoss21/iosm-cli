@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-05
+
+### Added
+
+- **Unified framed message windows** — introduced consistent full-contour windows (`╭╮│╰╯`) with labels and padding for interactive conversation output
+- **Input area redesign** — replaced the plain editor strip with a framed, mode-aware input box that reflects active mode (`input`, `command`, `bash`)
+- **Reasoning preview stream UX** — added collapsed reasoning summary with live spinner animation during assistant streaming
+- **Compact footer setting** — added configurable compact footer mode in settings and interactive selector
+
+### Changed
+
+- **Assistant response branding** — assistant window label now renders as `IOSM Agent`
+- **Tool execution visuals** — migrated tool call/result rendering from filled background blocks to green-framed windows with consistent spacing
+- **Orchestration panel visuals** — migrated orchestration status panel to orange-framed `IOSM Orchestration` window and aligned inner section header colors
+- **Message surface consistency** — removed legacy filled-background user/orchestration/tool blocks in favor of border-first presentation
+
+### Documentation
+
+- Updated README release marker and release highlights to `0.3.0`
+
+### Tests
+
+- Added and expanded coverage for framed message/input rendering, assistant label updates, tool window framing, and orchestration panel presentation
+
 ## [0.2.17] - 2026-04-05
 
 ### Fixed

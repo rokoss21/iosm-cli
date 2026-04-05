@@ -12,13 +12,6 @@ import {
 	type FailureCause,
 } from "../failure-retrospective.js";
 import {
-	MAX_ORCHESTRATION_AGENTS,
-	MAX_ORCHESTRATION_PARALLEL,
-	MAX_SUBAGENT_DELEGATE_PARALLEL,
-	MAX_SUBAGENT_DELEGATION_DEPTH,
-	MAX_SUBAGENT_DELEGATIONS_PER_TASK,
-} from "../orchestration-limits.js";
-import {
 	AGENT_PROFILES,
 	isReadOnlyProfileName,
 	isValidProfileName,
@@ -172,7 +165,6 @@ const taskSchema = Type.Object({
 	delegate_parallel_hint: Type.Optional(
 		Type.Integer({
 			minimum: 1,
-			maximum: MAX_SUBAGENT_DELEGATE_PARALLEL,
 			description:
 				"Optional hint for intra-task delegation fan-out. Higher value allows more delegated subtasks to run in parallel inside a single task execution.",
 		}),
@@ -250,7 +242,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are a fast read-only codebase explorer. Answer concisely. Never write or edit files.",
 	plan: "You are a technical architect. Analyze the codebase and produce a clear implementation plan. Do not write or edit files.",
 	iosm: "You are an IOSM execution agent. Use IOSM methodology and keep IOSM artifacts synchronized with implementation.",
-	meta: "You are a meta orchestration agent. Your main job is to maximize safe parallel execution through delegates, not to personally do most of the implementation. Start with bounded read-only recon, then form a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work aggressively instead of collapsing complex work into one worker. For any non-trivial task, orchestration is required: after recon, launch multiple focused delegates instead of continuing manual implementation in the parent agent, avoid direct write/edit work in the parent agent before delegation unless the task is clearly trivial, and do not hand the whole task to one specialist child when independent workstreams exist. If a delegated workstream still contains multiple independent slices, split it again with nested <delegate_task> blocks. Default to aggressive safe parallelism. If the user requested a specific degree of parallelism, honor it when feasible or explain the exact blocker. Use shared_memory as the default coordination channel between delegates: use stable namespaced keys, prefer read-before-write, and use CAS (if_version) for contested updates; reserve append mode for timeline/log keys. When delegation is not used for non-trivial work, explain why in one line and include DELEGATION_IMPOSSIBLE. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped. For any metrics (speedup, compliance, conflict counts, quality scores), report only values backed by observed runtime evidence; if evidence is missing, mark the metric as unknown. Do not claim report files/artifacts unless they were produced in this run or verified on disk.",
+	meta: "You are a meta orchestration agent. Your main job is to maximize safe parallel execution through delegates, not to personally do most of the implementation. Start with bounded read-only recon, then form a concrete execution graph: subtasks, delegate subtasks, dependencies, lock domains, and verification steps. The parent agent remains responsible for orchestration and synthesis, so decompose work aggressively instead of collapsing complex work into one worker. For any non-trivial task, orchestration is required: after recon, launch multiple focused delegates instead of continuing manual implementation in the parent agent, avoid direct write/edit work in the parent agent before delegation unless the task is clearly trivial, and do not hand the whole task to one specialist child when independent workstreams exist. If a delegated workstream still contains multiple independent slices, split it again with nested <delegate_task> blocks. Default to aggressive safe parallelism. If the user requested a specific degree of parallelism, honor it when feasible or explain the exact blocker. Delegates are child task calls only; do not treat plain tool invocations (read/bash/grep/etc.) as delegated agents. Assign explicit ownership domains per delegate to minimize overlap; if overlap is unavoidable, declare a primary owner and a secondary verifier. Use shared_memory as the default coordination channel between delegates: use stable namespaced keys, prefer read-before-write, and use CAS (if_version) for contested updates; reserve append mode for timeline/log keys. When delegation is not used for non-trivial work, explain why in one line and include DELEGATION_IMPOSSIBLE. Enforce test verification for code changes, complete only after all delegated branches are resolved, and explicitly justify any no-code path where tests are skipped. For any metrics (speedup, compliance, conflict counts, quality scores), report only values backed by observed runtime evidence; if evidence is missing, mark the metric as unknown. Do not claim report files/artifacts unless they were produced in this run or verified on disk.",
 	iosm_analyst:
 		"You are an IOSM metrics analyst. Analyze .iosm/ artifacts and codebase metrics. Be precise and evidence-based.",
 	iosm_verifier:
@@ -443,28 +435,28 @@ class Mutex {
 
 const maxParallelFromEnv = parseBoundedInt(
 	process.env.IOSM_SUBAGENT_MAX_PARALLEL,
-	MAX_ORCHESTRATION_PARALLEL,
+	Number.MAX_SAFE_INTEGER,
 	1,
-	MAX_ORCHESTRATION_PARALLEL,
+	Number.MAX_SAFE_INTEGER,
 );
 const subagentSemaphore = new Semaphore(maxParallelFromEnv);
 const maxDelegationDepthFromEnv = parseBoundedInt(
 	process.env.IOSM_SUBAGENT_MAX_DELEGATION_DEPTH,
-	2,
+	Number.MAX_SAFE_INTEGER,
 	0,
-	MAX_SUBAGENT_DELEGATION_DEPTH,
+	Number.MAX_SAFE_INTEGER,
 );
 const maxDelegationsPerTaskFromEnv = parseBoundedInt(
 	process.env.IOSM_SUBAGENT_MAX_DELEGATIONS_PER_TASK,
-	MAX_SUBAGENT_DELEGATIONS_PER_TASK,
+	Number.MAX_SAFE_INTEGER,
 	0,
-	MAX_SUBAGENT_DELEGATIONS_PER_TASK,
+	Number.MAX_SAFE_INTEGER,
 );
 const maxDelegatedParallelFromEnv = parseBoundedInt(
 	process.env.IOSM_SUBAGENT_MAX_DELEGATE_PARALLEL,
-	MAX_SUBAGENT_DELEGATE_PARALLEL,
+	Number.MAX_SAFE_INTEGER,
 	1,
-	MAX_SUBAGENT_DELEGATE_PARALLEL,
+	Number.MAX_SAFE_INTEGER,
 );
 const emptyOutputRetriesFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_EMPTY_OUTPUT_RETRIES, 1, 0, 2);
 const retrospectiveRetriesFromEnv = parseBoundedInt(process.env.IOSM_SUBAGENT_RETRO_RETRIES, 1, 0, 1);
@@ -524,11 +516,6 @@ function deriveAutoDelegateParallelHint(
 	const fileLikeMatches = normalized.match(/\b[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}\b/g) ?? [];
 	const listMarkers = text.match(/(?:^|\n)\s*(?:[-*]|\d+[.)])\s+/g)?.length ?? 0;
 	const hasCodeBlock = text.includes("```");
-	const actionTokenMatches =
-		normalized.match(
-			/\b(?:audit|security|auth|rbac|sqli|sql|injection|fix|implement|refactor|migrat|harden|verify|test|scan|orchestrate|parallel|delegate|bug|vulnerab)\w*/gi,
-		) ?? [];
-	const strongActionSignal = new Set(actionTokenMatches.map((token) => token.toLowerCase())).size >= 2;
 	const metaOrchestratorContext = isMetaProfile || isMetaHost;
 
 	let score = 0;
@@ -551,8 +538,7 @@ function deriveAutoDelegateParallelHint(
 		clauses >= 3 ||
 		listMarkers >= 1 ||
 		referenceCount >= 1 ||
-		hasCodeBlock ||
-		(strongActionSignal && words >= 4);
+		hasCodeBlock;
 	if (referenceCount >= 3 || (referenceCount >= 1 && words >= 20)) {
 		score += 1;
 	}
@@ -560,12 +546,9 @@ function deriveAutoDelegateParallelHint(
 		score += 1;
 	}
 	if (metaOrchestratorContext) {
-		// In meta orchestration, require delegation pressure for non-trivial prompts
-		// even when lexical scoring is still low.
+		// In meta orchestration, require delegation pressure for structurally non-trivial prompts.
 		if (score === 0) {
-			if (strongActionSignal && words >= 4) {
-				score = 1;
-			} else if (metaNonTrivialSignal) {
+			if (metaNonTrivialSignal) {
 				score = 2;
 			}
 		} else if (score > 0) {
@@ -580,6 +563,23 @@ function deriveAutoDelegateParallelHint(
 	if (score >= 2) return 3;
 	if (score >= 1) return 2;
 	return 1;
+}
+
+function deriveExplicitDelegateParallelHint(description: string, prompt: string): number | undefined {
+	const text = `${description}\n${prompt}`.trim();
+	if (!text) return undefined;
+	const structuredPatterns = [
+		/\bdelegate_parallel_hint\s*[:=]\s*["']?(\d{1,4})\b/i,
+		/"delegate_parallel_hint"\s*:\s*(\d{1,4})/i,
+	];
+	for (const pattern of structuredPatterns) {
+		const match = text.match(pattern);
+		const parsed = match?.[1] ? Number.parseInt(match[1], 10) : Number.NaN;
+		if (Number.isInteger(parsed) && parsed >= 1) {
+			return parsed;
+		}
+	}
+	return undefined;
 }
 
 function normalizeSpacing(text: string): string {
@@ -1199,9 +1199,9 @@ function getRunParallelLimit(cwd: string, runId: string): number | undefined {
 	if (teamRun.mode === "sequential") return 1;
 	const maxParallel = teamRun.maxParallel;
 	if (!Number.isInteger(maxParallel) || !maxParallel || maxParallel < 1) {
-		return Math.max(1, Math.min(teamRun.agents, MAX_ORCHESTRATION_AGENTS));
+		return Math.max(1, teamRun.agents);
 	}
-	return Math.max(1, Math.min(maxParallel, MAX_ORCHESTRATION_PARALLEL));
+	return Math.max(1, maxParallel);
 }
 
 function getOrCreateOrchestrationSemaphore(cwd: string, runId: string): Semaphore | undefined {
@@ -1578,10 +1578,14 @@ export function createTaskTool(
 				const delegationDepth = maxDelegationDepthFromEnv;
 					const requestedDelegateParallelHint =
 						typeof delegateParallelHint === "number" && Number.isInteger(delegateParallelHint)
-							? Math.max(1, Math.min(MAX_SUBAGENT_DELEGATE_PARALLEL, delegateParallelHint))
+							? Math.max(1, delegateParallelHint)
 							: undefined;
-				const autoDelegateParallelHint =
+				const explicitDelegateParallelHint =
 					requestedDelegateParallelHint === undefined
+						? deriveExplicitDelegateParallelHint(description, prompt)
+						: undefined;
+				const autoDelegateParallelHint =
+					requestedDelegateParallelHint === undefined && explicitDelegateParallelHint === undefined
 						? deriveAutoDelegateParallelHint(
 								effectiveProfile,
 								normalizedAgentName,
@@ -1590,17 +1594,21 @@ export function createTaskTool(
 								prompt,
 							)
 						: undefined;
-				let effectiveDelegateParallelHint = requestedDelegateParallelHint ?? autoDelegateParallelHint;
+				const effectiveDelegateParallelHint =
+					requestedDelegateParallelHint ?? explicitDelegateParallelHint ?? autoDelegateParallelHint;
 				const effectiveDelegationDepth =
 					effectiveProfile === "meta" || normalizedHostProfile === "meta" || normalizedAgentName?.toLowerCase().includes("orchestrator")
 						? Math.max(delegationDepth, 2)
 						: delegationDepth;
 				const orchestratedRunContext = !!(orchestrationRunId && orchestrationTaskId);
+				const explicitDelegationContract =
+					explicitDelegateParallelHint !== undefined && explicitDelegateParallelHint >= 1;
 				const strictDelegationContract =
 					effectiveProfile === "meta" ||
 					normalizedHostProfile === "meta" ||
 					normalizedAgentName?.toLowerCase().includes("orchestrator") ||
-					(orchestratedRunContext && (effectiveDelegateParallelHint ?? 0) >= 2);
+					(orchestratedRunContext && (effectiveDelegateParallelHint ?? 0) >= 2) ||
+					explicitDelegationContract;
 				let effectiveMaxDelegations = Math.max(
 					0,
 					Math.min(maxDelegationsPerTaskFromEnv, effectiveDelegateParallelHint ?? maxDelegationsPerTaskFromEnv),
@@ -1609,6 +1617,20 @@ export function createTaskTool(
 					1,
 					Math.min(maxDelegatedParallelFromEnv, effectiveDelegateParallelHint ?? maxDelegatedParallelFromEnv),
 				);
+				if (explicitDelegationContract) {
+					const explicitTarget = Math.max(
+						1,
+						explicitDelegateParallelHint ?? 1,
+					);
+					effectiveMaxDelegations = Math.max(
+						effectiveMaxDelegations,
+						Math.min(maxDelegationsPerTaskFromEnv, explicitTarget),
+					);
+					effectiveMaxDelegateParallel = Math.max(
+						effectiveMaxDelegateParallel,
+						Math.min(maxDelegatedParallelFromEnv, explicitTarget),
+					);
+				}
 				const isMetaDelegationContext = effectiveProfile === "meta" || normalizedHostProfile === "meta";
 				const preferredDelegationFloorBase = isMetaDelegationContext ? 3 : 2;
 				const preferredDelegationFloorMin = isMetaDelegationContext ? 2 : 1;
@@ -1630,9 +1652,16 @@ export function createTaskTool(
 						Math.min(maxDelegatedParallelFromEnv, preferredDelegationFloor),
 					);
 				}
-				const minDelegationsPreferred =
-					(effectiveDelegateParallelHint ?? 0) >= 2 && effectiveMaxDelegations >= 2
-						? Math.min(preferredDelegationFloor, effectiveMaxDelegations, effectiveDelegateParallelHint ?? preferredDelegationFloor)
+				const minDelegationsPreferred = explicitDelegationContract
+					? effectiveMaxDelegations > 0
+						? Math.min(Math.max(1, explicitDelegateParallelHint ?? 1), effectiveMaxDelegations)
+						: 0
+					: (effectiveDelegateParallelHint ?? 0) >= 2 && effectiveMaxDelegations >= 2
+						? Math.min(
+								preferredDelegationFloor,
+								effectiveMaxDelegations,
+								effectiveDelegateParallelHint ?? preferredDelegationFloor,
+							)
 						: 0;
 				const runtimeCapabilityHints =
 					"Runtime capability: for long-running shell commands that should not block the turn (especially start/run-project or dev-server/watch commands), use bash with run_in_background=true and report backgroundTaskId for follow-up monitoring/stop actions; keep foreground mode only when immediate command output is required.";

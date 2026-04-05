@@ -59,6 +59,9 @@ describe("ToolExecutionComponent custom renderer suppression", () => {
 	test("keeps built-in tool rendering visible", () => {
 		const component = new ToolExecutionComponent("read", { path: "README.md" }, {}, undefined, createFakeTui());
 		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("tool");
+		expect(rendered).toContain("╭");
+		expect(rendered).toContain("╰");
 		expect(rendered).toContain("read");
 	});
 

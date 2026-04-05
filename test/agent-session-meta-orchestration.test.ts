@@ -145,6 +145,14 @@ describe("AgentSession meta orchestration directive", () => {
 				}),
 			]),
 		);
+		expect(capturedMessages[0]?.content).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					type: "text",
+					text: expect.stringContaining("Delegates are `task` calls only"),
+				}),
+			]),
+		);
 	});
 
 	it("stores hidden orchestration metadata with a display alias for meta prompts", async () => {

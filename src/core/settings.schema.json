@@ -44,6 +44,27 @@
 				}
 			}
 		},
+		"terminal": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"showImages": {
+					"type": "boolean",
+					"default": true,
+					"description": "Render images inline when the terminal supports it."
+				},
+				"clearOnShrink": {
+					"type": "boolean",
+					"default": false,
+					"description": "Clear trailing rows when content shrinks to avoid stale artifacts."
+				},
+				"compactFooter": {
+					"type": "boolean",
+					"default": false,
+					"description": "Use a compact single-line footer layout."
+				}
+			}
+		},
 		"webSearch": {
 			"type": "object",
 			"additionalProperties": true,

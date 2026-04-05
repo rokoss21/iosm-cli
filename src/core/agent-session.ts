@@ -395,8 +395,11 @@ function buildMetaProfileOrchestrationDirective(text: string): string | undefine
 		"For actionable repository work, keep recon bounded and read-only, just enough to identify the workstreams.",
 		"The main emphasis of meta mode is parallelism through top-level agents and nested delegates.",
 		"For any non-trivial work, the main/root agent MUST orchestrate with multiple top-level `task` calls in the parent turn when independent streams exist.",
+		"Delegates are `task` calls only. Do not treat plain tool calls (read/bash/grep/etc.) as delegated agents.",
+		"Before execution, assign explicit ownership domains to top-level agents/delegates to reduce overlap and duplicated findings.",
 		"For independent streams, emit task calls in the same turn when feasible; for child streams with independent slices, require nested delegation.",
 		"If user-specified agent/delegate counts or parallelism constraints exist, treat them as hard execution requirements.",
+		"In final synthesis, report only observed metrics from runtime evidence (task details, shared-memory keys, verification output); otherwise mark metrics as unknown.",
 		"If you truly cannot split the work into multiple top-level tasks or nested delegates, include one line: DELEGATION_IMPOSSIBLE: <precise reason>.",
 	].join("\n");
 }

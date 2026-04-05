@@ -1,13 +1,33 @@
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { Container, Markdown, type MarkdownTheme, Spacer, Text } from "@mariozechner/pi-tui";
+import { editorKey } from "./keybinding-hints.js";
+import { MessageWindow } from "./message-window.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+
+const THINKING_SPINNER_FRAMES = ["-", "\\", "|", "/"] as const;
+
+function toSingleLinePreview(text: string, maxChars = 100): string {
+	const normalized = text.replace(/\s+/g, " ").trim();
+	if (!normalized) return "";
+	if (normalized.length <= maxChars) return normalized;
+	return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function getSpinnerFrame(signal: number): string {
+	const index = Math.max(0, Math.floor(signal)) % THINKING_SPINNER_FRAMES.length;
+	return THINKING_SPINNER_FRAMES[index] ?? "-";
+}
 
 /**
  * Component that renders a complete assistant message
  */
 export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
+	private messageWindow: MessageWindow;
 	private hideThinkingBlock: boolean;
+	private expanded = false;
+	private isStreaming = false;
+	private renderEnabled = true;
 	private markdownTheme: MarkdownTheme;
 	private lastMessage?: AssistantMessage;
 
@@ -21,9 +41,18 @@ export class AssistantMessageComponent extends Container {
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
 
-		// Container for text/thinking content
+		this.addChild(new Spacer(1));
+
+		// Container for message content
 		this.contentContainer = new Container();
-		this.addChild(this.contentContainer);
+		this.messageWindow = new MessageWindow(this.contentContainer, {
+			label: "IOSM Agent",
+			lineColor: "borderMuted",
+			labelColor: "muted",
+			paddingY: 1,
+		});
+		this.messageWindow.setVisible(false);
+		this.addChild(this.messageWindow);
 
 		if (message) {
 			this.updateContent(message);
@@ -37,8 +66,30 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	override render(width: number): string[] {
+		if (!this.renderEnabled) return [];
+		return super.render(width);
+	}
+
 	setHideThinkingBlock(hide: boolean): void {
 		this.hideThinkingBlock = hide;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
+	setExpanded(expanded: boolean): void {
+		this.expanded = expanded;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
+	}
+
+	setStreaming(streaming: boolean): void {
+		this.isStreaming = streaming;
+		if (this.lastMessage) {
+			this.updateContent(this.lastMessage);
+		}
 	}
 
 	updateContent(message: AssistantMessage): void {
@@ -50,10 +101,17 @@ export class AssistantMessageComponent extends Container {
 		const hasVisibleContent = message.content.some(
 			(c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()),
 		);
+		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
+		const shouldShowError = !hasToolCalls && (message.stopReason === "aborted" || message.stopReason === "error");
+		const showFrame = hasVisibleContent || shouldShowError || this.isStreaming;
+		this.renderEnabled = showFrame;
+		this.messageWindow.setVisible(showFrame);
 
-		if (hasVisibleContent) {
-			this.contentContainer.addChild(new Spacer(1));
+		if (!showFrame) {
+			return;
 		}
+
+		this.contentContainer.addChild(new Spacer(1));
 
 		// Render content in order
 		for (let i = 0; i < message.content.length; i++) {
@@ -75,6 +133,19 @@ export class AssistantMessageComponent extends Container {
 					if (hasVisibleContentAfter) {
 						this.contentContainer.addChild(new Spacer(1));
 					}
+				} else if (!this.expanded) {
+					// Collapsed reasoning preview line with short excerpt.
+					const preview = toSingleLinePreview(content.thinking, 96);
+					const prefix = this.isStreaming ? `Thinking ${getSpinnerFrame(content.thinking.length / 12)}` : "Reasoning";
+					const summary =
+						preview.length > 0 ? `${prefix}: ${preview}` : this.isStreaming ? `${prefix}...` : "Reasoning hidden";
+					const collapsedLabel =
+						theme.italic(theme.fg("thinkingText", summary)) +
+						theme.fg("dim", ` (${editorKey("expandTools")} to expand)`);
+					this.contentContainer.addChild(new Text(collapsedLabel, 1, 0));
+					if (hasVisibleContentAfter) {
+						this.contentContainer.addChild(new Spacer(1));
+					}
 				} else {
 					// Thinking traces in thinkingText color, italic
 					this.contentContainer.addChild(
@@ -90,9 +161,19 @@ export class AssistantMessageComponent extends Container {
 			}
 		}
 
+		// Show a live placeholder while streaming before text/thinking arrives.
+		if (this.isStreaming && !hasVisibleContent) {
+			const spinner = getSpinnerFrame(Date.now() / 160);
+			const collapsedLabel =
+				theme.italic(theme.fg("thinkingText", `Thinking ${spinner}...`)) +
+				(this.hideThinkingBlock || this.expanded
+					? ""
+					: theme.fg("dim", ` (${editorKey("expandTools")} to expand)`));
+			this.contentContainer.addChild(new Text(collapsedLabel, 1, 0));
+		}
+
 		// Check if aborted - show after partial content
 		// But only if there are no tool calls (tool execution components will show the error)
-		const hasToolCalls = message.content.some((c) => c.type === "toolCall");
 		if (!hasToolCalls) {
 			if (message.stopReason === "aborted") {
 				const abortMessage =

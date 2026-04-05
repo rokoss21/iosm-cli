@@ -151,4 +151,30 @@ describe("FooterComponent width handling", () => {
 		expect(statsLine).toContain("[working]");
 		expect(statsLine).not.toContain("[ready]");
 	});
+
+	it("renders single-line compact footer mode", () => {
+		const session = createSession({
+			sessionName: "",
+			modelId: "claude-sonnet-4-6",
+			provider: "anthropic",
+			reasoning: true,
+			thinkingLevel: "low",
+			usage: {
+				input: 12_345,
+				output: 6_789,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { total: 1.234 },
+			},
+		});
+		const footer = new FooterComponent(session, createFooterData(1));
+		footer.setCompactModeEnabled(true);
+
+		const lines = footer.render(160);
+		expect(lines).toHaveLength(1);
+		expect(visibleWidth(lines[0] ?? "")).toBeLessThanOrEqual(160);
+		const compactLine = stripAnsi(lines[0] ?? "");
+		expect(compactLine).toContain("anthropic/claude-sonnet-4-6");
+		expect(compactLine).toContain("ctx 12.3%/200k (auto)");
+	});
 });

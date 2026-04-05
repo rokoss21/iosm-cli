@@ -21,6 +21,7 @@ import { sanitizeBinaryOutput } from "../../../utils/shell.js";
 import { getLanguageFromPath, highlightCode, theme } from "../theme/theme.js";
 import { renderDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
+import { MessageWindow } from "./message-window.js";
 import { truncateToVisualLines } from "./visual-truncate.js";
 
 // Preview line limit for bash when not expanded
@@ -293,8 +294,10 @@ type WriteHighlightCache = {
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
+	private frameContent: Container;
+	private messageWindow: MessageWindow;
 	private contentBox: Box; // Used for custom tools and bash visual truncation
-	private contentText: Text; // For built-in tools (with its own padding/bg)
+	private contentText: Text; // For built-in tools
 	private imageComponents: Image[] = [];
 	private imageSpacers: Spacer[] = [];
 	private toolName: string;
@@ -338,19 +341,19 @@ export class ToolExecutionComponent extends Container {
 
 		this.addChild(new Spacer(1));
 
-		// Always create both - contentBox for custom tools/bash, contentText for other built-ins
-		this.contentBox = new Box(TOOL_BOX_PADDING_X, TOOL_BOX_PADDING_Y, (text: string) => theme.bg("toolPendingBg", text));
-		this.contentText = new Text("", TOOL_BOX_PADDING_X, TOOL_BOX_PADDING_Y, (text: string) =>
-			theme.bg("toolPendingBg", text),
-		);
+		this.frameContent = new Container();
+		this.messageWindow = new MessageWindow(this.frameContent, {
+			label: "tool",
+			lineColor: "success",
+			labelColor: "success",
+			paddingY: 1,
+		});
+		this.addChild(this.messageWindow);
 
-		// Use contentBox for bash (visual truncation) or custom tools with custom renderers
-		// Use contentText for built-in tools (including overrides without custom renderers)
-		if (toolName === "bash" || (toolDefinition && !this.shouldUseBuiltInRenderer())) {
-			this.addChild(this.contentBox);
-		} else {
-			this.addChild(this.contentText);
-		}
+		const noBg = (text: string) => text;
+		// Always create both - contentBox for custom tools/bash, contentText for other built-ins
+		this.contentBox = new Box(TOOL_BOX_PADDING_X, TOOL_BOX_PADDING_Y, noBg);
+		this.contentText = new Text("", TOOL_BOX_PADDING_X, TOOL_BOX_PADDING_Y, noBg);
 
 		this.updateDisplay();
 	}
@@ -590,14 +593,11 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	private updateDisplay(): void {
-		// Set background based on state
-		const bgFn = this.isPartial
-			? (text: string) => theme.bg("toolPendingBg", text)
-			: this.result?.isError
-				? (text: string) => theme.bg("toolErrorBg", text)
-				: (text: string) => theme.bg("toolSuccessBg", text);
+		const noBg = (text: string) => text;
 
 		const useBuiltInRenderer = this.shouldUseBuiltInRenderer();
+		const usesBoxRenderer = this.toolName === "bash" || !useBuiltInRenderer;
+		const primaryComponent = usesBoxRenderer ? this.contentBox : this.contentText;
 		let customRendererHasContent = false;
 		this.hideComponent = false;
 
@@ -605,17 +605,17 @@ export class ToolExecutionComponent extends Container {
 		if (useBuiltInRenderer) {
 			if (this.toolName === "bash") {
 				// Bash uses Box with visual line truncation
-				this.contentBox.setBgFn(bgFn);
+				this.contentBox.setBgFn(noBg);
 				this.contentBox.clear();
 				this.renderBashContent();
 			} else {
 				// Other built-in tools: use Text directly with caching
-				this.contentText.setCustomBgFn(bgFn);
+				this.contentText.setCustomBgFn(noBg);
 				this.contentText.setText(this.formatToolExecution());
 			}
 		} else if (this.toolDefinition) {
 			// Custom tools use Box for flexible component rendering
-			this.contentBox.setBgFn(bgFn);
+			this.contentBox.setBgFn(noBg);
 			this.contentBox.clear();
 			let customCallSectionRendered = false;
 
@@ -680,18 +680,12 @@ export class ToolExecutionComponent extends Container {
 			}
 		} else {
 			// Unknown tool with no registered definition - show generic fallback
-			this.contentText.setCustomBgFn(bgFn);
+			this.contentText.setCustomBgFn(noBg);
 			this.contentText.setText(this.formatToolExecution());
 		}
 
 		// Handle images (same for both custom and built-in)
-		for (const img of this.imageComponents) {
-			this.removeChild(img);
-		}
 		this.imageComponents = [];
-		for (const spacer of this.imageSpacers) {
-			this.removeChild(spacer);
-		}
 		this.imageSpacers = [];
 
 		if (this.result) {
@@ -707,27 +701,38 @@ export class ToolExecutionComponent extends Container {
 					const imageMimeType = converted?.mimeType ?? img.mimeType;
 
 					// For Kitty, skip non-PNG images that haven't been converted yet
-					if (caps.images === "kitty" && imageMimeType !== "image/png") {
-						continue;
-					}
+						if (caps.images === "kitty" && imageMimeType !== "image/png") {
+							continue;
+						}
 
-					const spacer = new Spacer(1);
-					this.addChild(spacer);
-					this.imageSpacers.push(spacer);
-					const imageComponent = new Image(
-						imageData,
-						imageMimeType,
+						const spacer = new Spacer(1);
+						this.imageSpacers.push(spacer);
+						const imageComponent = new Image(
+							imageData,
+							imageMimeType,
 						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ maxWidthCells: 60 },
-					);
-					this.imageComponents.push(imageComponent);
-					this.addChild(imageComponent);
+							{ maxWidthCells: 60 },
+						);
+						this.imageComponents.push(imageComponent);
+					}
 				}
 			}
-		}
 
 		if (!useBuiltInRenderer && this.toolDefinition) {
 			this.hideComponent = !customRendererHasContent && this.imageComponents.length === 0;
+		}
+		this.messageWindow.setVisible(!this.hideComponent);
+		if (this.hideComponent) {
+			return;
+		}
+
+		this.frameContent.clear();
+		this.frameContent.addChild(primaryComponent);
+		for (let i = 0; i < this.imageComponents.length; i++) {
+			const spacer = this.imageSpacers[i];
+			const image = this.imageComponents[i];
+			if (spacer) this.frameContent.addChild(spacer);
+			if (image) this.frameContent.addChild(image);
 		}
 	}
 

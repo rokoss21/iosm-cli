@@ -40,19 +40,13 @@ describe("SubagentMessageComponent", () => {
 		expect(rendered).toContain("tool read");
 		expect(rendered).toContain("tools 1/2");
 		expect(rendered).toContain("msgs 1");
-		expect(rendered).toContain("agent codebase_auditor");
 		expect(rendered).toContain("elapsed 01:05");
-		expect(rendered).toContain("delegates 0/2 done, 1 running");
-		expect(rendered).toContain("delegate 1/2");
+		expect(rendered).toContain("delegates 0/2 done, 1 running, 1 pending");
 		expect(rendered).toContain("Patch vuln");
 		expect(rendered).toContain("(explore)");
 		expect(rendered).toContain("delegates");
-		expect(rendered).toContain("[>] 1. Patch vuln (explore)");
-		expect(rendered).toContain("[ ] 2. Audit UX (plan)");
-		expect(rendered).toContain("flow");
-		expect(rendered).toContain("[x] queued");
-		expect(rendered).toContain("[>] running");
-		expect(rendered).toContain("[ ] responding");
+		expect(rendered).toContain("├─ [>] #1 Patch vuln (explore)");
+		expect(rendered).toContain("└─ [ ] #2 Audit UX (plan)");
 	});
 
 	it("renders done status with queue and tool counters", () => {
@@ -85,7 +79,7 @@ describe("SubagentMessageComponent", () => {
 		expect(rendered).toContain("queue 250ms");
 	});
 
-	it("uses compact delegate list for large orchestrations", () => {
+	it("renders full delegate list for large orchestrations", () => {
 		const component = new SubagentMessageComponent({
 			description: "Run parallel audit",
 			profile: "full",
@@ -103,12 +97,12 @@ describe("SubagentMessageComponent", () => {
 		});
 
 		const rendered = stripAnsi(component.render(160).join("\n"));
-		expect(rendered).toContain("delegates 3/7 done, 1 failed, 1 running");
-		expect(rendered).toContain("compact");
-		expect(rendered).toContain("hidden 5 done/pending");
-		expect(rendered).toContain("[>] 4. Task 4 (explore)");
-		expect(rendered).toContain("[!] 5. Task 5 (plan)");
-		expect(rendered).not.toContain("1. Task 1 (explore)");
-		expect(rendered).not.toContain("2. Task 2 (explore)");
+		expect(rendered).toContain("delegates 3/7 done, 1 failed, 1 running, 2 pending");
+		expect(rendered).toContain("├─ [x] #1 Task 1 (explore)");
+		expect(rendered).toContain("├─ [ ] #2 Task 2 (explore)");
+		expect(rendered).toContain("├─ [>] #4 Task 4 (explore)");
+		expect(rendered).toContain("├─ [!] #5 Task 5 (plan)");
+		expect(rendered).toContain("└─ [x] #7 Task 7 (plan)");
+		expect(rendered).not.toContain("hidden");
 	});
 });

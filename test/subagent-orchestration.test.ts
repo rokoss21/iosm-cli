@@ -1872,6 +1872,87 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedTasks).toBe(2);
 	});
 
+	it("enforces at least one delegate when prompt carries structured delegate hint", async () => {
+		const cwd = makeTempDir();
+		let sawEnforcementPrompt = false;
+
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
+				sawEnforcementPrompt = true;
+				return {
+					output: 'Root refined.\n<delegate_task profile="explore" description="Deep dive">child-task</delegate_task>',
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("root-explicit-delegate")) {
+				return {
+					output: "Root analysis without delegation.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("child-task")) {
+				return {
+					output: "delegate complete",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_delegate_explicit_request", {
+			description: "Architecture audit",
+			prompt: "root-explicit-delegate\ndelegate_parallel_hint=1",
+			profile: "explore",
+		});
+		const text = (result.content[0] as { type: "text"; text: string }).text;
+
+		expect(sawEnforcementPrompt).toBe(true);
+		expect(text).toContain("### Delegated Subtasks");
+		expect(result.details?.delegatedTasks).toBe(1);
+		expect(result.details?.delegatedSucceeded).toBe(1);
+	});
+
+	it("auto-synthesizes explicit numeric delegate request when root remains monolithic", async () => {
+		const cwd = makeTempDir();
+		let sawEnforcementPrompt = false;
+		let synthesizedDelegatesObserved = 0;
+
+		const tool = createTaskTool(cwd, async (options) => {
+			if (options.prompt.includes("Workstream ")) {
+				synthesizedDelegatesObserved += 1;
+				return {
+					output: "delegated stream complete",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("DELEGATION_ENFORCEMENT")) {
+				sawEnforcementPrompt = true;
+				return {
+					output: "Still monolithic output without delegate tags.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			if (options.prompt.includes("root-three-delegates")) {
+				return {
+					output: "Root analysis without delegation.",
+					stats: { toolCallsStarted: 1, toolCallsCompleted: 1, assistantMessages: 1 },
+				};
+			}
+			return { output: "unexpected" };
+		});
+
+		const result = await tool.execute("call_delegate_explicit_count", {
+			description: "Cross-domain audit",
+			prompt: "root-three-delegates\ndelegate_parallel_hint=3",
+			profile: "explore",
+		});
+
+		expect(sawEnforcementPrompt).toBe(true);
+		expect(synthesizedDelegatesObserved).toBeGreaterThanOrEqual(3);
+		expect(result.details?.delegatedTasks ?? 0).toBeGreaterThanOrEqual(3);
+		expect(result.details?.delegatedSucceeded ?? 0).toBeGreaterThanOrEqual(3);
+	});
+
 	it("falls back to single-agent execution when delegation is not beneficial", async () => {
 		const cwd = makeTempDir();
 		let sawEnforcementPrompt = false;
@@ -2277,7 +2358,7 @@ describe("subagent orchestration", () => {
 		expect(result.details?.delegatedTasks).toBe(2);
 	});
 
-	it("applies delegation pressure for short action-oriented meta prompts", async () => {
+	it("applies delegation pressure for short structured meta prompts", async () => {
 		const cwd = makeTempDir();
 		let sawEnforcementPrompt = false;
 
@@ -2307,7 +2388,7 @@ describe("subagent orchestration", () => {
 
 		const result = await tool.execute("call_short_action_meta_prompt", {
 			description: "audit auth and rbac",
-			prompt: "audit auth and rbac",
+			prompt: ["Scope:", "- inspect src/auth/service.ts", "- inspect src/rbac/policy.ts"].join("\n"),
 			profile: "meta",
 		});
 		const text = (result.content[0] as { type: "text"; text: string }).text;

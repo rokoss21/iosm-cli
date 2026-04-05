@@ -1,4 +1,5 @@
 import { Container, Markdown, type MarkdownTheme, Spacer } from "@mariozechner/pi-tui";
+import { MessageWindow } from "./message-window.js";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
@@ -12,10 +13,20 @@ export class UserMessageComponent extends Container {
 	constructor(text: string, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super();
 		this.addChild(new Spacer(1));
+
+		const content = new Container();
+		content.addChild(
+			new Markdown(text, MESSAGE_PADDING_X, 0, markdownTheme, {
+				color: (value: string) => theme.fg("userMessageText", value),
+			}),
+		);
+
 		this.addChild(
-			new Markdown(text, MESSAGE_PADDING_X, 1, markdownTheme, {
-				bgColor: (text: string) => theme.bg("userMessageBg", text),
-				color: (text: string) => theme.fg("userMessageText", text),
+			new MessageWindow(content, {
+				label: "you",
+				lineColor: "borderAccent",
+				labelColor: "accent",
+				paddingY: 1,
 			}),
 		);
 	}

@@ -34,6 +34,38 @@ function badge(text: string, color: "accent" | "success" | "warning" | "muted"):
 	return theme.fg("dim", "[") + theme.fg(color, text) + theme.fg("dim", "]");
 }
 
+function composeAlignedLine(left: string, right: string, width: number, minPadding = 2): string {
+	const safeWidth = Math.max(0, width);
+	let leftPart = left;
+	let leftWidth = visibleWidth(leftPart);
+
+	if (leftWidth > safeWidth) {
+		leftPart = truncateToWidth(leftPart, safeWidth, "...");
+		leftWidth = visibleWidth(leftPart);
+	}
+
+	if (!right) {
+		return leftPart;
+	}
+
+	const rightWidth = visibleWidth(right);
+	const totalNeeded = leftWidth + minPadding + rightWidth;
+	if (totalNeeded <= safeWidth) {
+		const padding = " ".repeat(safeWidth - leftWidth - rightWidth);
+		return leftPart + padding + right;
+	}
+
+	const availableForRight = safeWidth - leftWidth - minPadding;
+	if (availableForRight <= 0) {
+		return leftPart;
+	}
+
+	const truncatedRight = truncateToWidth(right, availableForRight, "");
+	const truncatedRightWidth = visibleWidth(truncatedRight);
+	const padding = " ".repeat(Math.max(0, safeWidth - leftWidth - truncatedRightWidth));
+	return leftPart + padding + truncatedRight;
+}
+
 /**
  * Detect IOSM workspace and return a compact status segment.
  * Returns empty string when no IOSM workspace is found.
@@ -67,6 +99,7 @@ function getIosmStatus(cwd: string): string {
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
+	private compactModeEnabled = false;
 	private planMode = false;
 	private activeProfile = "";
 
@@ -77,6 +110,10 @@ export class FooterComponent implements Component {
 
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
+	}
+
+	setCompactModeEnabled(enabled: boolean): void {
+		this.compactModeEnabled = enabled;
 	}
 
 	/**
@@ -229,21 +266,10 @@ export class FooterComponent implements Component {
 		}
 		usageParts.push(contextPercentStr);
 
-		let statsLeft = [...statusParts, ...usageParts].join(separator);
+		const statsLeft = [...statusParts, ...usageParts].join(separator);
 
 		// Add provider/model on the right side, plus thinking level if model supports it
 		const modelName = state.model ? `${state.model.provider}/${state.model.id}` : "no-model";
-
-		let statsLeftWidth = visibleWidth(statsLeft);
-
-		// If statsLeft is too wide, truncate it
-		if (statsLeftWidth > width) {
-			statsLeft = truncateToWidth(statsLeft, width, "...");
-			statsLeftWidth = visibleWidth(statsLeft);
-		}
-
-		// Calculate available space for padding (minimum 2 spaces between stats and model)
-		const minPadding = 2;
 
 		// Add thinking level indicator if model supports reasoning
 		let rightSideWithoutProvider = state.model ? theme.fg("accent", modelName) : theme.fg("warning", modelName);
@@ -256,28 +282,7 @@ export class FooterComponent implements Component {
 		}
 
 		const rightSide = rightSideWithoutProvider;
-
-		const rightSideWidth = visibleWidth(rightSide);
-		const totalNeeded = statsLeftWidth + minPadding + rightSideWidth;
-
-		let statsLine: string;
-		if (totalNeeded <= width) {
-			// Both fit - add padding to right-align model
-			const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-			statsLine = statsLeft + padding + rightSide;
-		} else {
-			// Need to truncate right side
-			const availableForRight = width - statsLeftWidth - minPadding;
-			if (availableForRight > 0) {
-				const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
-				const truncatedRightWidth = visibleWidth(truncatedRight);
-				const padding = " ".repeat(Math.max(0, width - statsLeftWidth - truncatedRightWidth));
-				statsLine = statsLeft + padding + truncatedRight;
-			} else {
-				// Not enough space for right side at all
-				statsLine = statsLeft;
-			}
-		}
+		const statsLine = composeAlignedLine(statsLeft, rightSide, width);
 
 		// Build pwd line, optionally with IOSM status segment appended
 		const iosmStatus = getIosmStatus(sessionCwd);
@@ -293,7 +298,21 @@ export class FooterComponent implements Component {
 		} else {
 			pwdLine = truncateToWidth(theme.fg("dim", pwd), width, theme.fg("dim", "..."));
 		}
-		const lines = [pwdLine, statsLine];
+		let lines: string[];
+		if (this.compactModeEnabled) {
+			const compactUsageParts: string[] = [];
+			if (totalInput) compactUsageParts.push(theme.fg("muted", `↑${formatTokens(totalInput)}`));
+			if (totalOutput) compactUsageParts.push(theme.fg("muted", `↓${formatTokens(totalOutput)}`));
+			if (totalCost || usingSubscription) {
+				compactUsageParts.push(theme.fg("muted", `$${totalCost.toFixed(3)}${usingSubscription ? " (sub)" : ""}`));
+			}
+			compactUsageParts.push(contextPercentStr);
+
+			const compactLeft = [theme.fg("dim", pwd), ...statusParts, ...compactUsageParts].join(separator);
+			lines = [composeAlignedLine(compactLeft, rightSide, width)];
+		} else {
+			lines = [pwdLine, statsLine];
+		}
 
 		// Add extension statuses on a single line, sorted by key alphabetically
 		const extensionStatuses = this.footerData.getExtensionStatuses();

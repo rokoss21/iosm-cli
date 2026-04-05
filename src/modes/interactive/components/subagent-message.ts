@@ -130,19 +130,18 @@ function formatSubagentBadge(agent?: string): string {
 	return `[subagent:${normalized}]`;
 }
 
-function renderPhaseTimeline(phaseState: SubagentPhaseState): string {
-	const phases: SubagentPhaseState[] = ["queued", "starting", "running", "responding"];
-	const currentIndex = phases.indexOf(phaseState);
-	if (currentIndex < 0) return "";
-
-	const segments = phases.map((phase, index) => {
-		const marker = index < currentIndex ? "[x]" : index === currentIndex ? "[>]" : "[ ]";
-		const text = `${marker} ${phase}`;
-		if (index < currentIndex) return theme.fg("success", text);
-		if (index === currentIndex) return theme.fg("accent", text);
-		return theme.fg("muted", text);
-	});
-	return `${theme.fg("muted", "flow")} ${segments.join(theme.fg("dim", " -> "))}`;
+function renderRunningStateChip(phaseState?: SubagentPhaseState): string {
+	switch (phaseState) {
+		case "queued":
+			return theme.fg("muted", "[ ] queued");
+		case "starting":
+			return theme.fg("accent", "[>] starting");
+		case "responding":
+			return theme.fg("accent", "[>] responding");
+		case "running":
+		default:
+			return theme.fg("accent", "[>] running");
+	}
 }
 
 function summarizeDelegates(info: SubagentInfo): DelegateSummary | undefined {
@@ -181,14 +180,43 @@ function summarizeDelegates(info: SubagentInfo): DelegateSummary | undefined {
 }
 
 function formatDelegateSummary(summary: DelegateSummary): string {
-	const parts: string[] = [`delegates ${summary.done}/${summary.total} done`];
+	const parts: string[] = [`${summary.done}/${summary.total} done`];
 	if (summary.failed > 0) {
 		parts.push(`${summary.failed} failed`);
 	}
 	if (summary.running > 0) {
 		parts.push(`${summary.running} running`);
 	}
+	if (summary.pending > 0) {
+		parts.push(`${summary.pending} pending`);
+	}
 	return parts.join(", ");
+}
+
+function renderDelegateStatusMarker(status: SubagentDelegateStatus): string {
+	switch (status) {
+		case "done":
+			return theme.fg("success", "[x]");
+		case "running":
+			return theme.fg("accent", "[>]");
+		case "failed":
+			return theme.fg("warning", "[!]");
+		default:
+			return theme.fg("muted", "[ ]");
+	}
+}
+
+function renderDelegateText(item: SubagentDelegateItem): string {
+	const label = `#${item.index} ${item.description} (${item.profile})`;
+	const color =
+		item.status === "done"
+			? "muted"
+			: item.status === "running"
+				? "customMessageText"
+				: item.status === "failed"
+					? "warning"
+					: "muted";
+	return theme.fg(color, label);
 }
 
 function selectDelegateItemsForDisplay(items: SubagentDelegateItem[]): {
@@ -197,24 +225,11 @@ function selectDelegateItemsForDisplay(items: SubagentDelegateItem[]): {
 	hiddenDonePending: number;
 	overflow: number;
 } {
-	const compactThreshold = 6;
-	const maxRows = 5;
-	if (items.length > compactThreshold) {
-		const critical = items.filter((item) => item.status === "running" || item.status === "failed");
-		const visibleItems = critical.slice(0, maxRows);
-		return {
-			visibleItems,
-			compacted: true,
-			hiddenDonePending: Math.max(0, items.length - critical.length),
-			overflow: Math.max(0, critical.length - visibleItems.length),
-		};
-	}
-	const visibleItems = items.slice(0, maxRows);
 	return {
-		visibleItems,
+		visibleItems: items,
 		compacted: false,
 		hiddenDonePending: 0,
-		overflow: Math.max(0, items.length - visibleItems.length),
+		overflow: 0,
 	};
 }
 
@@ -224,15 +239,16 @@ function selectDelegateItemsForDisplay(items: SubagentDelegateItem[]): {
  * Visual structure
  * ----------------
  * Line 1 (header):  [subagent] <profile> · <description>
- * Line 2 (status):
- *   running  →  ... <phase>
- *              @ <cwd> · tool <active> · tools <done>/<started>
- *              delegates <done>/<total> done, <failed> failed
- *              delegate <i>/<n> · <description> · (<profile>)
- *              delegates list with status markers (compact mode on large runs)
- *              flow [x] queued -> [>] running -> [ ] responding
- *   done     →  + <outputSize> output, <duration>, tools <done>/<started>, queue <wait>
- *   error    →  x <errorMessage or "error">
+ * Line 2 (status): compact single-line state for scanning
+ * running  → [>] running · <phase?> · tools · msgs · elapsed
+ * done     → [x] done · <outputSize> · <duration> · tools · queue
+ * error    → [!] <errorMessage>
+ * Optional context line:
+ *   @ <cwd> · tool <active> · iso/worktree · lock
+ * Optional delegates section:
+ *   delegates <done>/<total> done ...
+ *   ├─ [>] #1 <desc> (<profile>)
+ *   └─ [ ] #2 <desc> (<profile>)
  *
  * Theming follows the customMessage palette so the block sits visually alongside
  * other agent-injected messages (task plan, skill invocation, custom messages).
@@ -256,6 +272,80 @@ export class SubagentMessageComponent extends Box {
 		super.invalidate();
 	}
 
+	private addInlineParts(parts: string[]): void {
+		if (parts.length === 0) return;
+		this.addChild(new Text(parts.join(theme.fg("dim", " \u00B7 ")), 0, 0));
+	}
+
+	private renderDelegateSection(info: SubagentInfo): void {
+		const summary = summarizeDelegates(info);
+		if (!summary) return;
+
+		this.addChild(new Text(theme.fg("accent", `delegates ${formatDelegateSummary(summary)}`), 0, 0));
+
+		const activeDelegateIndex =
+			typeof info.delegateIndex === "number" && info.delegateIndex > 0 ? Math.floor(info.delegateIndex) : undefined;
+		const activeDelegateTotal =
+			typeof info.delegateTotal === "number" && info.delegateTotal > 0 ? Math.floor(info.delegateTotal) : undefined;
+		const activeDelegateDescription =
+			typeof info.delegateDescription === "string" && info.delegateDescription.trim().length > 0
+				? info.delegateDescription.trim()
+				: undefined;
+		const activeDelegateProfile =
+			typeof info.delegateProfile === "string" && info.delegateProfile.trim().length > 0
+				? info.delegateProfile.trim()
+				: undefined;
+
+		if (!Array.isArray(info.delegateItems) || info.delegateItems.length === 0) {
+			if (activeDelegateIndex) {
+				const activeParts = [
+					theme.fg(
+						"accent",
+						`active #${activeDelegateIndex}${activeDelegateTotal ? `/${activeDelegateTotal}` : ""}`,
+					),
+				];
+				if (activeDelegateDescription) {
+					activeParts.push(theme.fg("customMessageText", activeDelegateDescription));
+				}
+				if (activeDelegateProfile) {
+					activeParts.push(theme.fg("muted", `(${activeDelegateProfile})`));
+				}
+				this.addInlineParts(activeParts);
+			}
+			return;
+		}
+
+		const selected = selectDelegateItemsForDisplay(info.delegateItems);
+		const hiddenCount = selected.hiddenDonePending + selected.overflow;
+		const rowCount = selected.visibleItems.length + (hiddenCount > 0 ? 1 : 0);
+
+		if (rowCount === 0) {
+			this.addChild(new Text(theme.fg("muted", "└─ no active delegates"), 0, 0));
+			return;
+		}
+
+		for (let index = 0; index < selected.visibleItems.length; index++) {
+			const item = selected.visibleItems[index];
+			const rowIndex = index;
+			const isLastRow = rowIndex === rowCount - 1;
+			const branch = theme.fg("dim", isLastRow ? "└─" : "├─");
+			const marker = renderDelegateStatusMarker(item.status);
+			this.addChild(new Text(`${branch} ${marker} ${renderDelegateText(item)}`, 0, 0));
+		}
+
+		if (hiddenCount > 0) {
+			const branch = theme.fg("dim", "└─");
+			const hiddenParts = [theme.fg("muted", `+${hiddenCount} hidden`)];
+			if (selected.hiddenDonePending > 0) {
+				hiddenParts.push(theme.fg("muted", `${selected.hiddenDonePending} done/pending`));
+			}
+			if (selected.overflow > 0) {
+				hiddenParts.push(theme.fg("muted", `${selected.overflow} active overflow`));
+			}
+			this.addChild(new Text(`${branch} ${hiddenParts.join(theme.fg("dim", ", "))}`, 0, 0));
+		}
+	}
+
 	private renderContent(info: SubagentInfo): void {
 		// --- Header line ---
 		// [subagent] or [subagent:<agent>] <profile> · <description>
@@ -269,112 +359,47 @@ export class SubagentMessageComponent extends Box {
 
 		// --- Status line ---
 		switch (info.status) {
-				case "running": {
-				// Ellipsis prefix signals in-progress work without a spinner dependency
-				const indicator = theme.fg("accent", "...");
-				const phase = info.phase?.trim() ? info.phase.trim() : "running";
-				const statusText = theme.fg("muted", ` ${phase}`);
-				this.addChild(new Text(`${indicator}${statusText}`, 0, 0));
-
-				const metadata: string[] = [];
-				if (info.cwd) {
-					metadata.push(theme.fg("muted", `@ ${shortenPath(info.cwd)}`));
-				}
-				if (info.activeTool) {
-					metadata.push(theme.fg("customMessageText", `tool ${info.activeTool}`));
+			case "running": {
+				const statusParts = [renderRunningStateChip(info.phaseState)];
+				const phase = info.phase?.trim();
+				if (phase && phase.length > 0 && phase !== info.phaseState && phase !== "running") {
+					statusParts.push(theme.fg("customMessageText", phase));
 				}
 				const toolProgress = formatToolProgress(info.toolCallsStarted, info.toolCallsCompleted);
 				if (toolProgress) {
-					metadata.push(theme.fg("muted", toolProgress));
+					statusParts.push(theme.fg("muted", toolProgress));
 				}
 				if (typeof info.assistantMessages === "number" && info.assistantMessages > 0) {
-					metadata.push(theme.fg("muted", `msgs ${info.assistantMessages}`));
-				}
-				if (info.agent) {
-					metadata.push(theme.fg("muted", `agent ${info.agent}`));
+					statusParts.push(theme.fg("muted", `msgs ${info.assistantMessages}`));
 				}
 				if (typeof info.durationMs === "number" && info.durationMs >= 0) {
-					metadata.push(theme.fg("muted", `elapsed ${formatElapsedClock(info.durationMs)}`));
+					statusParts.push(theme.fg("muted", `elapsed ${formatElapsedClock(info.durationMs)}`));
+				}
+				this.addInlineParts(statusParts);
+
+				const contextParts: string[] = [];
+				if (info.cwd) {
+					contextParts.push(theme.fg("muted", `@ ${shortenPath(info.cwd)}`));
+				}
+				if (info.activeTool) {
+					contextParts.push(theme.fg("customMessageText", `tool ${info.activeTool}`));
 				}
 				if (info.isolation && info.isolation !== "none") {
-					metadata.push(theme.fg("muted", `iso ${info.isolation}`));
+					contextParts.push(theme.fg("muted", `iso ${info.isolation}`));
 				}
-					if (info.lockKey) {
-						metadata.push(theme.fg("muted", `lock ${info.lockKey}`));
-					}
-					if (metadata.length > 0) {
-						this.addChild(new Text(metadata.join(theme.fg("dim", " \u00B7 ")), 0, 0));
-					}
-					const delegateSummary = summarizeDelegates(info);
-					if (delegateSummary) {
-						this.addChild(new Text(theme.fg("accent", formatDelegateSummary(delegateSummary)), 0, 0));
-					}
-					if (typeof info.delegateIndex === "number" && info.delegateIndex > 0) {
-						const delegateTotal =
-							typeof info.delegateTotal === "number" && info.delegateTotal > 0
-								? info.delegateTotal
-								: info.delegateIndex;
-						const delegateParts: string[] = [theme.fg("accent", `delegate ${info.delegateIndex}/${delegateTotal}`)];
-						if (typeof info.delegateDescription === "string" && info.delegateDescription.trim().length > 0) {
-							delegateParts.push(theme.fg("customMessageText", info.delegateDescription.trim()));
-						}
-						if (typeof info.delegateProfile === "string" && info.delegateProfile.trim().length > 0) {
-							delegateParts.push(theme.fg("muted", `(${info.delegateProfile.trim()})`));
-						}
-						this.addChild(new Text(delegateParts.join(theme.fg("dim", " \u00B7 ")), 0, 0));
-					}
-					if (Array.isArray(info.delegateItems) && info.delegateItems.length > 0) {
-						const selected = selectDelegateItemsForDisplay(info.delegateItems);
-						const headerParts = [theme.fg("muted", "delegates")];
-						if (selected.compacted) {
-							headerParts.push(theme.fg("accent", "compact"));
-							if (selected.hiddenDonePending > 0) {
-								headerParts.push(theme.fg("muted", `hidden ${selected.hiddenDonePending} done/pending`));
-							}
-						}
-						this.addChild(new Text(headerParts.join(theme.fg("dim", " \u00B7 ")), 0, 0));
-						if (selected.visibleItems.length === 0 && selected.compacted) {
-							this.addChild(new Text(theme.fg("muted", "no running/failed delegates"), 0, 0));
-						}
-						for (const item of selected.visibleItems) {
-							const marker = (() => {
-								switch (item.status) {
-									case "done":
-										return theme.fg("success", "[x]");
-									case "running":
-										return theme.fg("accent", "[>]");
-									case "failed":
-										return theme.fg("warning", "[!]");
-									default:
-										return theme.fg("muted", "[ ]");
-								}
-							})();
-							const label = `${item.index}. ${item.description} (${item.profile})`;
-							const textColor =
-								item.status === "done"
-									? "muted"
-									: item.status === "running"
-										? "customMessageText"
-										: item.status === "failed"
-											? "warning"
-											: "muted";
-							this.addChild(new Text(`${marker} ${theme.fg(textColor, label)}`, 0, 0));
-						}
-						if (selected.overflow > 0) {
-							this.addChild(new Text(theme.fg("muted", `... +${selected.overflow} more`), 0, 0));
-						}
-					}
-					if (info.phaseState) {
-						this.addChild(new Text(renderPhaseTimeline(info.phaseState), 0, 0));
-					}
-					break;
+				if (info.lockKey) {
+					contextParts.push(theme.fg("muted", `lock ${info.lockKey}`));
 				}
+				this.addInlineParts(contextParts);
+				this.renderDelegateSection(info);
+				break;
+			}
 
 			case "done": {
-				const checkmark = theme.fg("success", "+");
 				const parts: string[] = [];
+				parts.push(theme.fg("success", "[x] done"));
 				if (info.outputLength !== undefined) {
-					parts.push(theme.fg("customMessageText", formatBytes(info.outputLength)) + theme.fg("muted", " output"));
+					parts.push(theme.fg("customMessageText", `${formatBytes(info.outputLength)} output`));
 				}
 				if (info.durationMs !== undefined) {
 					parts.push(theme.fg("muted", formatDuration(info.durationMs)));
@@ -383,26 +408,20 @@ export class SubagentMessageComponent extends Box {
 				if (toolProgress) {
 					parts.push(theme.fg("muted", toolProgress));
 				}
-					const delegateSummary = summarizeDelegates(info);
-					if (delegateSummary) {
-						parts.push(theme.fg("muted", `delegates ${delegateSummary.done}/${delegateSummary.total} done`));
-						if (delegateSummary.failed > 0) {
-							parts.push(theme.fg("warning", `${delegateSummary.failed} failed`));
-						}
-					}
 				if (typeof info.waitMs === "number" && info.waitMs > 0) {
 					parts.push(theme.fg("muted", `queue ${formatDuration(info.waitMs)}`));
 				}
-				const detail = parts.length > 0 ? " " + parts.join(theme.fg("dim", ", ")) : "";
-				this.addChild(new Text(`${checkmark}${detail}`, 0, 0));
+				this.addInlineParts(parts);
+				this.renderDelegateSection(info);
 				break;
 			}
 
 			case "error": {
-				const cross = theme.fg("error", "x");
+				const cross = theme.fg("error", "[!] error");
 				const message = info.errorMessage ? info.errorMessage : "error";
-				const errorText = theme.fg("error", ` ${message}`);
-				this.addChild(new Text(`${cross}${errorText}`, 0, 0));
+				const errorText = theme.fg("error", message);
+				this.addInlineParts([cross, errorText]);
+				this.renderDelegateSection(info);
 				break;
 			}
 		}

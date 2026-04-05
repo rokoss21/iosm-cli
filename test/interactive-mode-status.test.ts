@@ -13,7 +13,6 @@ import { INTERNAL_UI_META_CUSTOM_TYPE } from "../src/core/messages.js";
 import {
 	MAX_ORCHESTRATION_AGENTS,
 	MAX_ORCHESTRATION_PARALLEL,
-	MAX_SUBAGENT_DELEGATE_PARALLEL,
 } from "../src/core/orchestration-limits.js";
 import { TASK_PLAN_CUSTOM_TYPE } from "../src/core/task-plan.js";
 import {
@@ -2539,9 +2538,8 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 
 		expect(prompt).toHaveBeenCalledTimes(1);
 		const [generatedPrompt] = prompt.mock.calls[0] as [string];
-		expect(generatedPrompt).toContain(
-			`<orchestrate mode="parallel" agents="1" max_parallel="${MAX_ORCHESTRATION_PARALLEL}">`,
-		);
+		expect(generatedPrompt).toContain(`<orchestrate mode="parallel" agents="1">`);
+		expect(generatedPrompt).not.toContain("max_parallel=");
 		expect(generatedPrompt).toContain('agent="meta_orchestrator"');
 		expect(generatedPrompt).toContain("Include delegate_parallel_hint in the task call.");
 		expect(generatedPrompt).toContain("If user explicitly requested an agent count");
@@ -2601,7 +2599,7 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		expect(profile).toBe("meta");
 	});
 
-	test("derives bounded delegate hints for orchestrate assignments", () => {
+	test("derives delegate hints for orchestrate assignments without hard caps", () => {
 		const fakeThis: any = {};
 		const highRiskHint = (InteractiveMode as any).prototype.deriveOrchestrateDelegateParallelHint.call(fakeThis, {
 			task: "Refactor auth migration with rollback safety",
@@ -2623,9 +2621,8 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		});
 
 		expect(highRiskHint).toBeGreaterThanOrEqual(6);
-		expect(highRiskHint).toBeLessThanOrEqual(MAX_SUBAGENT_DELEGATE_PARALLEL);
-		expect(lockedHint).toBeLessThanOrEqual(4);
 		expect(lockedHint).toBeGreaterThanOrEqual(1);
+		expect(lockedHint).toBeGreaterThanOrEqual(highRiskHint);
 	});
 
 	test("handleOrchestrateSlashCommand injects meta defaults and delegate hints for parallel runs", async () => {
@@ -2961,7 +2958,7 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 
 		await (InteractiveMode as any).prototype.promptWithTaskFallback.call(
 			fakeThis,
-			"используй 3 параллельных агента для аудита безопасности",
+			"security audit --parallel --agents 3",
 		);
 
 		expect(prompt).toHaveBeenCalledTimes(2);
@@ -3068,13 +3065,13 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 
 		await (InteractiveMode as any).prototype.promptWithTaskFallback.call(
 			fakeThis,
-			"используй 3 параллельных агента для аудита безопасности",
+			"security audit --parallel --agents 3",
 		);
 
 		expect(prompt).toHaveBeenCalledTimes(2);
 		expect(runSwarmFromTask).toHaveBeenCalledTimes(1);
 		expect(runSwarmFromTask).toHaveBeenCalledWith(
-			"используй 3 параллельных агента для аудита безопасности",
+			"security audit --parallel --agents 3",
 			{ maxParallel: 3 },
 		);
 		expect(showWarning).toHaveBeenCalledWith(expect.stringContaining("META enforcement fallback"));
@@ -4142,6 +4139,292 @@ describe("InteractiveMode.handleEvent meta interruption fallback", () => {
 		await (InteractiveMode as any).prototype.handleEvent.call(fakeThis, { type: "agent_end" });
 
 		expect(showMetaModeInterruptionHint).not.toHaveBeenCalled();
+	});
+});
+
+describe("InteractiveMode orchestration panel rendering", () => {
+	test("renders a single compact orchestration panel with delegate tree and completed states", () => {
+		const fakeThis: any = {
+			orchestrationContainer: new Container(),
+			subagentComponents: new Map([
+				[
+					"task_running",
+					{
+						startTime: Date.now() - 12_000,
+						profile: "explore",
+						description: "Map monorepo structure",
+						phase: "completed fd",
+						phaseState: "running",
+						toolCallsStarted: 7,
+						toolCallsCompleted: 7,
+						assistantMessages: 3,
+						delegateItems: [
+							{ index: 1, description: "catalog packages", profile: "plan", status: "running" },
+							{ index: 2, description: "check tests", profile: "verify", status: "pending" },
+						],
+					},
+				],
+				[
+					"task_queued",
+					{
+						startTime: Date.now() - 6_000,
+						profile: "plan",
+						description: "Assess architecture patterns",
+						phase: "waiting explore summary",
+						phaseState: "queued",
+						toolCallsStarted: 0,
+						toolCallsCompleted: 0,
+						assistantMessages: 0,
+					},
+				],
+			]),
+			orchestrationCompletedSubagents: [
+				{
+					finishedAt: Date.now() - 2_000,
+					status: "done",
+					profile: "analyst",
+					description: "Analyze tech stack",
+					durationMs: 8_000,
+					toolCallsStarted: 4,
+					toolCallsCompleted: 4,
+					assistantMessages: 1,
+					outputLength: 2048,
+					waitMs: 120,
+				},
+				{
+					finishedAt: Date.now() - 1_000,
+					status: "error",
+					profile: "verifier",
+					description: "Review build/test configs",
+					durationMs: 11_000,
+					toolCallsStarted: 6,
+					toolCallsCompleted: 5,
+					assistantMessages: 2,
+					errorMessage: "timeout while running tests",
+				},
+			],
+		};
+
+		(InteractiveMode as any).prototype.refreshOrchestrationSummaryDisplay.call(fakeThis);
+
+		expect(fakeThis.orchestrationContainer.children.length).toBeGreaterThan(0);
+		const rendered = stripAnsi(renderAll(fakeThis.orchestrationContainer, 180));
+		expect(rendered).toContain("IOSM Orchestration");
+		expect(rendered).toContain("ORCH");
+		expect(rendered).toContain("RUNNING");
+		expect(rendered).toContain("QUEUED");
+		expect(rendered).toContain("COMPLETED");
+		expect(rendered).toContain("FAILED");
+		expect(rendered).toContain("Map monorepo structure");
+		expect(rendered).toContain("Analyze tech stack");
+		expect(rendered).toContain("Review build/test configs");
+		expect(rendered).toContain("├─ [>] #1 catalog packages (plan)");
+	});
+
+	test("keeps all 12 top-level running tasks visible even when each has delegate rows", () => {
+		const now = Date.now();
+		const entries = Array.from({ length: 12 }, (_value, index) => [
+			`task_${index + 1}`,
+			{
+				startTime: now - 25_000,
+				profile: "iosm_analyst",
+				description: `Security stream ${index + 1}`,
+				phase: "booting subagent",
+				phaseState: "running",
+				toolCallsStarted: 3,
+				toolCallsCompleted: 2,
+				assistantMessages: 5,
+				delegateItems: [
+					{ index: 1, description: "delegate A", profile: "explore", status: "running" },
+					{ index: 2, description: "delegate B", profile: "explore", status: "pending" },
+					{ index: 3, description: "delegate C", profile: "explore", status: "pending" },
+				],
+			},
+		] as const);
+
+		const fakeThis: any = {
+			orchestrationContainer: new Container(),
+			subagentComponents: new Map(entries),
+			orchestrationCompletedSubagents: [],
+		};
+
+		(InteractiveMode as any).prototype.refreshOrchestrationSummaryDisplay.call(fakeThis);
+
+		const rendered = stripAnsi(renderAll(fakeThis.orchestrationContainer, 220));
+		expect(rendered).toContain("ORCH 0/12 done | 12 running");
+		expect(rendered).toContain("Security stream 1");
+		expect(rendered).toContain("Security stream 12");
+	});
+
+	test("does not add subagent cards to chat on task tool start", async () => {
+		const fakeThis: any = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			chatContainer: new Container(),
+			pendingTools: new Map(),
+			subagentComponents: new Map(),
+			ensureSubagentElapsedTimer: vi.fn(),
+			refreshOrchestrationSummaryDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+
+		await (InteractiveMode as any).prototype.handleEvent.call(fakeThis, {
+			type: "tool_execution_start",
+			toolName: "task",
+			toolCallId: "task_call_1",
+			args: { description: "Audit repo", profile: "explore" },
+		});
+
+		expect(fakeThis.chatContainer.children).toHaveLength(0);
+		expect(fakeThis.subagentComponents.has("task_call_1")).toBe(true);
+	});
+
+	test("queues task tool calls from assistant output before execution starts", () => {
+		const fakeThis: any = {
+			subagentComponents: new Map(),
+			orchestrationCompletedSubagents: [],
+			ensureSubagentElapsedTimer: vi.fn(),
+			refreshOrchestrationSummaryDisplay: vi.fn(),
+		};
+
+		(InteractiveMode as any).prototype.queuePendingTaskCallsFromAssistantMessage.call(fakeThis, {
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "task_1", name: "task", arguments: { description: "A", profile: "explore" } },
+				{ type: "toolCall", id: "task_2", name: "task", arguments: { description: "B", profile: "plan" } },
+				{ type: "toolCall", id: "task_3", name: "task", arguments: { description: "C", profile: "verify" } },
+			],
+		});
+
+		expect(fakeThis.subagentComponents.size).toBe(3);
+		expect(fakeThis.subagentComponents.get("task_2")?.phaseState).toBe("queued");
+		expect(fakeThis.subagentComponents.get("task_2")?.description).toBe("B");
+		expect(fakeThis.ensureSubagentElapsedTimer).toHaveBeenCalledTimes(1);
+		expect(fakeThis.refreshOrchestrationSummaryDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	test("promotes queued task entry to starting when execution begins", async () => {
+		const fakeThis: any = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			chatContainer: new Container(),
+			pendingTools: new Map(),
+			subagentComponents: new Map([
+				[
+					"task_q",
+					{
+						startTime: Date.now() - 1000,
+						profile: "explore",
+						description: "Queued task",
+						phase: "queued for execution",
+						phaseState: "queued",
+						toolCallsStarted: 0,
+						toolCallsCompleted: 0,
+						assistantMessages: 0,
+					},
+				],
+			]),
+			ensureSubagentElapsedTimer: vi.fn(),
+			refreshOrchestrationSummaryDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+
+		await (InteractiveMode as any).prototype.handleEvent.call(fakeThis, {
+			type: "tool_execution_start",
+			toolName: "task",
+			toolCallId: "task_q",
+			args: { description: "Running task", profile: "plan" },
+		});
+
+		expect(fakeThis.subagentComponents.get("task_q")?.phaseState).toBe("starting");
+		expect(fakeThis.subagentComponents.get("task_q")?.profile).toBe("plan");
+		expect(fakeThis.subagentComponents.get("task_q")?.description).toBe("Running task");
+	});
+
+	test("archives orchestration panel into chat on agent_end", async () => {
+		const trailing = {
+			render: () => ["TRAILING_MESSAGE"],
+			invalidate: () => {},
+		};
+		const fakeThis: any = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			activeProfileName: "full",
+			currentTurnSawAssistantMessage: true,
+			loadingAnimation: undefined,
+			streamingComponent: undefined,
+			streamingMessage: undefined,
+			pendingTools: new Map(),
+			subagentComponents: new Map(),
+			clearSubagentElapsedTimer: vi.fn(),
+			checkShutdownRequested: vi.fn(async () => {}),
+			ui: { requestRender: vi.fn() },
+			chatContainer: new Container(),
+			orchestrationContainer: new Container(),
+			orchestrationCompletedSubagents: [{ toolCallId: "task_done", status: "done" }],
+			refreshOrchestrationSummaryDisplay: vi.fn(function (this: any) {
+				this.orchestrationContainer.clear();
+				this.orchestrationContainer.addChild({
+					render: () => ["ORCH snapshot"],
+					invalidate: () => {},
+				});
+			}),
+			archiveOrchestrationPanelToChatIfComplete:
+				(InteractiveMode as any).prototype.archiveOrchestrationPanelToChatIfComplete,
+		};
+		fakeThis.chatContainer.addChild(trailing);
+
+		await (InteractiveMode as any).prototype.handleEvent.call(fakeThis, { type: "agent_end" });
+
+		expect(fakeThis.orchestrationContainer.children).toHaveLength(0);
+		expect(fakeThis.chatContainer.children.length).toBeGreaterThan(0);
+		expect(fakeThis.chatContainer.children[fakeThis.chatContainer.children.length - 1]).toBe(trailing);
+	});
+
+	test("keeps delegate tree items when final progress update omits delegateItems", async () => {
+		const fakeThis: any = {
+			isInitialized: true,
+			footer: { invalidate: vi.fn() },
+			subagentComponents: new Map([
+				[
+					"task_delegate",
+					{
+						startTime: Date.now() - 2000,
+						profile: "explore",
+						description: "Delegate-heavy task",
+						phase: "running",
+						phaseState: "running",
+						toolCallsStarted: 2,
+						toolCallsCompleted: 1,
+						assistantMessages: 1,
+						delegateItems: [{ index: 1, description: "child", profile: "plan", status: "running" }],
+					},
+				],
+			]),
+			pendingTools: new Map(),
+			refreshOrchestrationSummaryDisplay: vi.fn(),
+			ui: { requestRender: vi.fn() },
+		};
+
+		await (InteractiveMode as any).prototype.handleEvent.call(fakeThis, {
+			type: "tool_execution_update",
+			toolCallId: "task_delegate",
+			toolName: "task",
+			args: {},
+			partialResult: {
+				details: {
+					progress: {
+						phase: "responding",
+						message: "aggregating delegated results",
+						delegateItems: undefined,
+					},
+				},
+			},
+		});
+
+		expect(fakeThis.subagentComponents.get("task_delegate")?.delegateItems).toMatchObject([
+			{ index: 1, description: "child", profile: "plan", status: "running" },
+		]);
 	});
 });
 

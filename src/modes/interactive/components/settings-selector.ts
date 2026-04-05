@@ -59,6 +59,7 @@ export interface SettingsConfig {
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
 	clearOnShrink: boolean;
+	compactFooter: boolean;
 	webSearchEnabled: boolean;
 	webSearchProviderMode: "auto" | "tavily";
 	webSearchFallbackMode: "searxng_ddg" | "searxng_only" | "none";
@@ -93,6 +94,7 @@ export interface SettingsCallbacks {
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
 	onClearOnShrinkChange: (enabled: boolean) => void;
+	onCompactFooterChange: (enabled: boolean) => void;
 	onWebSearchEnabledChange: (enabled: boolean) => void;
 	onWebSearchProviderModeChange: (mode: "auto" | "tavily") => void;
 	onWebSearchFallbackModeChange: (mode: "searxng_ddg" | "searxng_only" | "none") => void;
@@ -612,6 +614,16 @@ export class SettingsSelectorComponent extends Container {
 			values: ["true", "false"],
 		});
 
+		// Compact footer toggle (insert after clear-on-shrink)
+		const clearOnShrinkIndex = items.findIndex((item) => item.id === "clear-on-shrink");
+		items.splice(clearOnShrinkIndex + 1, 0, {
+			id: "compact-footer",
+			label: "Compact footer",
+			description: "Use a single-line footer layout",
+			currentValue: config.compactFooter ? "true" : "false",
+			values: ["true", "false"],
+		});
+
 		// Add borders
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
@@ -680,6 +692,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "clear-on-shrink":
 						callbacks.onClearOnShrinkChange(newValue === "true");
+						break;
+					case "compact-footer":
+						callbacks.onCompactFooterChange(newValue === "true");
 						break;
 				}
 			},

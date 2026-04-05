@@ -26,6 +26,7 @@ export interface RetrySettings {
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
+	compactFooter?: boolean; // default: false (render footer in single-line compact mode)
 }
 
 export interface ImageSettings {
@@ -1035,6 +1036,19 @@ export class SettingsManager {
 		}
 		this.globalSettings.terminal.clearOnShrink = enabled;
 		this.markModified("terminal", "clearOnShrink");
+		this.save();
+	}
+
+	getCompactFooter(): boolean {
+		return this.settings.terminal?.compactFooter ?? false;
+	}
+
+	setCompactFooter(enabled: boolean): void {
+		if (!this.globalSettings.terminal) {
+			this.globalSettings.terminal = {};
+		}
+		this.globalSettings.terminal.compactFooter = enabled;
+		this.markModified("terminal", "compactFooter");
 		this.save();
 	}
 

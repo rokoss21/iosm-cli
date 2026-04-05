@@ -431,6 +431,26 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("terminal settings", () => {
+		it("uses compact footer default when not configured", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getCompactFooter()).toBe(false);
+		});
+
+		it("persists compact footer setting", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ theme: "dark" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setCompactFooter(true);
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.theme).toBe("dark");
+			expect(savedSettings.terminal?.compactFooter).toBe(true);
+		});
+	});
+
 	describe("dbTools settings", () => {
 		it("returns empty object when dbTools block is not set", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);

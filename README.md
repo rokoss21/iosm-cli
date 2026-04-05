@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.17</h1>
+<h1>IOSM CLI 0.3.0</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,10 +32,13 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.2.17
+## ✦ What's New in 0.3.0
 
-- Startup reliability hotfix: fixed missing `settings.schema.json` artifact in npm package builds
-- Added safe startup fallback when settings schema file cannot be read
+- Interactive UI refresh with unified framed windows for user, assistant, tool, and orchestration output
+- Redesigned input area with mode-aware header (`input >`, `command /`, `bash !`) and consistent spacing
+- Improved reasoning UX: collapsed reasoning preview with live spinner while assistant is streaming
+- Added color-coded execution surfaces: green-framed tool output and orange-framed orchestration panel
+- Added compact footer mode toggle in interactive settings
 
 ## ✦ Major Additions in 0.2.16
 

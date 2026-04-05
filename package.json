@@ -1,6 +1,6 @@
 {
 	"name": "iosm-cli",
-	"version": "0.2.17",
+	"version": "0.3.0",
 	"description": "Standalone IOSM CLI with agent tooling, session management, and IOSM artifact orchestration",
 	"type": "module",
 	"iosmConfig": {

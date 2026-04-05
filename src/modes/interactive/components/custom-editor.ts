@@ -1,6 +1,8 @@
 import { Editor, truncateToWidth, visibleWidth, type EditorOptions, type EditorTheme, type TUI } from "@mariozechner/pi-tui";
 import type { AppAction, KeybindingsManager } from "../../../core/keybindings.js";
 
+const ANSI_SGR_PATTERN = /\x1b\[[0-9;]*m/g;
+
 /**
  * Custom editor that handles app-level keybindings for coding-agent.
  */
@@ -74,15 +76,110 @@ export class CustomEditor extends Editor {
 		});
 	}
 
+	private rewriteRenderedLine(line: string, width: number): string {
+		const rewritten = this.rewritePasteMarker(line);
+		if (rewritten === line) return line;
+		if (visibleWidth(rewritten) <= width) return rewritten;
+		return truncateToWidth(rewritten, width, "", true);
+	}
+
+	private stripAnsiSgr(value: string): string {
+		return value.replace(ANSI_SGR_PATTERN, "");
+	}
+
+	private isInternalEditorBorder(line: string): boolean {
+		const plain = this.stripAnsiSgr(line).trimEnd();
+		if (!plain) return false;
+		if (/^─+$/.test(plain)) return true;
+		return /^─── [↑↓] \d+ more ─*$/.test(plain);
+	}
+
+	private splitInternalEditorLayout(lines: string[]): { content: string[]; completion: string[] } {
+		if (lines.length === 0) {
+			return { content: [""], completion: [] };
+		}
+		if (lines.length < 3) {
+			return { content: lines, completion: [] };
+		}
+
+		let bottomBorderIndex = -1;
+		for (let i = lines.length - 1; i >= 1; i -= 1) {
+			if (this.isInternalEditorBorder(lines[i] ?? "")) {
+				bottomBorderIndex = i;
+				break;
+			}
+		}
+
+		if (bottomBorderIndex <= 0) {
+			return { content: lines, completion: [] };
+		}
+
+		const content = lines.slice(1, bottomBorderIndex);
+		const completion = lines.slice(bottomBorderIndex + 1);
+		return {
+			content: content.length > 0 ? content : [""],
+			completion,
+		};
+	}
+
+	private getInputFrameLabel(): string {
+		const text = this.getText().trimStart();
+		if (text.startsWith("!")) return "bash !";
+		if (text.startsWith("/")) return "command /";
+		if (text.startsWith("&")) return "mode &";
+		return "input >";
+	}
+
+	private renderTopFrame(width: number, label: string, borderFn: (text: string) => string): string {
+		const innerWidth = Math.max(0, width - 2);
+		const trimmedLabel = label.trim();
+		if (!trimmedLabel) {
+			return borderFn(`╭${"─".repeat(innerWidth)}╮`);
+		}
+
+		let decoratedLabel = ` ${trimmedLabel} `;
+		if (visibleWidth(decoratedLabel) >= innerWidth) {
+			decoratedLabel = truncateToWidth(decoratedLabel, innerWidth, "");
+			return borderFn(`╭${decoratedLabel}╮`);
+		}
+
+		const left = Math.max(0, innerWidth - visibleWidth(decoratedLabel));
+		return borderFn(`╭${"─".repeat(left)}${decoratedLabel}╮`);
+	}
+
+	private wrapFrameLine(line: string, innerWidth: number, borderFn: (text: string) => string): string {
+		const truncated = truncateToWidth(line, innerWidth, "");
+		const pad = Math.max(0, innerWidth - visibleWidth(truncated));
+		return borderFn("│") + " " + truncated + " ".repeat(pad) + " " + borderFn("│");
+	}
+
 	override render(width: number): string[] {
-		const lines = super.render(width);
-		return lines.map((line) => {
-			const rewritten = this.rewritePasteMarker(line);
-			if (rewritten === line) return line;
-			// Keep hard width guarantees after rewrite by trimming trailing visual width if needed.
-			if (visibleWidth(rewritten) <= width) return rewritten;
-			return truncateToWidth(rewritten, width, "", true);
-		});
+		// Fallback to default renderer for extremely narrow layouts.
+		if (width < 8) {
+			return super.render(width).map((line) => this.rewriteRenderedLine(line, width));
+		}
+
+		const safeWidth = Math.max(1, width);
+		const frameInnerWidth = Math.max(1, safeWidth - 4); // "│ " + content + " │"
+		const rawLines = super.render(frameInnerWidth).map((line) => this.rewriteRenderedLine(line, frameInnerWidth));
+		const { content, completion } = this.splitInternalEditorLayout(rawLines);
+		const borderFn = this.borderColor;
+
+		const output: string[] = [];
+		output.push(this.renderTopFrame(safeWidth, this.getInputFrameLabel(), borderFn));
+		for (const line of content) {
+			output.push(this.wrapFrameLine(line, frameInnerWidth, borderFn));
+		}
+
+		if (completion.length > 0) {
+			output.push(borderFn(`├${"─".repeat(Math.max(0, safeWidth - 2))}┤`));
+			for (const line of completion) {
+				output.push(this.wrapFrameLine(line, frameInnerWidth, borderFn));
+			}
+		}
+
+		output.push(borderFn(`╰${"─".repeat(Math.max(0, safeWidth - 2))}╯`));
+		return output;
 	}
 
 	handleInput(data: string): void {
