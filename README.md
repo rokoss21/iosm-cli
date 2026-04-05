@@ -5,11 +5,11 @@
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
 <p>
-  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm version" src="https://img.shields.io/npm/v/iosm-cli?style=flat-square&color=cb3837&logo=npm"></a>
-  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm downloads" src="https://img.shields.io/npm/dm/iosm-cli?style=flat-square&logo=npm"></a>
+  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm version" src="https://img.shields.io/npm/v/iosm-cli?style=flat-square&amp;color=cb3837&amp;logo=npm"></a>
+  <a href="https://www.npmjs.com/package/iosm-cli"><img alt="npm downloads" src="https://img.shields.io/npm/dm/iosm-cli?style=flat-square&amp;logo=npm"></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
-  <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D20.6.0-brightgreen?style=flat-square&logo=node.js&logoColor=white">
-  <a href="https://github.com/rokoss21/iosm-cli"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/rokoss21/iosm-cli?style=flat-square&logo=github"></a>
+  <img alt="Node.js" src="https://img.shields.io/badge/node-%3E%3D20.6.0-brightgreen?style=flat-square&amp;logo=node.js&amp;logoColor=white">
+  <a href="https://github.com/rokoss21/iosm-cli"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/rokoss21/iosm-cli?style=flat-square&amp;logo=github"></a>
 </p>
 
 <p>
