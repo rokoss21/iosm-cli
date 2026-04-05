@@ -843,8 +843,26 @@ async function handleIosmInitCommand(args: string[]): Promise<boolean> {
 
 	const targetDir = resolve(options.targetDir ?? process.cwd());
 	const result = await initIosmWorkspace({ cwd: targetDir, force: options.force });
+	const fileState = (name: string): "created" | "updated" | "skipped" | "unchanged" => {
+		const unixTail = `/${name}`;
+		const winTail = `\\${name}`;
+		const exactPath = resolve(targetDir, name);
+		if (result.created.some((path) => path === exactPath || path.endsWith(unixTail) || path.endsWith(winTail))) {
+			return "created";
+		}
+		if (
+			result.overwritten.some((path) => path === exactPath || path.endsWith(unixTail) || path.endsWith(winTail))
+		) {
+			return "updated";
+		}
+		if (result.skipped.some((path) => path === exactPath || path.endsWith(unixTail) || path.endsWith(winTail))) {
+			return "skipped";
+		}
+		return "unchanged";
+	};
 
 	console.log(chalk.green(`Initialized IOSM workspace at ${result.rootDir}`));
+	console.log(chalk.dim(`AGENTS.md: ${fileState("AGENTS.md")} · IOSM.md: ${fileState("IOSM.md")}`));
 	console.log(
 		chalk.dim(
 			`Analyzed ${result.analysis.files_analyzed} files (${result.analysis.source_file_count} source, ${result.analysis.test_file_count} tests, ${result.analysis.doc_file_count} docs)`,

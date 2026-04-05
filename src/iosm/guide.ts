@@ -1,4 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { IOSM_METRICS } from "./metrics.js";
 import { getIosmGuidePath } from "./paths.js";
 import type { IosmMetric, IosmMetricRecord } from "./types.js";
@@ -69,6 +70,37 @@ export interface IosmGuideWriteResult {
 	path: string;
 	existed: boolean;
 	written: boolean;
+}
+
+export interface AgentsGuideDocumentInput {
+	rootDir: string;
+	cycleId?: string;
+	assessmentSource: "heuristic" | "verified";
+	iosmIndex?: number | null;
+	decisionConfidence?: number | null;
+	goals?: string[];
+	filesAnalyzed?: number;
+	sourceFileCount?: number;
+	testFileCount?: number;
+	docFileCount?: number;
+}
+
+const AGENTS_MANAGED_START = "<!-- iosm-init:managed:start -->";
+const AGENTS_MANAGED_END = "<!-- iosm-init:managed:end -->";
+
+function upsertManagedBlock(content: string, startMarker: string, endMarker: string, block: string): string {
+	const startIndex = content.indexOf(startMarker);
+	const endIndex = content.indexOf(endMarker);
+	if (startIndex >= 0 && endIndex > startIndex) {
+		const suffixStart = endIndex + endMarker.length;
+		const prefix = content.slice(0, startIndex).trimEnd();
+		const suffix = content.slice(suffixStart).trimStart();
+		if (!suffix) {
+			return `${prefix}\n\n${block}\n`;
+		}
+		return `${prefix}\n\n${block}\n\n${suffix}\n`;
+	}
+	return `${content.trimEnd()}\n\n${block}\n`;
 }
 
 export function buildIosmPriorityChecklist(
@@ -170,6 +202,54 @@ export function buildIosmGuideDocument(input: IosmGuideDocumentInput): string {
 	return `${lines.join("\n")}\n`;
 }
 
+export function buildAgentsGuideDocument(input: AgentsGuideDocumentInput, existingContent?: string): string {
+	const nowIso = new Date().toISOString();
+	const goals = input.goals ?? [];
+	const projectName = basename(input.rootDir);
+	const filesSummary = `${input.filesAnalyzed ?? "n/a"} total · ${input.sourceFileCount ?? "n/a"} src · ${input.testFileCount ?? "n/a"} tests · ${input.docFileCount ?? "n/a"} docs`;
+
+	const managedBlock = [
+		AGENTS_MANAGED_START,
+		"## IOSM Sync (managed)",
+		`- Updated: ${nowIso}`,
+		`- Assessment: ${input.assessmentSource}`,
+		`- Active cycle: ${input.cycleId ?? "none"}`,
+		`- IOSM-Index: ${formatMetricValue(input.iosmIndex)} (confidence: ${formatMetricValue(input.decisionConfidence)})`,
+		`- Files analyzed: ${filesSummary}`,
+		"",
+		"### Current focus",
+		...(goals.length > 0 ? goals.map((goal) => `- ${goal}`) : ["- Unknown"]),
+		"",
+		"### Notes",
+		"- This section is auto-updated by `iosm init`/`/init`.",
+		"- Keep project-specific contributor/agent rules outside this block.",
+		AGENTS_MANAGED_END,
+	].join("\n");
+
+	const normalizedExisting = existingContent?.trim();
+	if (normalizedExisting && normalizedExisting.length > 0) {
+		return upsertManagedBlock(normalizedExisting, AGENTS_MANAGED_START, AGENTS_MANAGED_END, managedBlock);
+	}
+
+	const lines = [
+		"# AGENTS.md",
+		"",
+		"This file captures practical collaboration rules for human and AI agents in this repository.",
+		"",
+		"## Project",
+		`- Name: ${projectName}`,
+		`- Root: ${input.rootDir}`,
+		"",
+		"## Working Agreement",
+		"- Inspect relevant files before editing.",
+		"- Keep edits minimal and verify with targeted checks.",
+		"- Prefer explicit commands and absolute file paths in reports.",
+		"",
+		managedBlock,
+	];
+	return `${lines.join("\n")}\n`;
+}
+
 export function writeIosmGuideDocument(
 	input: IosmGuideDocumentInput,
 	overwrite: boolean,
@@ -180,5 +260,20 @@ export function writeIosmGuideDocument(
 		return { path: filePath, existed, written: false };
 	}
 	writeFileSync(filePath, buildIosmGuideDocument(input), "utf8");
+	return { path: filePath, existed, written: true };
+}
+
+export function writeAgentsGuideDocument(
+	input: AgentsGuideDocumentInput,
+	overwrite: boolean,
+): IosmGuideWriteResult {
+	const filePath = join(input.rootDir, "AGENTS.md");
+	const existed = existsSync(filePath);
+	if (existed && !overwrite) {
+		return { path: filePath, existed, written: false };
+	}
+
+	const existingContent = existed ? readFileSync(filePath, "utf8") : undefined;
+	writeFileSync(filePath, buildAgentsGuideDocument(input, existingContent), "utf8");
 	return { path: filePath, existed, written: true };
 }

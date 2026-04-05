@@ -91,7 +91,10 @@ export {
 } from "./automation.js";
 export {
 	buildIosmPriorityChecklist,
+	buildAgentsGuideDocument,
 	writeIosmGuideDocument,
+	writeAgentsGuideDocument,
+	type AgentsGuideDocumentInput,
 	type IosmGuideDocumentInput,
 	type IosmPriorityChecklistItem,
 	type IosmGuideWriteResult,

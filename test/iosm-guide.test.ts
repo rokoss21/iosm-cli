@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildIosmPriorityChecklist, writeIosmGuideDocument } from "../src/iosm/guide.js";
+import { buildIosmPriorityChecklist, writeAgentsGuideDocument, writeIosmGuideDocument } from "../src/iosm/guide.js";
 
 const tempDirs: string[] = [];
 
@@ -68,5 +68,54 @@ describe("iosm guide", () => {
 		expect(content).toContain("## IOSM Workspace");
 		expect(content).toContain("iosm-2026-03-06-001");
 		expect(content).toContain("re-read this file");
+	});
+
+	it("creates and updates AGENTS.md managed IOSM sync block", () => {
+		const dir = mkdtempSync(join(tmpdir(), "iosm-agents-guide-"));
+		tempDirs.push(dir);
+
+		const first = writeAgentsGuideDocument(
+			{
+				rootDir: dir,
+				cycleId: "iosm-2026-03-06-001",
+				assessmentSource: "heuristic",
+				iosmIndex: 0.42,
+				decisionConfidence: 0.71,
+				goals: ["Reduce auth complexity"],
+				filesAnalyzed: 20,
+				sourceFileCount: 12,
+				testFileCount: 5,
+				docFileCount: 3,
+			},
+			true,
+		);
+		expect(first.written).toBe(true);
+		const initialContent = readFileSync(first.path, "utf8");
+		expect(initialContent).toContain("# AGENTS.md");
+		expect(initialContent).toContain("<!-- iosm-init:managed:start -->");
+		expect(initialContent).toContain("Reduce auth complexity");
+
+		const second = writeAgentsGuideDocument(
+			{
+				rootDir: dir,
+				cycleId: "iosm-2026-03-06-002",
+				assessmentSource: "verified",
+				iosmIndex: 0.88,
+				decisionConfidence: 0.92,
+				goals: ["Stabilize release workflow"],
+				filesAnalyzed: 35,
+				sourceFileCount: 21,
+				testFileCount: 9,
+				docFileCount: 5,
+			},
+			true,
+		);
+		expect(second.written).toBe(true);
+		const updatedContent = readFileSync(second.path, "utf8");
+		expect(updatedContent).toContain("iosm-2026-03-06-002");
+		expect(updatedContent).toContain("Stabilize release workflow");
+		expect(updatedContent).not.toContain("Reduce auth complexity");
+		expect((updatedContent.match(/<!-- iosm-init:managed:start -->/g) ?? []).length).toBe(1);
+		expect((updatedContent.match(/<!-- iosm-init:managed:end -->/g) ?? []).length).toBe(1);
 	});
 });

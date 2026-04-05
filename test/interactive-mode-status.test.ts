@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, visibleWidth } from "@mariozechner/pi-tui";
@@ -14,6 +14,7 @@ import {
 	MAX_ORCHESTRATION_AGENTS,
 	MAX_ORCHESTRATION_PARALLEL,
 } from "../src/core/orchestration-limits.js";
+import * as iosm from "../src/iosm/index.js";
 import { TASK_PLAN_CUSTOM_TYPE } from "../src/core/task-plan.js";
 import {
 	InteractiveMode,
@@ -502,6 +503,44 @@ describe("InteractiveMode.interruptCurrentWork", () => {
 		expect(interrupted).toBe(false);
 		expect(fakeThis.restoreQueuedMessagesToEditor).not.toHaveBeenCalled();
 		expect(fakeThis.showStatus).not.toHaveBeenCalled();
+	});
+
+	test("aborts a running standard /init session", async () => {
+		const standardInitAbort = vi.fn(async () => {});
+		const fakeThis: any = {
+			session: {
+				isStreaming: false,
+				isRetrying: false,
+				isCompacting: false,
+				isBashRunning: false,
+				abort: vi.fn(async () => {}),
+				abortBash: vi.fn(),
+				abortRetry: vi.fn(),
+				abortCompaction: vi.fn(),
+				abortBranchSummary: vi.fn(),
+			},
+			iosmAutomationRun: undefined,
+			iosmVerificationSession: undefined,
+			standardInitSession: {
+				abort: standardInitAbort,
+			},
+			singularAnalysisSession: undefined,
+			swarmActiveRunId: undefined,
+			getAllQueuedMessages: () => ({
+				steering: [],
+				followUp: [],
+				meta: [],
+			}),
+			restoreQueuedMessagesToEditor: vi.fn(),
+			updatePendingMessagesDisplay: vi.fn(),
+			showStatus: vi.fn(),
+		};
+
+		const interrupted = await (InteractiveMode as any).prototype.interruptCurrentWork.call(fakeThis);
+
+		expect(interrupted).toBe(true);
+		expect(standardInitAbort).toHaveBeenCalledTimes(1);
+		expect(fakeThis.showStatus).toHaveBeenCalledWith("Stopping /init...");
 	});
 });
 
@@ -4484,14 +4523,146 @@ describe("InteractiveMode.handleStandardInitSlashCommand", () => {
 
 			const updated = readFileSync(join(cwd, "AGENTS.md"), "utf8");
 			expect(updated).toContain("Updated content");
+			expect(existsSync(join(cwd, "IOSM.md"))).toBe(false);
 			expect(fakeThis.generateStandardAgentsGuideWithAgent).toHaveBeenCalledTimes(1);
 			const summary = fakeThis.showCommandTextBlock.mock.calls[0]?.[1] as string;
 			expect(summary).toContain("AGENTS.md: updated");
+			expect(summary).not.toContain("IOSM.md:");
 			expect(summary).toContain("tool calls");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+});
+
+describe("InteractiveMode.handleIosmInitSlashCommand", () => {
+	test("uses standard init flow by default outside iosm profile", async () => {
+		const initSpy = vi.spyOn(iosm, "initIosmWorkspace").mockResolvedValue({} as any);
+		try {
+			const fakeThis: any = {
+				session: {
+					isStreaming: false,
+					isCompacting: false,
+				},
+				iosmAutomationRun: undefined,
+				iosmVerificationSession: undefined,
+				standardInitSession: undefined,
+				activeProfileName: "full",
+				parseSlashArgs: (InteractiveMode as any).prototype.parseSlashArgs,
+				sessionManager: {
+					getCwd: () => "/tmp/project",
+				},
+				handleStandardInitSlashCommand: vi.fn(async () => {}),
+				showWarning: vi.fn(),
+				showError: vi.fn(),
+			};
+
+			await (InteractiveMode as any).prototype.handleIosmInitSlashCommand.call(fakeThis, "/init --no-agent-verify");
+
+			expect(fakeThis.handleStandardInitSlashCommand).toHaveBeenCalledWith({
+				cwd: "/tmp/project",
+				force: false,
+				agentVerify: false,
+			});
+			expect(initSpy).not.toHaveBeenCalled();
+		} finally {
+			initSpy.mockRestore();
+		}
+	});
+
+	test("uses IOSM init flow in iosm profile", async () => {
+		const initSpy = vi.spyOn(iosm, "initIosmWorkspace").mockResolvedValue({
+			rootDir: "/tmp/project",
+			created: [],
+			overwritten: [],
+			skipped: [],
+			analysis: {
+				generated_at: "2026-01-01T00:00:00.000Z",
+				files_analyzed: 1,
+				source_file_count: 1,
+				test_file_count: 0,
+				doc_file_count: 0,
+				top_languages: [],
+				cycle_scope: [],
+				detected_contracts: [],
+				source_systems: [],
+				goals: [],
+				raw_measurements: {},
+				metrics: {
+					semantic: 0.5,
+					logic: 0.5,
+					performance: 0.5,
+					simplicity: 0.5,
+					modularity: 0.5,
+					flow: 0.5,
+				},
+				metric_confidences: {
+					semantic: 0.8,
+					logic: 0.8,
+					performance: 0.8,
+					simplicity: 0.8,
+					modularity: 0.8,
+					flow: 0.8,
+				},
+				metric_tiers: {
+					semantic: "direct",
+					logic: "direct",
+					performance: "direct",
+					simplicity: "direct",
+					modularity: "direct",
+					flow: "direct",
+				},
+			},
+		} as any);
+
+		try {
+			const fakeThis: any = {
+				session: {
+					isStreaming: false,
+					isCompacting: false,
+				},
+					iosmAutomationRun: undefined,
+					iosmVerificationSession: undefined,
+					standardInitSession: undefined,
+					activeProfileName: "iosm",
+					parseSlashArgs: (InteractiveMode as any).prototype.parseSlashArgs,
+					sessionManager: {
+						getCwd: () => "/tmp/project",
+				},
+				handleStandardInitSlashCommand: vi.fn(),
+				showWarning: vi.fn(),
+				showError: vi.fn(),
+				showProgressLine: vi.fn(),
+				runIosmInitAgentVerification: vi.fn(),
+				resolveIosmSnapshot: vi.fn(() => ({
+					metrics: {
+						semantic: 0.5,
+						logic: 0.5,
+						performance: 0.5,
+						simplicity: 0.5,
+						modularity: 0.5,
+						flow: 0.5,
+					},
+					iosm_index: null,
+					decision_confidence: null,
+				})),
+				showIosmInitSummaryCard: vi.fn(),
+				chatContainer: new Container(),
+				ui: {
+					requestRender: vi.fn(),
+				},
+			};
+
+			await (InteractiveMode as any).prototype.handleIosmInitSlashCommand.call(fakeThis, "/init --no-agent-verify");
+
+			expect(fakeThis.handleStandardInitSlashCommand).not.toHaveBeenCalled();
+			expect(initSpy).toHaveBeenCalledTimes(1);
+			expect(fakeThis.showIosmInitSummaryCard).toHaveBeenCalledTimes(1);
+		} finally {
+			initSpy.mockRestore();
+			}
+		});
+
 });
 
 describe("InteractiveMode.requestToolPermission", () => {

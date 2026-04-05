@@ -109,6 +109,7 @@ describe("iosm init smart analysis", () => {
 		const invariantsYaml = readFileSync(join(projectDir, ".iosm", "invariants.yaml"), "utf8");
 		const contractsYaml = readFileSync(join(projectDir, ".iosm", "contracts.yaml"), "utf8");
 		const playbook = readFileSync(join(projectDir, "IOSM.md"), "utf8");
+		const agentsGuide = readFileSync(join(projectDir, "AGENTS.md"), "utf8");
 		const metricsHistory = readFileSync(join(projectDir, ".iosm", "metrics-history.jsonl"), "utf8")
 			.trim()
 			.split("\n")
@@ -119,6 +120,8 @@ describe("iosm init smart analysis", () => {
 		expect(playbook).toContain("# IOSM.md");
 		expect(playbook).toContain("## Priority Actions");
 		expect(playbook).toContain("## IOSM Workspace");
+		expect(agentsGuide).toContain("# AGENTS.md");
+		expect(agentsGuide).toContain("## IOSM Sync (managed)");
 		expect(metricsHistory.length).toBe(1);
 		expect(metricsHistory[0].cycle_id).toBe(result.cycle?.cycleId);
 	});
@@ -132,6 +135,9 @@ describe("iosm init smart analysis", () => {
 		expect(second.cycle).toBeDefined();
 		expect(second.cycle?.reusedExistingCycle).toBe(true);
 		expect(second.cycle?.cycleId).toBe(first.cycle?.cycleId);
+		const agentsGuide = readFileSync(join(projectDir, "AGENTS.md"), "utf8");
+		expect(agentsGuide).toContain(`- Active cycle: ${first.cycle?.cycleId}`);
+		expect((agentsGuide.match(/<!-- iosm-init:managed:start -->/g) ?? []).length).toBe(1);
 
 		const cycles = listIosmCycles(projectDir);
 		expect(cycles.length).toBe(1);
@@ -150,6 +156,9 @@ describe("iosm init smart analysis", () => {
 		expect(second.cycle).toBeDefined();
 		expect(second.cycle?.reusedExistingCycle).toBe(false);
 		expect(second.cycle?.cycleId).not.toBe(first.cycle?.cycleId);
+		const agentsGuide = readFileSync(join(projectDir, "AGENTS.md"), "utf8");
+		expect(agentsGuide).toContain(`- Active cycle: ${second.cycle?.cycleId}`);
+		expect(agentsGuide).not.toContain(`- Active cycle: ${first.cycle?.cycleId}`);
 
 		const cycles = listIosmCycles(projectDir);
 		expect(cycles.length).toBe(2);

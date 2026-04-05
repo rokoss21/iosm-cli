@@ -28,7 +28,7 @@ import {
 	type IosmCycleListItem,
 	type PlannedIosmCycle,
 } from "./cycle.js";
-import { writeIosmGuideDocument } from "./guide.js";
+import { writeAgentsGuideDocument, writeIosmGuideDocument } from "./guide.js";
 import {
 	getIosmBaselineReportPath,
 	getIosmBaselinesDir,
@@ -1529,12 +1529,33 @@ export async function initIosmWorkspace(options: IosmInitOptions = {}): Promise<
 			testFileCount: analysis.test_file_count,
 			docFileCount: analysis.doc_file_count,
 		},
-		force,
+		true,
 	);
 	if (guideWrite.written) {
 		markPathByExistence(guideWrite.path, guideWrite.existed, result);
 	} else {
 		pushUnique(result.skipped, guideWrite.path);
+	}
+
+	const agentsWrite = writeAgentsGuideDocument(
+		{
+			rootDir,
+			cycleId: result.cycle?.cycleId,
+			assessmentSource: "heuristic",
+			iosmIndex: heuristicIndex,
+			decisionConfidence: heuristicConfidence,
+			goals: analysis.goals,
+			filesAnalyzed: analysis.files_analyzed,
+			sourceFileCount: analysis.source_file_count,
+			testFileCount: analysis.test_file_count,
+			docFileCount: analysis.doc_file_count,
+		},
+		true,
+	);
+	if (agentsWrite.written) {
+		markPathByExistence(agentsWrite.path, agentsWrite.existed, result);
+	} else {
+		pushUnique(result.skipped, agentsWrite.path);
 	}
 
 	if (result.cycle) {

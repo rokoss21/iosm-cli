@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-05
+
+### Added
+
+- **Profile-aware `/init` flow** — `/init` now follows active profile semantics: `full/plan/meta` updates `AGENTS.md`; `iosm` initializes and synchronizes both `AGENTS.md` and `IOSM.md`
+- **AGENTS managed sync block for IOSM** — introduced deterministic managed section in `AGENTS.md` during IOSM init, preserving user-authored content outside the managed block
+
+### Changed
+
+- **IOSM init file sync contract** — `iosm init` now performs guaranteed create/update for both `AGENTS.md` and `IOSM.md` to avoid missing physical playbook files
+- **Interactive init control flow** — added dedicated standard-init session tracking with explicit “already running” guard and interrupt-safe cancellation path
+- **CLI init status output** — `iosm init` now reports per-file state for `AGENTS.md` and `IOSM.md` (`created/updated/skipped/unchanged`)
+
+### Documentation
+
+- Updated README release marker and highlights to `0.3.1`
+- Updated `docs/getting-started.md` and `docs/interactive-mode.md` to document profile-scoped `/init` behavior
+
+### Tests
+
+- Expanded coverage for IOSM/AGENTS guide writers and profile-aware `/init` behavior in interactive and init test suites
+
 ## [0.3.0] - 2026-04-05
 
 ### Added

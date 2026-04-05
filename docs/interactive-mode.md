@@ -67,7 +67,7 @@ iosm --continue
 
 | Command | Description | Example |
 |---------|-------------|---------|
-| `/init` | Bootstrap IOSM workspace | `/init` |
+| `/init` | Profile-aware init: in `iosm` profile bootstraps IOSM workspace; in other profiles generates/updates `AGENTS.md` | `/init` |
 | `/iosm` | Run full IOSM cycle | `/iosm 0.95 --max-iterations 5` |
 | `/cycle-plan` | Plan a new cycle | `/cycle-plan reduce latency` |
 | `/cycle-status` | Check cycle progress | `/cycle-status` |

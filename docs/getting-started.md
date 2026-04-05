@@ -93,7 +93,7 @@ You'll see a prompt where you can type messages. The agent has access to your fi
 | `/model` | Pick or change the active model |
 | `/login` | Authenticate with OAuth providers or add API keys for providers from models.dev catalog |
 | `/semantic` | Configure semantic provider and index/query meaning-based code search |
-| `/init` | Bootstrap IOSM artifacts for the current project |
+| `/init` | Profile-aware init: in `iosm` profile bootstraps IOSM artifacts; in other profiles generates/updates `AGENTS.md` |
 | `/agents` | View available custom/system agents |
 | `/settings` | View and modify settings |
 | `/hotkeys` | View keyboard shortcuts |
@@ -157,9 +157,9 @@ This creates:
 ## Typical Daily Workflow
 
 ```bash
-# 1. Open your project and start the agent
+# 1. Open your project and start the agent in iosm profile
 cd my-project
-iosm
+iosm --profile iosm
 
 # 2. Initialize IOSM (first time only)
 /init

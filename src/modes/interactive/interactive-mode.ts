@@ -1716,6 +1716,7 @@ export class InteractiveMode {
 	// IOSM automation state
 	private iosmAutomationRun: IosmAutomationRunState | undefined = undefined;
 	private iosmVerificationSession: AgentSession | undefined = undefined;
+	private standardInitSession: AgentSession | undefined = undefined;
 	private singularAnalysisSession: AgentSession | undefined = undefined;
 
 	// Extension UI state
@@ -4397,14 +4398,15 @@ export class InteractiveMode {
 				const hasInterruptibleWork =
 					this.session.isStreaming ||
 					this.session.isBashRunning ||
-					this.session.isCompacting ||
-					this.session.isRetrying ||
-					this.iosmAutomationRun !== undefined ||
-					this.iosmVerificationSession !== undefined ||
-					this.swarmActiveRunId !== undefined ||
-					this.singularAnalysisSession !== undefined ||
-					queuedMessages.steering.length > 0 ||
-					queuedMessages.followUp.length > 0 ||
+						this.session.isCompacting ||
+						this.session.isRetrying ||
+						this.iosmAutomationRun !== undefined ||
+						this.iosmVerificationSession !== undefined ||
+						this.standardInitSession !== undefined ||
+						this.swarmActiveRunId !== undefined ||
+						this.singularAnalysisSession !== undefined ||
+						queuedMessages.steering.length > 0 ||
+						queuedMessages.followUp.length > 0 ||
 					queuedMeta.length > 0;
 
 			if (hasInterruptibleWork) {
@@ -6203,6 +6205,8 @@ export class InteractiveMode {
 
 	private handleCtrlC(): void {
 		const now = Date.now();
+		const queuedMessages = this.getAllQueuedMessages();
+		const queuedMeta = queuedMessages.meta ?? [];
 		if (this.swarmActiveRunId) {
 			if (this.swarmStopRequested && now - this.lastSigintTime < 500) {
 				void this.shutdown();
@@ -6217,6 +6221,22 @@ export class InteractiveMode {
 				void this.shutdown();
 				return;
 			}
+			this.lastSigintTime = now;
+			void this.interruptCurrentWork();
+			return;
+		}
+		const hasInterruptibleWork =
+			this.session.isStreaming ||
+			this.session.isBashRunning ||
+			this.session.isCompacting ||
+			this.session.isRetrying ||
+			this.iosmVerificationSession !== undefined ||
+			this.standardInitSession !== undefined ||
+			this.singularAnalysisSession !== undefined ||
+			queuedMessages.steering.length > 0 ||
+			queuedMessages.followUp.length > 0 ||
+			queuedMeta.length > 0;
+		if (hasInterruptibleWork) {
 			this.lastSigintTime = now;
 			void this.interruptCurrentWork();
 			return;
@@ -6683,6 +6703,8 @@ export class InteractiveMode {
 		const hasAutomationWork = this.iosmAutomationRun !== undefined;
 		const verificationSession = this.iosmVerificationSession;
 		const hasVerificationWork = verificationSession !== undefined;
+		const standardInitSession = this.standardInitSession;
+		const hasStandardInitWork = standardInitSession !== undefined;
 		const hasSwarmWork = this.swarmActiveRunId !== undefined;
 		const singularSession = this.singularAnalysisSession;
 		const hasSingularWork = singularSession !== undefined;
@@ -6692,13 +6714,14 @@ export class InteractiveMode {
 		const hasBashWork = this.session.isBashRunning;
 
 		if (
-			!hasPendingQueuedMessages &&
+				!hasPendingQueuedMessages &&
 				!hasAutomationWork &&
 				!hasVerificationWork &&
+				!hasStandardInitWork &&
 				!hasSwarmWork &&
 				!hasSingularWork &&
 				!hasMainStreaming &&
-			!hasRetryWork &&
+				!hasRetryWork &&
 			!hasCompactionWork &&
 			!hasBashWork
 		) {
@@ -6737,9 +6760,11 @@ export class InteractiveMode {
 					? "Stopping IOSM automation..."
 					: hasVerificationWork
 						? "Stopping IOSM verification..."
-						: hasSwarmWork
-							? "Stopping swarm run..."
-							: hasSingularWork
+						: hasStandardInitWork
+							? "Stopping /init..."
+							: hasSwarmWork
+								? "Stopping swarm run..."
+								: hasSingularWork
 								? "Stopping /singular analysis..."
 								: "Stopping current run...",
 			);
@@ -6750,6 +6775,9 @@ export class InteractiveMode {
 		}
 		if (verificationSession) {
 			abortPromises.push(verificationSession.abort());
+		}
+		if (standardInitSession) {
+			abortPromises.push(standardInitSession.abort());
 		}
 		if (singularSession) {
 			abortPromises.push(singularSession.abort());
@@ -10732,6 +10760,7 @@ export class InteractiveMode {
 			profile: "plan",
 			enableTaskTool: false,
 		});
+		this.standardInitSession = session;
 
 		let toolCallsStarted = 0;
 		const chunks: string[] = [];
@@ -17069,6 +17098,9 @@ export class InteractiveMode {
 				attempts,
 			};
 		} finally {
+			if (this.standardInitSession === session) {
+				this.standardInitSession = undefined;
+			}
 			unsubscribe();
 			session.dispose();
 		}
@@ -17107,7 +17139,7 @@ export class InteractiveMode {
 					: "Mode: standard overwrite (existing guidance merged by agent when applicable).",
 				`.iosm/agents: ready`,
 				options.agentVerify
-					? "Agent verification skipped in standard mode (available in profile `iosm`)."
+					? "Agent verification skipped in standard mode. Switch to profile `iosm` for IOSM artifacts."
 					: "Verification: disabled.",
 			].join("\n"),
 		);
@@ -17128,6 +17160,10 @@ export class InteractiveMode {
 		}
 		if (this.iosmVerificationSession) {
 			this.showWarning("Cannot run /init while IOSM verification is already running.");
+			return;
+		}
+		if (this.standardInitSession) {
+			this.showWarning("Cannot run /init while another /init run is already in progress.");
 			return;
 		}
 
@@ -17323,6 +17359,7 @@ ${priorityLines}
 
 ### Key workspace files
 
+- \`AGENTS.md\` — contributor/agent collaboration guide (auto-synced on init)
 - \`IOSM.md\` — agent playbook (auto-loaded as context each session)
 - \`iosm.yaml\` — cycle configuration${result.cycle ? `\n- \`.iosm/cycles/${cycleId}/cycle-report.json\`` : ""}
 - \`${shortPath(guidePath)}\`
