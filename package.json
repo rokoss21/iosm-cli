@@ -1,6 +1,6 @@
 {
 	"name": "iosm-cli",
-	"version": "0.2.16",
+	"version": "0.2.17",
 	"description": "Standalone IOSM CLI with agent tooling, session management, and IOSM artifact orchestration",
 	"type": "module",
 	"iosmConfig": {
@@ -38,8 +38,8 @@
 		"check": "tsc --noEmit -p tsconfig.build.json",
 		"generate:settings-docs": "node scripts/generate-settings-docs.mjs",
 		"check:settings-docs": "node scripts/check-settings-docs.mjs",
-		"copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/",
-		"copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/export-html/vendor && shx cp src/core/export-html/template.html dist/export-html/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/",
+		"copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && shx mkdir -p dist/core && shx cp src/core/settings.schema.json dist/core/",
+		"copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/export-html/vendor && shx cp src/core/export-html/template.html dist/export-html/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx mkdir -p dist/core && shx cp src/core/settings.schema.json dist/core/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},

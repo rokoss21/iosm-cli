@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.2.16</h1>
+<h1>IOSM CLI 0.2.17</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,7 +32,12 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.2.16
+## ✦ What's New in 0.2.17
+
+- Startup reliability hotfix: fixed missing `settings.schema.json` artifact in npm package builds
+- Added safe startup fallback when settings schema file cannot be read
+
+## ✦ Major Additions in 0.2.16
 
 - Policy Engine v2 for deterministic layered permission resolution across interactive and RPC modes
 - Session/turn-scoped permission approvals to reduce repetitive confirmation prompts in ask mode

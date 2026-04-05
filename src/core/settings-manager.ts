@@ -179,10 +179,25 @@ const WEB_SEARCH_SAFE_SEARCH_MODES = ["off", "moderate", "strict"] as const;
 const WEB_SEARCH_MAX_RESULTS_VALUES = [3, 5, 8, 10, 15] as const;
 const WEB_SEARCH_TIMEOUT_VALUES = [10, 20, 30, 45, 60] as const;
 const Ajv = (AjvModule as any).default || AjvModule;
-const settingsSchema = JSON.parse(readFileSync(new URL("./settings.schema.json", import.meta.url), "utf8")) as Record<
-	string,
-	unknown
->;
+const FALLBACK_SETTINGS_SCHEMA: Record<string, unknown> = {
+	type: "object",
+	additionalProperties: true,
+};
+
+function loadSettingsSchema(): Record<string, unknown> {
+	try {
+		return JSON.parse(readFileSync(new URL("./settings.schema.json", import.meta.url), "utf8")) as Record<
+			string,
+			unknown
+		>;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`[iosm] settings schema is missing or unreadable, using fallback validator: ${message}`);
+		return FALLBACK_SETTINGS_SCHEMA;
+	}
+}
+
+const settingsSchema = loadSettingsSchema();
 const SETTINGS_SCHEMA_VALIDATOR = new Ajv({ allErrors: true, allowUnionTypes: true }).compile(settingsSchema);
 
 function nearestAllowedValue(value: number, allowed: readonly number[], fallback: number): number {

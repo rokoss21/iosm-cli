@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-04-05
+
+### Fixed
+
+- **Startup crash after npm install** — fixed packaging regression where `dist/core/settings.schema.json` was not included in published artifacts, causing `ENOENT` on startup in some global installers (including Volta)
+- **Settings schema load resilience** — added safe fallback validator path when settings schema file is missing or unreadable, so runtime no longer hard-crashes at import time
+
 ## [0.2.16] - 2026-04-05
 
 ### Added
