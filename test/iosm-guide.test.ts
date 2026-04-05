@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -117,5 +117,67 @@ describe("iosm guide", () => {
 		expect(updatedContent).not.toContain("Reduce auth complexity");
 		expect((updatedContent.match(/<!-- iosm-init:managed:start -->/g) ?? []).length).toBe(1);
 		expect((updatedContent.match(/<!-- iosm-init:managed:end -->/g) ?? []).length).toBe(1);
+	});
+
+	it("normalizes lowercase agents.md to AGENTS.md on write", () => {
+		const dir = mkdtempSync(join(tmpdir(), "iosm-agents-case-"));
+		tempDirs.push(dir);
+		writeFileSync(join(dir, "agents.md"), "# legacy\n", "utf8");
+
+		const write = writeAgentsGuideDocument(
+			{
+				rootDir: dir,
+				cycleId: "iosm-2026-03-06-003",
+				assessmentSource: "verified",
+				iosmIndex: 0.91,
+				decisionConfidence: 0.93,
+				goals: ["Case normalization"],
+				filesAnalyzed: 10,
+				sourceFileCount: 7,
+				testFileCount: 2,
+				docFileCount: 1,
+			},
+			true,
+		);
+
+		expect(write.path).toBe(join(dir, "AGENTS.md"));
+		const entries = readdirSync(dir);
+		expect(entries).toContain("AGENTS.md");
+		expect(entries).not.toContain("agents.md");
+	});
+
+	it("normalizes lowercase iosm.md to IOSM.md on write", () => {
+		const dir = mkdtempSync(join(tmpdir(), "iosm-playbook-case-"));
+		tempDirs.push(dir);
+		writeFileSync(join(dir, "iosm.md"), "# legacy\n", "utf8");
+
+		const write = writeIosmGuideDocument(
+			{
+				rootDir: dir,
+				cycleId: "iosm-2026-03-06-004",
+				assessmentSource: "verified",
+				metrics: {
+					semantic: 0.8,
+					logic: 0.82,
+					performance: 0.79,
+					simplicity: 0.77,
+					modularity: 0.76,
+					flow: 0.81,
+				},
+				iosmIndex: 0.79,
+				decisionConfidence: 0.88,
+				goals: ["Case normalization"],
+				filesAnalyzed: 11,
+				sourceFileCount: 8,
+				testFileCount: 2,
+				docFileCount: 1,
+			},
+			true,
+		);
+
+		expect(write.path).toBe(join(dir, "IOSM.md"));
+		const entries = readdirSync(dir);
+		expect(entries).toContain("IOSM.md");
+		expect(entries).not.toContain("iosm.md");
 	});
 });

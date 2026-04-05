@@ -285,7 +285,7 @@ Content`,
 			expect(iosmFile?.content).toContain("Focus on logic first.");
 		});
 
-		it("should skip IOSM.md context outside iosm profile", async () => {
+		it("keeps IOSM.md loaded even in standard profile for runtime profile switching", async () => {
 			writeFileSync(join(cwd, "AGENTS.md"), "# Project Guidelines\n\nBe helpful.");
 			writeFileSync(join(cwd, "IOSM.md"), "# IOSM.md\n\nFocus on logic first.");
 
@@ -294,7 +294,7 @@ Content`,
 
 			const { agentsFiles } = loader.getAgentsFiles();
 			expect(agentsFiles.some((f) => f.path.endsWith("AGENTS.md"))).toBe(true);
-			expect(agentsFiles.some((f) => f.path.endsWith("IOSM.md"))).toBe(false);
+			expect(agentsFiles.some((f) => f.path.endsWith("IOSM.md"))).toBe(true);
 		});
 
 		it("should load hierarchical .iosm memory from organization, home, and project scopes", async () => {

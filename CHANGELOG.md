@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-04-05
+
+### Fixed
+
+- **Playbook filename canonicalization** — `/init` and `iosm init` now normalize lowercase variants (`agents.md`, `iosm.md`) to canonical `AGENTS.md` and `IOSM.md`
+- **Cross-platform case handling** — implemented robust case-only rename flow (with temporary hop) to reliably normalize filenames on case-insensitive filesystems
+- **Profile context continuity** — `IOSM.md` context is now kept loaded in the resource layer to avoid context loss after runtime profile switching
+
+### Changed
+
+- **Standard init path resolution** — standard `/init` now resolves and writes through canonical playbook path before reading/updating repository guidance
+- **IOSM guide writers** — IOSM/AGENTS guide writers now enforce canonical path selection prior to write operations
+
+### Tests
+
+- Added regression tests for lowercase-to-canonical playbook rename behavior in:
+  - iosm guide writer flow
+  - iosm init flow
+  - interactive standard `/init` flow
+- Updated resource-loader profile test expectations for runtime profile switching behavior
+
 ## [0.3.1] - 2026-04-05
 
 ### Added

@@ -223,6 +223,7 @@ import {
 	evaluateIosmAutomationProgress,
 	formatMetricSnapshot,
 	hasReachedIosmTarget,
+	ensureCanonicalPlaybookPath,
 	getIosmGuidePath,
 	initIosmWorkspace,
 	inspectIosmCycle,
@@ -16988,7 +16989,7 @@ export class InteractiveMode {
 			enableTaskTool: false,
 		});
 
-		const existingAgentsPath = path.join(cwd, "AGENTS.md");
+		const existingAgentsPath = ensureCanonicalPlaybookPath(cwd, "AGENTS.md").path;
 		const existingAgentsRaw = fs.existsSync(existingAgentsPath) ? fs.readFileSync(existingAgentsPath, "utf8") : "";
 		const maxExistingChars = 12_000;
 		const existingAgentsSnippet =
@@ -17111,7 +17112,7 @@ export class InteractiveMode {
 		force: boolean;
 		agentVerify: boolean;
 	}): Promise<void> {
-		const playbookPath = path.join(options.cwd, "AGENTS.md");
+		const playbookPath = ensureCanonicalPlaybookPath(options.cwd, "AGENTS.md").path;
 		const agentsDir = path.join(options.cwd, ".iosm", "agents");
 		fs.mkdirSync(agentsDir, { recursive: true });
 

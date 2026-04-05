@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -164,5 +164,19 @@ describe("iosm init smart analysis", () => {
 		expect(cycles.length).toBe(2);
 		expect(cycles[0].cycleId).toBe(second.cycle?.cycleId);
 		expect(cycles[1].cycleId).toBe(first.cycle?.cycleId);
+	});
+
+	it("normalizes lowercase playbook filenames during iosm init", async () => {
+		const projectDir = createProjectFixture();
+		writeFileSync(join(projectDir, "agents.md"), "# old", "utf8");
+		writeFileSync(join(projectDir, "iosm.md"), "# old", "utf8");
+
+		await initIosmWorkspace({ cwd: projectDir });
+
+		const entries = readdirSync(projectDir);
+		expect(entries).toContain("AGENTS.md");
+		expect(entries).toContain("IOSM.md");
+		expect(entries).not.toContain("agents.md");
+		expect(entries).not.toContain("iosm.md");
 	});
 });

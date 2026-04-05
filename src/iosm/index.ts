@@ -92,6 +92,7 @@ export {
 export {
 	buildIosmPriorityChecklist,
 	buildAgentsGuideDocument,
+	ensureCanonicalPlaybookPath,
 	writeIosmGuideDocument,
 	writeAgentsGuideDocument,
 	type AgentsGuideDocumentInput,

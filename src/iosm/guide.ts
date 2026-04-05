@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { IOSM_METRICS } from "./metrics.js";
 import { getIosmGuidePath } from "./paths.js";
@@ -70,6 +70,55 @@ export interface IosmGuideWriteResult {
 	path: string;
 	existed: boolean;
 	written: boolean;
+}
+
+type PlaybookFileName = "AGENTS.md" | "IOSM.md";
+
+function inspectCaseVariants(
+	rootDir: string,
+	canonicalName: PlaybookFileName,
+): { hasCanonicalEntry: boolean; variantPath?: string } {
+	try {
+		const entries = readdirSync(rootDir);
+		const target = canonicalName.toLowerCase();
+		const hasCanonicalEntry = entries.includes(canonicalName);
+		for (const entry of entries) {
+			if (entry.toLowerCase() !== target) continue;
+			if (entry === canonicalName) continue;
+			return { hasCanonicalEntry, variantPath: join(rootDir, entry) };
+		}
+		return { hasCanonicalEntry };
+	} catch {
+		// Best-effort only; caller will continue with canonical path.
+	}
+	return { hasCanonicalEntry: existsSync(join(rootDir, canonicalName)) };
+}
+
+function renameToCanonicalCase(sourcePath: string, targetPath: string): void {
+	const sourceLower = sourcePath.toLowerCase();
+	const targetLower = targetPath.toLowerCase();
+	if (sourceLower !== targetLower) {
+		renameSync(sourcePath, targetPath);
+		return;
+	}
+
+	// Case-only rename can be flaky on case-insensitive filesystems.
+	const tempPath = `${targetPath}.tmp-case-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	renameSync(sourcePath, tempPath);
+	renameSync(tempPath, targetPath);
+}
+
+export function ensureCanonicalPlaybookPath(
+	rootDir: string,
+	canonicalName: PlaybookFileName,
+): { path: string; existed: boolean; renamedFrom?: string } {
+	const canonicalPath = join(rootDir, canonicalName);
+	const { hasCanonicalEntry, variantPath } = inspectCaseVariants(rootDir, canonicalName);
+	if (variantPath && !hasCanonicalEntry) {
+		renameToCanonicalCase(variantPath, canonicalPath);
+		return { path: canonicalPath, existed: true, renamedFrom: variantPath };
+	}
+	return { path: canonicalPath, existed: hasCanonicalEntry || existsSync(canonicalPath) };
 }
 
 export interface AgentsGuideDocumentInput {
@@ -254,8 +303,9 @@ export function writeIosmGuideDocument(
 	input: IosmGuideDocumentInput,
 	overwrite: boolean,
 ): IosmGuideWriteResult {
-	const filePath = getIosmGuidePath(input.rootDir);
-	const existed = existsSync(filePath);
+	const canonical = ensureCanonicalPlaybookPath(input.rootDir, "IOSM.md");
+	const filePath = canonical.path;
+	const existed = canonical.existed;
 	if (existed && !overwrite) {
 		return { path: filePath, existed, written: false };
 	}
@@ -267,8 +317,9 @@ export function writeAgentsGuideDocument(
 	input: AgentsGuideDocumentInput,
 	overwrite: boolean,
 ): IosmGuideWriteResult {
-	const filePath = join(input.rootDir, "AGENTS.md");
-	const existed = existsSync(filePath);
+	const canonical = ensureCanonicalPlaybookPath(input.rootDir, "AGENTS.md");
+	const filePath = canonical.path;
+	const existed = canonical.existed;
 	if (existed && !overwrite) {
 		return { path: filePath, existed, written: false };
 	}

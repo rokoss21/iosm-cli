@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Container, visibleWidth } from "@mariozechner/pi-tui";
@@ -4529,6 +4529,40 @@ describe("InteractiveMode.handleStandardInitSlashCommand", () => {
 			expect(summary).toContain("AGENTS.md: updated");
 			expect(summary).not.toContain("IOSM.md:");
 			expect(summary).toContain("tool calls");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	test("renames lowercase agents.md to AGENTS.md during standard init", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "iosm-standard-init-case-"));
+		try {
+			writeFileSync(join(cwd, "agents.md"), "# AGENTS.md\n\nOld lowercase", "utf8");
+			const fakeThis: any = {
+				activeProfileName: "full",
+				keybindings: KeybindingsManager.create(),
+				showProgressLine: vi.fn(),
+				showCommandTextBlock: vi.fn(),
+				createIosmVerificationEventBridge: vi.fn(() => (_event: any) => { }),
+				generateStandardAgentsGuideWithAgent: vi.fn(async () => ({
+					content: "# AGENTS.md\n\nUpdated canonical",
+					toolCallsStarted: 3,
+					toolCallsCompleted: 3,
+					assistantMessages: 1,
+					attempts: 1,
+				})),
+				buildStandardInitPlaybook: (InteractiveMode as any).prototype.buildStandardInitPlaybook,
+			};
+
+			await (InteractiveMode as any).prototype.handleStandardInitSlashCommand.call(fakeThis, {
+				cwd,
+				force: false,
+				agentVerify: true,
+			});
+
+			const entries = readdirSync(cwd);
+			expect(entries).toContain("AGENTS.md");
+			expect(entries).not.toContain("agents.md");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}

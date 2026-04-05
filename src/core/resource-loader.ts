@@ -220,8 +220,10 @@ function loadProjectContextFiles(
 	const resolvedCwd = options.cwd ?? process.cwd();
 	const resolvedAgentDir = options.agentDir ?? getAgentDir();
 	const resolvedHomeDir = options.homeDir ?? homedir();
-	const contextProfile = normalizeContextProfile(options.contextProfile);
-	const includeIosm = contextProfile === "iosm";
+	// Keep IOSM context files loaded regardless of startup profile.
+	// The active profile still controls what is injected into prompts and shown in UI.
+	// This prevents context loss when operators switch profile at runtime.
+	const includeIosm = true;
 	const organizationDirEnv = options.organizationDir ?? process.env.IOSM_ORG_DIR ?? process.env.PI_ORG_DIR;
 	const resolvedOrganizationDir = organizationDirEnv
 		? resolve(expandHomePath(organizationDirEnv, resolvedHomeDir))

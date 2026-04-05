@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.1</h1>
+<h1>IOSM CLI 0.3.2</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,13 +32,13 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.1
+## ✦ What's New in 0.3.2
 
-- Profile-aware `/init` contract: in `full/plan/meta` it initializes `AGENTS.md` only; in `iosm` profile it initializes and syncs both `AGENTS.md` and `IOSM.md`
-- `iosm init` now guarantees physical upsert for both `AGENTS.md` and `IOSM.md` in IOSM workflow
-- Added managed IOSM sync section in `AGENTS.md` (iosm profile) with safe in-place updates instead of destructive rewrites
-- Improved `/init` runtime resilience: explicit in-progress guard and clean interrupt handling for long-running init sessions
-- Updated docs for profile-scoped init behavior in interactive and getting-started guides
+- Canonical playbook filenames are now enforced during init flows: lowercase variants (`agents.md`, `iosm.md`) are automatically renamed to `AGENTS.md` and `IOSM.md`
+- Standard `/init` now always reads/writes through canonical `AGENTS.md` path, including existing repositories with mixed filename casing
+- IOSM guide writers now canonicalize `AGENTS.md` and `IOSM.md` before updates for consistent context loading across sessions
+- Improved runtime profile switching continuity by keeping `IOSM.md` context loaded in resource layer while preserving profile-aware prompt/UI filtering
+- Added regression tests covering filename normalization and profile-switch context behavior
 
 ## ✦ Major Additions in 0.2.16
 
