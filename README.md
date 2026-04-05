@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.3</h1>
+<h1>IOSM CLI 0.3.4</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,12 +32,12 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.3
+## ✦ What's New in 0.3.4
 
-- Fixed META orchestration fallback so actionable requests without explicit `agents=N` now enforce multi-task fan-out instead of silently staying in a single-thread turn
-- Removed language-bound fallback heuristics in META enforcement and switched to runtime orchestration signals (`required task calls`, `nested delegation`) for consistent behavior across locales
-- Fixed MCP/external tool result rendering: unknown tools no longer render empty tool boxes and now show generic fallback output with arguments and result payload
-- Added regression tests for META prompt routing (actionable vs question-like prompts) and unknown external tool rendering
+- Added Windows shell command auto-adapter in runtime execution paths: cmd-style commands (`%VAR%`, `dir`, `C:\...`) and PowerShell-style commands (`$env:...`, `Get-*`) are now auto-routed to the correct interpreter even when IOSM runs via bash
+- Fixed Telegram/Windows remote execution friction where native Windows command syntax failed in bridge-driven shell calls
+- Applied adapter behavior consistently for foreground bash execution, bash tool execution, and detached background processes
+- Added regression tests for Windows command adaptation behavior
 
 ## ✦ Major Additions in 0.2.16
 

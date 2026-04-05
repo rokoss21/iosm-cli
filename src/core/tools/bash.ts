@@ -6,7 +6,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
 import { spawn } from "child_process";
 import stripAnsi from "strip-ansi";
-import { getShellConfig, getShellEnv, killProcessTree, sanitizeBinaryOutput } from "../../utils/shell.js";
+import { adaptCommandForShell, getShellConfig, getShellEnv, killProcessTree, sanitizeBinaryOutput } from "../../utils/shell.js";
 import { startBackgroundProcess } from "../background-processes.js";
 import { isSandboxEnabledFromEnv, wrapCommandWithSandbox } from "../sandbox/executor.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
@@ -191,7 +191,10 @@ function resolveSpawnContext(command: string, cwd: string, spawnHook?: BashSpawn
 		process.stderr.write(`[iosm] Extension modified bash cwd: ${baseContext.cwd} → ${modified.cwd}\n`);
 	}
 
-	return modified;
+	return {
+		...modified,
+		command: adaptCommandForShell(modified.command),
+	};
 }
 
 export interface BashToolOptions {

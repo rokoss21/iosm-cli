@@ -354,6 +354,8 @@ export IOSM_SESSION_TRACE_DIR="$HOME/.iosm/traces"
 # export IOSM_OFFLINE=1
 ```
 
+Windows note: when IOSM runs through Git Bash, bash tool execution now auto-adapts native Windows command syntax (`%LOCALAPPDATA%`, `dir`, `C:\...`, `$env:...`, `Get-*`) to the correct interpreter (`cmd.exe` or `powershell.exe`) automatically.
+
 ---
 
 ## Profiles

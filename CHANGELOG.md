@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-04-06
+
+### Fixed
+
+- **Windows shell command compatibility** — added runtime auto-adaptation for Windows command syntax, routing cmd-style commands (`%VAR%`, `dir`, `C:\...`) to `cmd.exe` and PowerShell-style commands (`$env:...`, `Get-*`) to `powershell.exe`
+- **Telegram bridge command execution on Windows** — fixed failures when users sent native Windows shell commands through Telegram-driven runs while IOSM executed under bash
+- **Execution path consistency** — applied shell adaptation uniformly across foreground bash execution, bash tool execution, and detached background processes
+
+### Tests
+
+- Added regression suite for Windows command adaptation and explicit-shell passthrough behavior
+
 ## [0.3.3] - 2026-04-05
 
 ### Fixed

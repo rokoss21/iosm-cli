@@ -6,6 +6,62 @@ import { SettingsManager } from "../core/settings-manager.js";
 
 let cachedShellConfig: { shell: string; args: string[] } | null = null;
 
+const WINDOWS_CMD_ENV_PATTERN = /%[A-Za-z_][A-Za-z0-9_]*%/;
+const WINDOWS_CMD_BUILTIN_PATTERN =
+	/^\s*@?\s*(?:dir|copy|xcopy|move|ren|rename|del|erase|type|set|cls|mkdir|md|rmdir|rd|where)\b/i;
+const WINDOWS_DRIVE_PATH_PATTERN = /(?:^|[\s"'`])(?:[A-Za-z]:\\)/;
+const WINDOWS_POWERSHELL_ENV_PATTERN = /\$env:[A-Za-z_][A-Za-z0-9_]*/i;
+const WINDOWS_POWERSHELL_CMDLET_PATTERN = /^\s*(?:Get|Set|New|Remove|Invoke|Test|Write|Select|Where|ForEach)-[A-Za-z]/i;
+const WINDOWS_POWERSHELL_VAR_ASSIGNMENT_PATTERN = /^\s*\$[A-Za-z_][A-Za-z0-9_]*\s*=/;
+const WINDOWS_EXPLICIT_SHELL_PATTERN = /^\s*(?:cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?)\b/i;
+
+export type WindowsCommandAdapter = "none" | "cmd" | "powershell";
+
+function quotePosixShellArg(value: string): string {
+	return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+export function resolveWindowsCommandAdapter(
+	command: string,
+	platform: NodeJS.Platform = process.platform,
+): WindowsCommandAdapter {
+	if (platform !== "win32") return "none";
+
+	const trimmed = command.trim();
+	if (!trimmed) return "none";
+	if (WINDOWS_EXPLICIT_SHELL_PATTERN.test(trimmed)) return "none";
+
+	const looksLikePowerShell =
+		WINDOWS_POWERSHELL_ENV_PATTERN.test(trimmed) ||
+		WINDOWS_POWERSHELL_CMDLET_PATTERN.test(trimmed) ||
+		WINDOWS_POWERSHELL_VAR_ASSIGNMENT_PATTERN.test(trimmed);
+	if (looksLikePowerShell) return "powershell";
+
+	const looksLikeCmd =
+		WINDOWS_CMD_ENV_PATTERN.test(trimmed) ||
+		WINDOWS_CMD_BUILTIN_PATTERN.test(trimmed) ||
+		WINDOWS_DRIVE_PATH_PATTERN.test(trimmed);
+	if (looksLikeCmd) return "cmd";
+
+	return "none";
+}
+
+/**
+ * On Windows we execute through bash by default. If the incoming command is
+ * clearly written for cmd.exe or PowerShell syntax, wrap it in the matching
+ * interpreter so users can paste native commands without manual rewriting.
+ */
+export function adaptCommandForShell(command: string, platform: NodeJS.Platform = process.platform): string {
+	const adapter = resolveWindowsCommandAdapter(command, platform);
+	if (adapter === "cmd") {
+		return `cmd.exe /d /s /c ${quotePosixShellArg(command)}`;
+	}
+	if (adapter === "powershell") {
+		return `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${quotePosixShellArg(command)}`;
+	}
+	return command;
+}
+
 /**
  * Find bash executable on PATH (cross-platform)
  */

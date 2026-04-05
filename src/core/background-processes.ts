@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn, spawnSync } from "child_process";
-import { getShellConfig, getShellEnv, killProcessTree } from "../utils/shell.js";
+import { adaptCommandForShell, getShellConfig, getShellEnv, killProcessTree } from "../utils/shell.js";
 
 export type BackgroundProcessStatus = "running" | "done" | "error" | "terminated" | "unknown";
 
@@ -254,9 +254,10 @@ export function startBackgroundProcess(input: StartBackgroundProcessInput): Back
 	const now = new Date().toISOString();
 
 	const { shell, args } = getShellConfig();
+	const adaptedCommand = adaptCommandForShell(input.command);
 	const wrappedCommand = [
 		"(",
-		input.command,
+		adaptedCommand,
 		")",
 		"__iosm_bg_exit_code=$?",
 		`__iosm_bg_finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || node -e 'console.log(new Date().toISOString())')`,
