@@ -46,6 +46,11 @@ interface ActiveTurnState {
 	lastTool?: string;
 	toolCallCount: number;
 	toolNames: string[];
+	traceLines: string[];
+	traceHistoryLines: string[];
+	assistantUpdateEvents: number;
+	assistantStreamChars: number;
+	lastAssistantTraceAt: number;
 	aborted: boolean;
 	statusEditPending: boolean;
 	statusEditTimer?: NodeJS.Timeout;
@@ -84,6 +89,10 @@ const COMMAND_MENU_TTL_MS = 5 * 60 * 1000;
 const MODELS_PAGE_SIZE = 8;
 const MODEL_MENU_TTL_MS = 2 * 60 * 1000;
 const TELEGRAM_SAFE_TEXT_CHUNK = 3500;
+const TELEGRAM_TRACE_VISIBLE_MAX_LINES = 14;
+const TELEGRAM_TRACE_STATUS_MAX_LINES = 10;
+const TELEGRAM_TRACE_LINE_MAX_CHARS = 120;
+const ASSISTANT_STREAM_TRACE_PREFIX = "💬 assistant streaming ·";
 const INPUT_BUTTON_HUB = "🧭 Hub";
 const INPUT_BUTTON_START = "▶️ Start";
 const INPUT_BUTTON_NEW = "🆕 New";
@@ -344,6 +353,7 @@ class TelegramBridgeRuntime {
 			"- For outputs likely to be very large, provide a compact summary first and save full artifacts to files.",
 			"- Always finish each completed user task with a concise textual summary in the user's language (do not end with tool-only output).",
 			"- If tools were used, include a short outcome summary (2-5 bullets) before ending the turn.",
+			"- While processing, keep users informed with concise progress updates on tool usage and intermediate steps.",
 		];
 
 		if (process.platform === "win32") {
@@ -929,6 +939,7 @@ class TelegramBridgeRuntime {
 			"/status  /commands  /model  /menu  /help",
 			"",
 			"Telegram bridge notes",
+			"- Live status includes compact execution trace (assistant/tool events) during run",
 			"- Very large outputs are summarized in chat; full output is attached as a file when needed",
 			"- For heavy audits/scans, ask the agent to write scripts/files and run them instead of one huge inline shell command",
 			process.platform === "win32"
@@ -1814,9 +1825,15 @@ class TelegramBridgeRuntime {
 			aborted: false,
 			toolCallCount: 0,
 			toolNames: [],
+			traceLines: [],
+			traceHistoryLines: [],
+			assistantUpdateEvents: 0,
+			assistantStreamChars: 0,
+			lastAssistantTraceAt: 0,
 			statusEditPending: false,
 			lastStatusEditAt: 0,
 		};
+		this.appendTurnTrace(this.activeTurn, `▶ turn started · ${this.formatPromptPreview(text, 64)}`);
 		this.tracePolling(`turn start turn=${this.activeTurn.turnId} chat=${chatId} queue=${this.promptQueue.size}`);
 		try {
 			await this.ensureRpcConnected();
@@ -1845,6 +1862,7 @@ class TelegramBridgeRuntime {
 					rpcResponseEvent.id ?? "unknown"
 				} reason=${this.clipForLog(reason, 120)}`,
 			);
+			this.appendTurnTrace(this.activeTurn, `❌ rpc error · ${this.formatPromptPreview(reason, 84)}`);
 			await this.finishTurn({ error: reason });
 			return;
 		}
@@ -1852,13 +1870,27 @@ class TelegramBridgeRuntime {
 		switch (event.type) {
 			case "turn_start":
 				this.activeTurn.phase = "running";
+				this.appendTurnTrace(this.activeTurn, "🧠 model turn running");
 				break;
+			case "message_start": {
+				const messageEvent = event as { message?: { role?: string } };
+				if (messageEvent.message?.role === "assistant") {
+					this.appendTurnTrace(this.activeTurn, "✍ assistant drafting response");
+				}
+				break;
+			}
 			case "tool_execution_start": {
-				const toolEvent = event as { toolName?: string };
+				const toolEvent = event as { toolName?: string; args?: unknown };
 				this.activeTurn.phase = "tool";
 				this.activeTurn.lastTool = toolEvent.toolName;
 				this.activeTurn.toolCallCount += 1;
 				this.rememberTurnTool(this.activeTurn, toolEvent.toolName);
+				const argsSummary = this.summarizeToolArgs(toolEvent.args);
+				const toolName = toolEvent.toolName?.trim() || "tool";
+				this.appendTurnTrace(
+					this.activeTurn,
+					`🛠 ${toolName} start${argsSummary ? ` · ${argsSummary}` : ""}`,
+				);
 				break;
 			}
 			case "tool_execution_update": {
@@ -1869,36 +1901,55 @@ class TelegramBridgeRuntime {
 				break;
 			}
 			case "tool_execution_end": {
-				const toolEvent = event as { toolName?: string };
+				const toolEvent = event as { toolName?: string; isError?: boolean; result?: unknown };
 				this.activeTurn.lastTool = toolEvent.toolName ?? this.activeTurn.lastTool;
 				this.rememberTurnTool(this.activeTurn, toolEvent.toolName);
+				const toolName = toolEvent.toolName?.trim() || "tool";
+				const resultSummary = this.summarizeToolResult(toolEvent.result);
+				const emoji = toolEvent.isError ? "❌" : "✅";
+				this.appendTurnTrace(
+					this.activeTurn,
+					`${emoji} ${toolName} ${toolEvent.isError ? "failed" : "done"}${resultSummary ? ` · ${resultSummary}` : ""}`,
+				);
 				break;
 			}
 			case "message_update": {
-				const directText = this.extractAssistantTextFromTurnEnd(event as AgentEvent);
+				const directText = this.extractAssistantTextFromAssistantEvent(event as AgentEvent);
 				if (directText) {
 					this.activeTurn.lastAssistantTurnText = directText;
+					this.maybeTraceAssistantStream(this.activeTurn, directText);
 				}
 				break;
 			}
 			case "message_end": {
-				const directText = this.extractAssistantTextFromTurnEnd(event as AgentEvent);
+				const directText = this.extractAssistantTextFromAssistantEvent(event as AgentEvent);
 				if (directText) {
 					this.activeTurn.lastAssistantTurnText = directText;
+					this.appendTurnTrace(this.activeTurn, `🧾 assistant message ready · ${directText.length} chars`);
+				} else {
+					const hasToolCalls = this.hasAssistantToolCalls(event as AgentEvent);
+					if (hasToolCalls) {
+						this.appendTurnTrace(this.activeTurn, "🧾 assistant emitted tool calls");
+					}
 				}
 				break;
 			}
 			case "turn_end": {
 				const turnEnd = event as AgentEvent;
-				const directText = this.extractAssistantTextFromTurnEnd(turnEnd);
+				const directText = this.extractAssistantTextFromAssistantEvent(turnEnd);
 					if (directText) {
 						// Keep as fallback in case getLastAssistantText is empty.
 						this.activeTurn.lastAssistantTurnText = directText;
 						this.activeTurn.phase = "finalizing";
 					}
+					this.appendTurnTrace(
+						this.activeTurn,
+						`🏁 turn completed · tools ${this.activeTurn.toolCallCount} · stream updates ${this.activeTurn.assistantUpdateEvents}`,
+					);
 					break;
 				}
 			case "agent_end":
+				this.appendTurnTrace(this.activeTurn, "✅ agent finished");
 				await this.finishTurn();
 				return;
 			default:
@@ -2053,7 +2104,7 @@ class TelegramBridgeRuntime {
 		}
 	}
 
-	private extractAssistantTextFromTurnEnd(event: AgentEvent): string | undefined {
+	private extractAssistantTextFromAssistantEvent(event: AgentEvent): string | undefined {
 		const messageEvent = event as { message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
 		const message = messageEvent.message;
 		if (!message || message.role !== "assistant") return undefined;
@@ -2064,6 +2115,173 @@ class TelegramBridgeRuntime {
 			.filter((part) => part.length > 0);
 		if (textParts.length === 0) return undefined;
 		return textParts.join("\n\n");
+	}
+
+	private hasAssistantToolCalls(event: AgentEvent): boolean {
+		const messageEvent = event as { message?: { role?: string; content?: Array<{ type?: string }> } };
+		const message = messageEvent.message;
+		if (!message || message.role !== "assistant") return false;
+		const content = Array.isArray(message.content) ? message.content : [];
+		return content.some((part) => part.type === "toolCall");
+	}
+
+	private formatTraceClock(turn: ActiveTurnState, atMs = Date.now()): string {
+		const totalSec = Math.max(0, Math.floor((atMs - turn.startedAt) / 1000));
+		const minutes = Math.floor(totalSec / 60)
+			.toString()
+			.padStart(2, "0");
+		const seconds = (totalSec % 60).toString().padStart(2, "0");
+		return `${minutes}:${seconds}`;
+	}
+
+	private normalizeTraceText(text: string, max = TELEGRAM_TRACE_LINE_MAX_CHARS): string {
+		const compact = text.replace(/\s+/g, " ").trim();
+		if (compact.length <= max) return compact;
+		return `${compact.slice(0, max - 1)}…`;
+	}
+
+	private appendTurnTrace(turn: ActiveTurnState, line: string): void {
+		const normalized = this.normalizeTraceText(line);
+		if (!normalized) return;
+		const stamped = `${this.formatTraceClock(turn)} ${normalized}`;
+		const last = turn.traceHistoryLines[turn.traceHistoryLines.length - 1];
+		if (last === stamped) return;
+		turn.traceHistoryLines.push(stamped);
+		turn.traceLines.push(stamped);
+		if (turn.traceLines.length > TELEGRAM_TRACE_VISIBLE_MAX_LINES) {
+			turn.traceLines.splice(0, turn.traceLines.length - TELEGRAM_TRACE_VISIBLE_MAX_LINES);
+		}
+	}
+
+	private extractTracePayload(stampedLine: string): string {
+		const spaceIndex = stampedLine.indexOf(" ");
+		if (spaceIndex < 0) return stampedLine.trim();
+		return stampedLine.slice(spaceIndex + 1).trim();
+	}
+
+	private findLastTraceIndexByPrefix(lines: string[], prefix: string): number {
+		for (let index = lines.length - 1; index >= 0; index -= 1) {
+			if (this.extractTracePayload(lines[index] ?? "").startsWith(prefix)) {
+				return index;
+			}
+		}
+		return -1;
+	}
+
+	private upsertTurnTraceByPrefix(turn: ActiveTurnState, prefix: string, line: string): void {
+		const normalized = this.normalizeTraceText(line);
+		if (!normalized) return;
+		const stamped = `${this.formatTraceClock(turn)} ${normalized}`;
+		const historyIndex = this.findLastTraceIndexByPrefix(turn.traceHistoryLines, prefix);
+		if (historyIndex >= 0) {
+			turn.traceHistoryLines[historyIndex] = stamped;
+		} else {
+			const lastHistory = turn.traceHistoryLines[turn.traceHistoryLines.length - 1];
+			if (lastHistory !== stamped) {
+				turn.traceHistoryLines.push(stamped);
+			}
+		}
+
+		const visibleIndex = this.findLastTraceIndexByPrefix(turn.traceLines, prefix);
+		if (visibleIndex >= 0) {
+			turn.traceLines[visibleIndex] = stamped;
+		} else {
+			const lastVisible = turn.traceLines[turn.traceLines.length - 1];
+			if (lastVisible !== stamped) {
+				turn.traceLines.push(stamped);
+			}
+			if (turn.traceLines.length > TELEGRAM_TRACE_VISIBLE_MAX_LINES) {
+				turn.traceLines.splice(0, turn.traceLines.length - TELEGRAM_TRACE_VISIBLE_MAX_LINES);
+			}
+		}
+	}
+
+	private maybeTraceAssistantStream(turn: ActiveTurnState, assistantText: string): void {
+		turn.assistantUpdateEvents += 1;
+		const chars = assistantText.trim().length;
+		const previousChars = turn.assistantStreamChars;
+		turn.assistantStreamChars = Math.max(previousChars, chars);
+		const now = Date.now();
+		const minInterval = Math.max(2500, this.statusEditThrottleMs);
+		const enoughChars = chars >= 1 && (chars - previousChars >= 220 || turn.assistantUpdateEvents <= 2);
+		const enoughTime = now - turn.lastAssistantTraceAt >= minInterval;
+		if (!enoughChars && !enoughTime && turn.assistantUpdateEvents > 2) {
+			return;
+		}
+		const preview = this.formatPromptPreview(assistantText, 72);
+		this.upsertTurnTraceByPrefix(turn, ASSISTANT_STREAM_TRACE_PREFIX, `${ASSISTANT_STREAM_TRACE_PREFIX} ${chars} chars · ${preview}`);
+		turn.lastAssistantTraceAt = now;
+	}
+
+	private summarizeToolArgs(args: unknown): string {
+		if (!args || typeof args !== "object") return "";
+		const record = args as Record<string, unknown>;
+		const priority = ["path", "command", "query", "q", "pattern", "url", "file", "tool", "name"];
+		const segments: string[] = [];
+		for (const key of priority) {
+			if (!(key in record)) continue;
+			const value = record[key];
+			if (typeof value === "string") {
+				segments.push(`${key}=${this.formatPromptPreview(value, 28)}`);
+			} else if (typeof value === "number" || typeof value === "boolean") {
+				segments.push(`${key}=${String(value)}`);
+			}
+			if (segments.length >= 2) break;
+		}
+		if (segments.length === 0) {
+			const keys = Object.keys(record);
+			if (keys.length > 0) {
+				return `args:${keys.slice(0, 3).join(",")}${keys.length > 3 ? ",…" : ""}`;
+			}
+			return "";
+		}
+		return segments.join(" ");
+	}
+
+	private summarizeToolResult(result: unknown): string {
+		if (typeof result === "string") {
+			return `out ${result.length} chars`;
+		}
+		if (!result || typeof result !== "object") return "";
+		const resultRecord = result as { content?: Array<{ type?: string; text?: string }>; details?: unknown };
+		const content = Array.isArray(resultRecord.content) ? resultRecord.content : [];
+		const textSize = content
+			.filter((part) => part.type === "text" && typeof part.text === "string")
+			.reduce((sum, part) => sum + (part.text?.length ?? 0), 0);
+		if (textSize > 0) {
+			return `out ${textSize} chars`;
+		}
+		if (content.length > 0) {
+			return `content ${content.length} item(s)`;
+		}
+		if (resultRecord.details !== undefined) {
+			return "details present";
+		}
+		return "";
+	}
+
+	private formatTraceSection(turn: ActiveTurnState, maxLines: number): string[] {
+		if (turn.traceLines.length === 0) return [];
+		const lines = turn.traceLines.slice(-maxLines).map((line) => `• ${line}`);
+		const hiddenCount = Math.max(0, turn.traceHistoryLines.length - lines.length);
+		const header =
+			hiddenCount > 0
+				? `trace ${lines.length}/${turn.traceHistoryLines.length} (hidden ${hiddenCount})`
+				: `trace ${lines.length}`;
+		return ["", header, ...lines];
+	}
+
+	private formatTurnTraceLog(turn: ActiveTurnState): string {
+		const lines: string[] = [
+			`${APP_NAME} Telegram execution trace`,
+			`turn=${turn.turnId}`,
+			`prompt=${this.formatPromptPreview(turn.prompt, 220)}`,
+			`startedAt=${new Date(turn.startedAt).toISOString()}`,
+			`tools=${turn.toolCallCount}`,
+			"",
+			...turn.traceHistoryLines,
+		];
+		return lines.join("\n");
 	}
 
 	private rememberTurnTool(turn: ActiveTurnState, toolName: string | undefined): void {
@@ -2513,11 +2731,19 @@ class TelegramBridgeRuntime {
 		const phaseLabel = this.formatStatusPhase(turn.phase);
 		const toolSegment = this.formatToolBadge(turn.lastTool);
 		const activity = this.statusActivityLabel(turn);
-		return [
+		const lines = [
 			`${spinner} ${APP_NAME} · ${phaseLabel}${toolSegment} · ${elapsed} · q${this.promptQueue.size}`,
-			`${pulse} ${activity}`,
+			`${pulse} ${activity} · tools ${turn.toolCallCount} · updates ${turn.assistantUpdateEvents}`,
 			`“${this.formatPromptPreview(turn.prompt, 56)}”`,
-		].join("\n");
+			...this.formatTraceSection(turn, TELEGRAM_TRACE_STATUS_MAX_LINES),
+		];
+		while (lines.join("\n").length > TELEGRAM_SAFE_TEXT_CHUNK && lines.length > 3) {
+			// Remove oldest trace entries first.
+			const traceHeaderIndex = lines.findIndex((line) => line.startsWith("trace "));
+			if (traceHeaderIndex < 0 || traceHeaderIndex + 1 >= lines.length) break;
+			lines.splice(traceHeaderIndex + 1, 1);
+		}
+		return lines.join("\n");
 	}
 
 	private async editLiveStatus(force = false): Promise<void> {
@@ -2613,11 +2839,17 @@ class TelegramBridgeRuntime {
 			finalText = finishedTurn.lastAssistantTurnText;
 		}
 
-		const statusLabel = options?.error
-			? `❌ error · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s\n${this.formatPromptPreview(options.error, 96)}`
+		const statusTopLine = options?.error
+			? `❌ ${APP_NAME} · error · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`
 			: finishedTurn.aborted
-				? `⛔ aborted · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`
-				: `✅ done · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`;
+				? `⛔ ${APP_NAME} · aborted · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`
+				: `✅ ${APP_NAME} · done · ${Math.floor((Date.now() - finishedTurn.startedAt) / 1000)}s`;
+		const statusLines = [statusTopLine, `tools ${finishedTurn.toolCallCount} · updates ${finishedTurn.assistantUpdateEvents}`];
+		if (options?.error) {
+			statusLines.push(this.formatPromptPreview(options.error, 120));
+		}
+		statusLines.push(...this.formatTraceSection(finishedTurn, TELEGRAM_TRACE_VISIBLE_MAX_LINES));
+		const statusLabel = statusLines.join("\n");
 		try {
 			await this.bot.editMessageText(finishedTurn.chatId, finishedTurn.statusMessageId, statusLabel, {
 				replyMarkup: { inline_keyboard: [] },
@@ -2640,6 +2872,15 @@ class TelegramBridgeRuntime {
 					`[telegram] empty assistant final text (turn=${finishedTurn.turnId}, tools=${finishedTurn.toolCallCount}, toolNames=${this.summarizeTurnTools(finishedTurn)})`,
 				);
 				await this.sendFinalOutput(finishedTurn.chatId, fallback);
+			}
+			if (finishedTurn.traceHistoryLines.length > TELEGRAM_TRACE_VISIBLE_MAX_LINES + 10) {
+				const traceLog = this.formatTurnTraceLog(finishedTurn);
+				await this.bot.sendTextDocument(
+					finishedTurn.chatId,
+					`iosm-trace-turn-${finishedTurn.turnId}.log`,
+					traceLog,
+					"Full execution trace",
+				);
 			}
 		} catch (error) {
 			console.warn(`[telegram] final output delivery failed: ${error instanceof Error ? error.message : String(error)}`);

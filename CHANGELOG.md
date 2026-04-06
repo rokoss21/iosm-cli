@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10] - 2026-04-06
+
+### Changed
+
+- **Telegram live trace UX** — running status card now presents richer execution telemetry (assistant/tool lifecycle events) in a compact streaming trace section instead of request→wait→final-only visibility.
+
+### Fixed
+
+- **Streaming trace duplicate lines** — assistant streaming trace now uses prefix-based upsert semantics, so the live card keeps one current `assistant streaming` line instead of appending duplicates on every update.
+- **Trace payload matching internals** — added dedicated trace payload extract/find helpers to update existing trace rows deterministically in both visible and full-history trace buffers.
+
 ## [0.3.9] - 2026-04-06
 
 ### Changed

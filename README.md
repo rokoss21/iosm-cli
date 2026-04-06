@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.9</h1>
+<h1>IOSM CLI 0.3.10</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,13 +32,14 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.9
+## ✦ What's New in 0.3.10
 
-- Improved Telegram turn-finalization reliability:
-  - bridge now enforces a final short textual summary in runtime prompt contract (prevents tool-only completion turns)
-  - empty assistant-output turns now return a contextual fallback summary (tools used, elapsed time, recovery hint) instead of a generic blank-result message
-  - assistant text fallback now also listens to `message_update` stream events before `agent_end`
-- Added turn-level Telegram tool telemetry for easier diagnostics of empty-output completions
+- Improved Telegram live execution visibility:
+  - status card now shows compact streaming trace entries for assistant/tool lifecycle events while the task is running
+  - users can observe intermediate execution flow without flooding chat with separate progress messages
+- Fixed Telegram streaming trace duplication:
+  - assistant streaming entries now update in place (upsert) instead of stacking repeated duplicate lines
+  - trace update matching is deterministic across both visible trace and full trace history buffers
 
 ## ✦ Major Additions in 0.2.16
 
