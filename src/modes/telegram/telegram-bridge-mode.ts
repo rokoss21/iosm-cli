@@ -81,6 +81,7 @@ const COMMANDS_PAGE_SIZE = 8;
 const COMMAND_MENU_TTL_MS = 5 * 60 * 1000;
 const MODELS_PAGE_SIZE = 8;
 const MODEL_MENU_TTL_MS = 2 * 60 * 1000;
+const TELEGRAM_SAFE_TEXT_CHUNK = 3500;
 const INPUT_BUTTON_HUB = "🧭 Hub";
 const INPUT_BUTTON_START = "▶️ Start";
 const INPUT_BUTTON_NEW = "🆕 New";
@@ -313,7 +314,43 @@ class TelegramBridgeRuntime {
 			}
 			forwarded.push(arg);
 		}
-		return forwarded;
+		return this.injectTelegramRuntimePrompt(forwarded);
+	}
+
+	private injectTelegramRuntimePrompt(args: string[]): string[] {
+		const runtimePrompt = this.buildTelegramRuntimePrompt();
+		if (!runtimePrompt) return args;
+
+		const promptArg = "--append-system-prompt";
+		const index = args.findIndex((arg) => arg === promptArg);
+		if (index >= 0 && index + 1 < args.length) {
+			const existing = args[index + 1] ?? "";
+			args[index + 1] = existing.trim().length > 0 ? `${existing}\n\n${runtimePrompt}` : runtimePrompt;
+			return args;
+		}
+
+		args.push(promptArg, runtimePrompt);
+		return args;
+	}
+
+	private buildTelegramRuntimePrompt(): string {
+		const lines: string[] = [
+			"Telegram bridge runtime constraints:",
+			"- Keep responses concise and structured; avoid unnecessary long prose.",
+			"- Prefer specialized tools (read/rg/find/ls/git_read/test_run/lint_run/typecheck_run) over huge generic shell scans.",
+			"- For repository-wide search, exclude high-noise directories by default (node_modules, .git, dist, build, coverage, .next).",
+			"- For outputs likely to be very large, provide a compact summary first and save full artifacts to files.",
+		];
+
+		if (process.platform === "win32") {
+			lines.push(
+				"- Runtime shell on Windows may pass through bash/cmd/powershell adapters; avoid fragile one-liners with heavy nested escaping.",
+				"- For complex PowerShell or cmd logic, write a temporary .ps1/.cmd script file and execute the script path instead of inline quoting.",
+				"- If a command fails due to quoting/escaping, switch to script-file execution path immediately rather than retrying the same inline command.",
+			);
+		}
+
+		return lines.join("\n");
 	}
 
 	private async startRpc(): Promise<void> {
@@ -886,6 +923,13 @@ class TelegramBridgeRuntime {
 			"",
 			"Useful commands",
 			"/status  /commands  /model  /menu  /help",
+			"",
+			"Telegram bridge notes",
+			"- Very large outputs are summarized in chat; full output is attached as a file when needed",
+			"- For heavy audits/scans, ask the agent to write scripts/files and run them instead of one huge inline shell command",
+			process.platform === "win32"
+				? "- Windows tip: for complex shell quoting, ask for .ps1/.cmd script execution instead of inline escaped commands"
+				: "- Keep scans focused (target paths/patterns) to avoid noisy output and network retries",
 			"",
 			"Tip: phrase tasks like \"do X, verify Y, report result\".",
 		].join("\n");
@@ -2215,17 +2259,52 @@ class TelegramBridgeRuntime {
 		);
 	}
 
+	private splitTelegramText(text: string, chunkSize = TELEGRAM_SAFE_TEXT_CHUNK): string[] {
+		const normalized = this.normalizeTelegramText(text);
+		if (normalized.length <= chunkSize) return [normalized];
+		const chunks: string[] = [];
+		let start = 0;
+		while (start < normalized.length) {
+			let end = Math.min(start + chunkSize, normalized.length);
+			if (end < normalized.length) {
+				const window = normalized.slice(start, end);
+				const splitAt =
+					Math.max(window.lastIndexOf("\n\n"), window.lastIndexOf("\n"), window.lastIndexOf(" ")) || -1;
+				if (splitAt > 0) {
+					end = start + splitAt;
+				}
+			}
+			const chunk = normalized.slice(start, end).trim();
+			if (chunk.length > 0) {
+				chunks.push(chunk);
+			}
+			start = end;
+		}
+		return chunks.length > 0 ? chunks : [normalized];
+	}
+
 	private async sendRichMessage(chatId: TelegramChatId, text: string): Promise<void> {
 		const html = this.markdownToTelegramHtml(text);
 		if (!html || html.length === 0) {
-			await this.bot.sendMessage(chatId, text);
+			for (const chunk of this.splitTelegramText(text)) {
+				await this.bot.sendMessage(chatId, chunk);
+			}
+			return;
+		}
+		if (html.length > TELEGRAM_SAFE_TEXT_CHUNK) {
+			const plainLong = this.markdownToTelegramPlainText(text);
+			for (const chunk of this.splitTelegramText(plainLong.length > 0 ? plainLong : text)) {
+				await this.bot.sendMessage(chatId, chunk);
+			}
 			return;
 		}
 		try {
 			await this.bot.sendMessage(chatId, html, { parseMode: "HTML" });
 		} catch {
 			const plain = this.markdownToTelegramPlainText(text);
-			await this.bot.sendMessage(chatId, plain.length > 0 ? plain : text);
+			for (const chunk of this.splitTelegramText(plain.length > 0 ? plain : text)) {
+				await this.bot.sendMessage(chatId, chunk);
+			}
 		}
 	}
 

@@ -10,6 +10,7 @@ const WINDOWS_CMD_ENV_PATTERN = /%[A-Za-z_][A-Za-z0-9_]*%/;
 const WINDOWS_CMD_BUILTIN_PATTERN =
 	/^\s*@?\s*(?:dir|copy|xcopy|move|ren|rename|del|erase|type|set|cls|mkdir|md|rmdir|rd|where)\b/i;
 const WINDOWS_DRIVE_PATH_PATTERN = /(?:^|[\s"'`])(?:[A-Za-z]:\\)/;
+const WINDOWS_DRIVE_PATH_START_PATTERN = /^\s*[A-Za-z]:\\/;
 const WINDOWS_POWERSHELL_ENV_PATTERN = /\$env:[A-Za-z_][A-Za-z0-9_]*/i;
 const WINDOWS_POWERSHELL_CMDLET_PATTERN = /^\s*(?:Get|Set|New|Remove|Invoke|Test|Write|Select|Where|ForEach)-[A-Za-z]/i;
 const WINDOWS_POWERSHELL_VAR_ASSIGNMENT_PATTERN = /^\s*\$[A-Za-z_][A-Za-z0-9_]*\s*=/;
@@ -19,6 +20,60 @@ export type WindowsCommandAdapter = "none" | "cmd" | "powershell";
 
 function quotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function encodePowerShellCommand(command: string): string {
+	return Buffer.from(command, "utf16le").toString("base64");
+}
+
+function getLeadingCommandToken(command: string): string {
+	const trimmed = command.trim();
+	if (!trimmed) return "";
+	const match = /^[^\s]+/.exec(trimmed);
+	if (!match) return "";
+	return match[0]?.replace(/^["']|["']$/g, "").toLowerCase() ?? "";
+}
+
+function looksLikeUnixFirstToken(command: string): boolean {
+	const token = getLeadingCommandToken(command);
+	if (!token) return false;
+	const unixLike = new Set([
+		"ls",
+		"cat",
+		"grep",
+		"rg",
+		"fd",
+		"find",
+		"pwd",
+		"sed",
+		"awk",
+		"head",
+		"tail",
+		"wc",
+		"sort",
+		"uniq",
+		"xargs",
+		"bash",
+		"sh",
+		"zsh",
+		"node",
+		"npm",
+		"npx",
+		"pnpm",
+		"yarn",
+		"git",
+		"python",
+		"python3",
+		"pip",
+		"make",
+		"chmod",
+		"cp",
+		"mv",
+		"rm",
+		"echo",
+		"touch",
+	]);
+	return unixLike.has(token);
 }
 
 export function resolveWindowsCommandAdapter(
@@ -40,7 +95,8 @@ export function resolveWindowsCommandAdapter(
 	const looksLikeCmd =
 		WINDOWS_CMD_ENV_PATTERN.test(trimmed) ||
 		WINDOWS_CMD_BUILTIN_PATTERN.test(trimmed) ||
-		WINDOWS_DRIVE_PATH_PATTERN.test(trimmed);
+		(WINDOWS_DRIVE_PATH_START_PATTERN.test(trimmed) ||
+			(WINDOWS_DRIVE_PATH_PATTERN.test(trimmed) && !looksLikeUnixFirstToken(trimmed)));
 	if (looksLikeCmd) return "cmd";
 
 	return "none";
@@ -57,7 +113,8 @@ export function adaptCommandForShell(command: string, platform: NodeJS.Platform 
 		return `cmd.exe /d /s /c ${quotePosixShellArg(command)}`;
 	}
 	if (adapter === "powershell") {
-		return `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${quotePosixShellArg(command)}`;
+		const encoded = encodePowerShellCommand(command);
+		return `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
 	}
 	return command;
 }

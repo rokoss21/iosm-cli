@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-04-06
+
+### Changed
+
+- **Telegram runtime guidance injection** — bridge now appends runtime execution guidance to child RPC system prompt to reduce unstable command patterns during remote execution (focused outputs, bounded scans, script-file fallback for complex shell flows).
+
+### Fixed
+
+- **Windows shell adaptation robustness** — PowerShell-adapted commands now execute via `-EncodedCommand`, avoiding fragile quote/escape transport through bash wrappers.
+- **Windows adapter false-positive routing** — commands like `ls C:\projects` are no longer incorrectly forced into `cmd.exe` just because they include a Windows path argument.
+- **Telegram long-message delivery stability** — rich/fallback message sending now chunks long output payloads to stay within Telegram safe limits and reduce delivery failures.
+
 ## [0.3.7] - 2026-04-06
 
 ### Added

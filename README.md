@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.7</h1>
+<h1>IOSM CLI 0.3.8</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,20 +32,15 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.7
+## ✦ What's New in 0.3.8
 
-- Added modular Telegram bridge internals:
-  - dedicated Telegram API client runtime
-  - fair round-robin per-chat prompt queue
-  - persisted polling offset state store
-- Added configurable Telegram retry/backoff policy in settings:
-  - `telegram.retry.apiMax429Retries`
-  - `telegram.retry.apiMaxNetworkRetries`
-  - `telegram.retry.apiNetworkBackoffInitialMs` / `apiNetworkBackoffMaxMs`
-  - `telegram.retry.pollingBackoffInitialMs` / `pollingBackoffMaxMs`
-  - `telegram.retry.statusEditNetworkRetryMs`
-- Wired retry settings into bridge execution path for API calls, long-polling loop, and status edit recovery
-- Expanded test coverage for Telegram runtime modules and retry behavior
+- Improved Telegram bridge stability for cross-platform remote execution:
+  - runtime guidance is now injected into child RPC prompts to keep scans bounded and outputs safer for chat delivery
+  - long Telegram replies are chunked to reduce message-size related delivery failures
+- Improved Windows command adaptation:
+  - PowerShell commands are executed through `-EncodedCommand` to avoid fragile quote/escape transport
+  - unix-style commands with Windows paths (e.g. `ls C:\projects`) are no longer misrouted to `cmd.exe`
+- Added Windows/Telegram operational guidance to docs (script-first approach for complex shell quoting and heavy tasks)
 
 ## ✦ Major Additions in 0.2.16
 
@@ -408,6 +403,11 @@ iosm telegram --profile meta
 iosm telegram --profile iosm
 iosm telegram --profile plan
 ```
+
+Telegram bridge tips:
+- Keep tasks/output expectations focused; very large outputs are delivered as compact chat summaries plus file attachments.
+- For heavy audits, ask the agent to generate/run script files instead of fragile mega one-liners.
+- On Windows, prefer `.ps1`/`.cmd` script execution for complex quoting scenarios.
 
 ---
 

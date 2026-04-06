@@ -154,6 +154,13 @@ Telegram remote control is opt-in and disabled by default.
 
 Run with `iosm --mode telegram` or `iosm telegram`.
 
+Practical bridge notes:
+
+- Telegram has strict message-size/rate limits. Keep prompts and expected outputs focused; large results are summarized in chat and may be attached as files.
+- For heavy scans/audits, prefer script-file execution (`write` a `.ps1`/`.cmd`/`.sh` file, then run it) over one huge inline shell command.
+- On Windows, avoid complex nested escaping in one-liners. If a command needs heavy quoting (`$`, backticks, mixed quotes), switch to script-file execution path immediately.
+- For repository-wide search, explicitly exclude high-noise directories (`node_modules`, `.git`, `dist`, `build`, `coverage`, `.next`) unless they are in scope.
+
 ### `db_run` Setup (Recommended)
 
 1. Install required DB client CLI for your adapter:
