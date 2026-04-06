@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.8</h1>
+<h1>IOSM CLI 0.3.9</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,15 +32,13 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.8
+## ✦ What's New in 0.3.9
 
-- Improved Telegram bridge stability for cross-platform remote execution:
-  - runtime guidance is now injected into child RPC prompts to keep scans bounded and outputs safer for chat delivery
-  - long Telegram replies are chunked to reduce message-size related delivery failures
-- Improved Windows command adaptation:
-  - PowerShell commands are executed through `-EncodedCommand` to avoid fragile quote/escape transport
-  - unix-style commands with Windows paths (e.g. `ls C:\projects`) are no longer misrouted to `cmd.exe`
-- Added Windows/Telegram operational guidance to docs (script-first approach for complex shell quoting and heavy tasks)
+- Improved Telegram turn-finalization reliability:
+  - bridge now enforces a final short textual summary in runtime prompt contract (prevents tool-only completion turns)
+  - empty assistant-output turns now return a contextual fallback summary (tools used, elapsed time, recovery hint) instead of a generic blank-result message
+  - assistant text fallback now also listens to `message_update` stream events before `agent_end`
+- Added turn-level Telegram tool telemetry for easier diagnostics of empty-output completions
 
 ## ✦ Major Additions in 0.2.16
 

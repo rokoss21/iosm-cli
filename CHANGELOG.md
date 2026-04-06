@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-04-06
+
+### Changed
+
+- **Telegram completion contract hardening** — bridge runtime prompt now explicitly requires a short final textual summary for each completed turn (prevents tool-only finishes in normal flow).
+
+### Fixed
+
+- **`Task completed with no assistant text output` fallback quality** — replaced generic empty-output message with contextual fallback summary including tool activity, elapsed time, and recovery hint for concise no-tool recap.
+- **Turn-level telemetry for empty-output diagnosis** — Telegram bridge now tracks per-turn tool call count and unique tool names and logs them when assistant final text is empty.
+- **Assistant text capture resilience** — bridge now also captures text from `message_update` events as an additional fallback path before `agent_end`.
+
 ## [0.3.8] - 2026-04-06
 
 ### Changed

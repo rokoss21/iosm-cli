@@ -44,6 +44,8 @@ interface ActiveTurnState {
 	statusMessageId: number;
 	phase: string;
 	lastTool?: string;
+	toolCallCount: number;
+	toolNames: string[];
 	aborted: boolean;
 	statusEditPending: boolean;
 	statusEditTimer?: NodeJS.Timeout;
@@ -340,6 +342,8 @@ class TelegramBridgeRuntime {
 			"- Prefer specialized tools (read/rg/find/ls/git_read/test_run/lint_run/typecheck_run) over huge generic shell scans.",
 			"- For repository-wide search, exclude high-noise directories by default (node_modules, .git, dist, build, coverage, .next).",
 			"- For outputs likely to be very large, provide a compact summary first and save full artifacts to files.",
+			"- Always finish each completed user task with a concise textual summary in the user's language (do not end with tool-only output).",
+			"- If tools were used, include a short outcome summary (2-5 bullets) before ending the turn.",
 		];
 
 		if (process.platform === "win32") {
@@ -1808,6 +1812,8 @@ class TelegramBridgeRuntime {
 			statusMessageId: statusMessage.message_id,
 			phase: "starting",
 			aborted: false,
+			toolCallCount: 0,
+			toolNames: [],
 			statusEditPending: false,
 			lastStatusEditAt: 0,
 		};
@@ -1851,12 +1857,28 @@ class TelegramBridgeRuntime {
 				const toolEvent = event as { toolName?: string };
 				this.activeTurn.phase = "tool";
 				this.activeTurn.lastTool = toolEvent.toolName;
+				this.activeTurn.toolCallCount += 1;
+				this.rememberTurnTool(this.activeTurn, toolEvent.toolName);
 				break;
 			}
 			case "tool_execution_update": {
 				const toolEvent = event as { toolName?: string };
 				this.activeTurn.phase = "tool";
 				this.activeTurn.lastTool = toolEvent.toolName ?? this.activeTurn.lastTool;
+				this.rememberTurnTool(this.activeTurn, toolEvent.toolName);
+				break;
+			}
+			case "tool_execution_end": {
+				const toolEvent = event as { toolName?: string };
+				this.activeTurn.lastTool = toolEvent.toolName ?? this.activeTurn.lastTool;
+				this.rememberTurnTool(this.activeTurn, toolEvent.toolName);
+				break;
+			}
+			case "message_update": {
+				const directText = this.extractAssistantTextFromTurnEnd(event as AgentEvent);
+				if (directText) {
+					this.activeTurn.lastAssistantTurnText = directText;
+				}
 				break;
 			}
 			case "message_end": {
@@ -2042,6 +2064,55 @@ class TelegramBridgeRuntime {
 			.filter((part) => part.length > 0);
 		if (textParts.length === 0) return undefined;
 		return textParts.join("\n\n");
+	}
+
+	private rememberTurnTool(turn: ActiveTurnState, toolName: string | undefined): void {
+		const normalized = toolName?.trim();
+		if (!normalized) return;
+		if (turn.toolNames.includes(normalized)) return;
+		turn.toolNames.push(normalized);
+	}
+
+	private summarizeTurnTools(turn: ActiveTurnState): string {
+		const names = turn.toolNames
+			.map((name) => name.trim())
+			.filter((name) => name.length > 0);
+		if (names.length === 0 && turn.lastTool?.trim()) {
+			names.push(turn.lastTool.trim());
+		}
+		if (names.length === 0) return "none";
+		const shown = names.slice(0, 4);
+		const suffix = names.length > shown.length ? ` +${names.length - shown.length} more` : "";
+		return `${shown.join(", ")}${suffix}`;
+	}
+
+	private buildNoAssistantTextFallback(turn: ActiveTurnState): string {
+		const elapsedSec = Math.max(0, Math.floor((Date.now() - turn.startedAt) / 1000));
+		const hasCyrillicPrompt = /[А-Яа-яЁё]/.test(turn.prompt);
+		const toolSummary = this.summarizeTurnTools(turn);
+		const calls = turn.toolCallCount;
+		if (hasCyrillicPrompt) {
+			const lines = [
+				"Задача завершена, но ассистент не вернул итоговый текст.",
+				calls > 0
+					? `Выполнено вызовов инструментов: ${calls} (инструменты: ${toolSummary}).`
+					: "В этом ходе не зафиксировано итоговых текстовых блоков ассистента.",
+				`Время выполнения: ${elapsedSec}s.`,
+				"Это обычно означает, что ход завершился только tool-вызовами без финального ответа.",
+				"Отправьте: \"Суммируй результат прошлого шага кратко, без новых вызовов инструментов.\"",
+			];
+			return lines.join("\n");
+		}
+		const lines = [
+			"Task finished, but the assistant returned no final text output.",
+			calls > 0
+				? `Tool activity: ${calls} call(s) (tools: ${toolSummary}).`
+				: "No final assistant text blocks were captured for this turn.",
+			`Elapsed: ${elapsedSec}s.`,
+			"This usually means the turn ended with tool-only output.",
+			'Reply with: "Summarize the previous result briefly without new tool calls."',
+		];
+		return lines.join("\n");
 	}
 
 	private escapeTelegramHtml(text: string): string {
@@ -2564,7 +2635,11 @@ class TelegramBridgeRuntime {
 			} else if (finalText && finalText.trim().length > 0) {
 				await this.sendFinalOutput(finishedTurn.chatId, finalText);
 			} else if (!finishedTurn.aborted) {
-				await this.bot.sendMessage(finishedTurn.chatId, "Task completed with no assistant text output.");
+				const fallback = this.buildNoAssistantTextFallback(finishedTurn);
+				console.warn(
+					`[telegram] empty assistant final text (turn=${finishedTurn.turnId}, tools=${finishedTurn.toolCallCount}, toolNames=${this.summarizeTurnTools(finishedTurn)})`,
+				);
+				await this.sendFinalOutput(finishedTurn.chatId, fallback);
 			}
 		} catch (error) {
 			console.warn(`[telegram] final output delivery failed: ${error instanceof Error ? error.message : String(error)}`);
