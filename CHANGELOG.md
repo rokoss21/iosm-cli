@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-04-06
+
+### Added
+
+- **Telegram bridge module split** — extracted dedicated Telegram runtime modules:
+  - `telegram-api` client with serialized outbound requests and retry controls
+  - `prompt-queue` with fair round-robin draining across chats
+  - `polling-state` store for persisted long-polling offsets
+- **Configurable Telegram retry policy** — introduced `telegram.retry` settings block with API retry/backoff, polling backoff, and status-edit network retry controls
+
+### Changed
+
+- **Bridge retry/backoff wiring** — Telegram bridge now reads retry/backoff parameters from settings instead of hardcoded values for:
+  - API request retries
+  - polling-loop transient failure backoff
+  - status edit network retry delay
+- **Configuration docs** — extended Telegram configuration examples and generated settings documentation with new retry policy fields
+
+### Tests
+
+- Added dedicated test suites for:
+  - Telegram API retry and outbound serialization behavior
+  - prompt queue fairness
+  - polling offset persistence
+- Expanded `settings-manager` telegram settings tests to cover retry normalization and safe bounds
+
 ## [0.3.6] - 2026-04-06
 
 ### Added

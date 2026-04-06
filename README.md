@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.6</h1>
+<h1>IOSM CLI 0.3.7</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,12 +32,20 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.6
+## ✦ What's New in 0.3.7
 
-- Added Telegram polling trace mode for deep diagnostics (`telegram.debug.pollingTrace` or `IOSM_TELEGRAM_POLLING_TRACE=1`)
-- Reduced Telegram status update pressure: default live status throttle is now `3000ms` (runtime bounded to `1000..10000ms`)
-- Improved callback stability: expired callback queries are now ignored safely instead of surfacing as polling errors
-- Improved network resilience: polling now uses exponential backoff on transient `fetch failed` conditions and status edits retry in a coalesced way
+- Added modular Telegram bridge internals:
+  - dedicated Telegram API client runtime
+  - fair round-robin per-chat prompt queue
+  - persisted polling offset state store
+- Added configurable Telegram retry/backoff policy in settings:
+  - `telegram.retry.apiMax429Retries`
+  - `telegram.retry.apiMaxNetworkRetries`
+  - `telegram.retry.apiNetworkBackoffInitialMs` / `apiNetworkBackoffMaxMs`
+  - `telegram.retry.pollingBackoffInitialMs` / `pollingBackoffMaxMs`
+  - `telegram.retry.statusEditNetworkRetryMs`
+- Wired retry settings into bridge execution path for API calls, long-polling loop, and status edit recovery
+- Expanded test coverage for Telegram runtime modules and retry behavior
 
 ## ✦ Major Additions in 0.2.16
 

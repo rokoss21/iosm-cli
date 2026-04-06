@@ -103,6 +103,23 @@ export interface TelegramChatDefaultsSettings {
 	maxSummaryChars?: number; // default: 3000
 }
 
+export interface TelegramRetrySettings {
+	/** Retry count for Telegram API 429 responses. */
+	apiMax429Retries?: number; // default: 4
+	/** Retry count for transient Telegram API network failures. */
+	apiMaxNetworkRetries?: number; // default: 3
+	/** Initial backoff for Telegram API retryable failures. */
+	apiNetworkBackoffInitialMs?: number; // default: 1500
+	/** Maximum backoff for Telegram API retryable failures. */
+	apiNetworkBackoffMaxMs?: number; // default: 30000
+	/** Initial polling loop backoff after transient failures. */
+	pollingBackoffInitialMs?: number; // default: 2000
+	/** Maximum polling loop backoff after transient failures. */
+	pollingBackoffMaxMs?: number; // default: 30000
+	/** Retry delay for status edit network failures. */
+	statusEditNetworkRetryMs?: number; // default: 5000
+}
+
 export interface TelegramDebugSettings {
 	/** Enable verbose polling/update tracing in terminal logs. */
 	pollingTrace?: boolean; // default: false
@@ -114,6 +131,7 @@ export interface TelegramSettings {
 	allowedUserIds?: number[];
 	transport?: "long-polling"; // default: long-polling
 	chatDefaults?: TelegramChatDefaultsSettings;
+	retry?: TelegramRetrySettings;
 	debug?: TelegramDebugSettings;
 }
 
@@ -1358,6 +1376,15 @@ export class SettingsManager {
 			statusEditThrottleMs: number;
 			maxSummaryChars: number;
 		};
+		retry: {
+			apiMax429Retries: number;
+			apiMaxNetworkRetries: number;
+			apiNetworkBackoffInitialMs: number;
+			apiNetworkBackoffMaxMs: number;
+			pollingBackoffInitialMs: number;
+			pollingBackoffMaxMs: number;
+			statusEditNetworkRetryMs: number;
+		};
 		debug: {
 			pollingTrace: boolean;
 		};
@@ -1379,6 +1406,43 @@ export class SettingsManager {
 			typeof maxSummaryCharsRaw === "number" && Number.isFinite(maxSummaryCharsRaw)
 				? Math.max(256, Math.min(12000, Math.trunc(maxSummaryCharsRaw)))
 				: 3000;
+		const apiMax429RetriesRaw = raw?.retry?.apiMax429Retries;
+		const apiMaxNetworkRetriesRaw = raw?.retry?.apiMaxNetworkRetries;
+		const apiNetworkBackoffInitialRaw = raw?.retry?.apiNetworkBackoffInitialMs;
+		const apiNetworkBackoffMaxRaw = raw?.retry?.apiNetworkBackoffMaxMs;
+		const pollingBackoffInitialRaw = raw?.retry?.pollingBackoffInitialMs;
+		const pollingBackoffMaxRaw = raw?.retry?.pollingBackoffMaxMs;
+		const statusEditNetworkRetryRaw = raw?.retry?.statusEditNetworkRetryMs;
+		const apiMax429Retries =
+			typeof apiMax429RetriesRaw === "number" && Number.isFinite(apiMax429RetriesRaw)
+				? Math.max(0, Math.min(10, Math.trunc(apiMax429RetriesRaw)))
+				: 4;
+		const apiMaxNetworkRetries =
+			typeof apiMaxNetworkRetriesRaw === "number" && Number.isFinite(apiMaxNetworkRetriesRaw)
+				? Math.max(0, Math.min(10, Math.trunc(apiMaxNetworkRetriesRaw)))
+				: 3;
+		const apiNetworkBackoffInitialMs =
+			typeof apiNetworkBackoffInitialRaw === "number" && Number.isFinite(apiNetworkBackoffInitialRaw)
+				? Math.max(250, Math.min(60000, Math.trunc(apiNetworkBackoffInitialRaw)))
+				: 1500;
+		const apiNetworkBackoffMaxMsRaw =
+			typeof apiNetworkBackoffMaxRaw === "number" && Number.isFinite(apiNetworkBackoffMaxRaw)
+				? Math.max(500, Math.min(300000, Math.trunc(apiNetworkBackoffMaxRaw)))
+				: 30000;
+		const apiNetworkBackoffMaxMs = Math.max(apiNetworkBackoffInitialMs, apiNetworkBackoffMaxMsRaw);
+		const pollingBackoffInitialMs =
+			typeof pollingBackoffInitialRaw === "number" && Number.isFinite(pollingBackoffInitialRaw)
+				? Math.max(500, Math.min(60000, Math.trunc(pollingBackoffInitialRaw)))
+				: 2000;
+		const pollingBackoffMaxMsRaw =
+			typeof pollingBackoffMaxRaw === "number" && Number.isFinite(pollingBackoffMaxRaw)
+				? Math.max(1000, Math.min(300000, Math.trunc(pollingBackoffMaxRaw)))
+				: 30000;
+		const pollingBackoffMaxMs = Math.max(pollingBackoffInitialMs, pollingBackoffMaxMsRaw);
+		const statusEditNetworkRetryMs =
+			typeof statusEditNetworkRetryRaw === "number" && Number.isFinite(statusEditNetworkRetryRaw)
+				? Math.max(1000, Math.min(60000, Math.trunc(statusEditNetworkRetryRaw)))
+				: 5000;
 		const pollingTrace = raw?.debug?.pollingTrace === true;
 
 		return {
@@ -1389,6 +1453,15 @@ export class SettingsManager {
 			chatDefaults: {
 				statusEditThrottleMs,
 				maxSummaryChars,
+			},
+			retry: {
+				apiMax429Retries,
+				apiMaxNetworkRetries,
+				apiNetworkBackoffInitialMs,
+				apiNetworkBackoffMaxMs,
+				pollingBackoffInitialMs,
+				pollingBackoffMaxMs,
+				statusEditNetworkRetryMs,
 			},
 			debug: {
 				pollingTrace,

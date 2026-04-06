@@ -523,6 +523,15 @@ describe("SettingsManager", () => {
 					statusEditThrottleMs: 3000,
 					maxSummaryChars: 3000,
 				},
+				retry: {
+					apiMax429Retries: 4,
+					apiMaxNetworkRetries: 3,
+					apiNetworkBackoffInitialMs: 1500,
+					apiNetworkBackoffMaxMs: 30000,
+					pollingBackoffInitialMs: 2000,
+					pollingBackoffMaxMs: 30000,
+					statusEditNetworkRetryMs: 5000,
+				},
 				debug: {
 					pollingTrace: false,
 				},
@@ -543,6 +552,15 @@ describe("SettingsManager", () => {
 							statusEditThrottleMs: 100,
 							maxSummaryChars: 120,
 						},
+						retry: {
+							apiMax429Retries: 9.7,
+							apiMaxNetworkRetries: 2.2,
+							apiNetworkBackoffInitialMs: 120,
+							apiNetworkBackoffMaxMs: 700,
+							pollingBackoffInitialMs: 200,
+							pollingBackoffMaxMs: 400,
+							statusEditNetworkRetryMs: 500,
+						},
 						debug: {
 							pollingTrace: true,
 						},
@@ -559,6 +577,15 @@ describe("SettingsManager", () => {
 				chatDefaults: {
 					statusEditThrottleMs: 1000,
 					maxSummaryChars: 256,
+				},
+				retry: {
+					apiMax429Retries: 9,
+					apiMaxNetworkRetries: 2,
+					apiNetworkBackoffInitialMs: 250,
+					apiNetworkBackoffMaxMs: 700,
+					pollingBackoffInitialMs: 500,
+					pollingBackoffMaxMs: 1000,
+					statusEditNetworkRetryMs: 1000,
 				},
 				debug: {
 					pollingTrace: true,
@@ -578,6 +605,15 @@ describe("SettingsManager", () => {
 							statusEditThrottleMs: 999999,
 							maxSummaryChars: 999999,
 						},
+						retry: {
+							apiMax429Retries: 999999,
+							apiMaxNetworkRetries: 999999,
+							apiNetworkBackoffInitialMs: 999999,
+							apiNetworkBackoffMaxMs: 999999,
+							pollingBackoffInitialMs: 999999,
+							pollingBackoffMaxMs: 999999,
+							statusEditNetworkRetryMs: 999999,
+						},
 					},
 				}),
 			);
@@ -586,6 +622,15 @@ describe("SettingsManager", () => {
 			expect(manager.getTelegramSettings().chatDefaults).toEqual({
 				statusEditThrottleMs: 10000,
 				maxSummaryChars: 12000,
+			});
+			expect(manager.getTelegramSettings().retry).toEqual({
+				apiMax429Retries: 10,
+				apiMaxNetworkRetries: 10,
+				apiNetworkBackoffInitialMs: 60000,
+				apiNetworkBackoffMaxMs: 300000,
+				pollingBackoffInitialMs: 60000,
+				pollingBackoffMaxMs: 300000,
+				statusEditNetworkRetryMs: 60000,
 			});
 		});
 	});

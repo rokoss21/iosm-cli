@@ -149,6 +149,13 @@ This file is generated from `src/core/settings.schema.json`.
 - Allowed values: `(any)`
 - Description: No description.
 
+## `telegram.retry`
+
+- Type: `object`
+- Default: `(none)`
+- Allowed values: `(any)`
+- Description: No description.
+
 ## `telegram.debug`
 
 - Type: `object`

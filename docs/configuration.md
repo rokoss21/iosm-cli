@@ -135,6 +135,18 @@ Telegram remote control is opt-in and disabled by default.
     "chatDefaults": {
       "statusEditThrottleMs": 1200,
       "maxSummaryChars": 3000
+    },
+    "retry": {
+      "apiMax429Retries": 4,
+      "apiMaxNetworkRetries": 3,
+      "apiNetworkBackoffInitialMs": 1500,
+      "apiNetworkBackoffMaxMs": 30000,
+      "pollingBackoffInitialMs": 2000,
+      "pollingBackoffMaxMs": 30000,
+      "statusEditNetworkRetryMs": 5000
+    },
+    "debug": {
+      "pollingTrace": false
     }
   }
 }

@@ -133,6 +133,47 @@
 						}
 					}
 				},
+				"retry": {
+					"type": "object",
+					"additionalProperties": true,
+					"properties": {
+						"apiMax429Retries": {
+							"type": "number",
+							"default": 4,
+							"description": "Retry attempts for Telegram API 429 responses (runtime clamped to 0..10)."
+						},
+						"apiMaxNetworkRetries": {
+							"type": "number",
+							"default": 3,
+							"description": "Retry attempts for transient Telegram API network/server failures (runtime clamped to 0..10)."
+						},
+						"apiNetworkBackoffInitialMs": {
+							"type": "number",
+							"default": 1500,
+							"description": "Initial backoff delay for Telegram API retries (runtime clamped to 250..60000)."
+						},
+						"apiNetworkBackoffMaxMs": {
+							"type": "number",
+							"default": 30000,
+							"description": "Maximum backoff delay for Telegram API retries (runtime clamped to 500..300000 and >= initial)."
+						},
+						"pollingBackoffInitialMs": {
+							"type": "number",
+							"default": 2000,
+							"description": "Initial polling loop backoff after transient failures (runtime clamped to 500..60000)."
+						},
+						"pollingBackoffMaxMs": {
+							"type": "number",
+							"default": 30000,
+							"description": "Maximum polling loop backoff after transient failures (runtime clamped to 1000..300000 and >= initial)."
+						},
+						"statusEditNetworkRetryMs": {
+							"type": "number",
+							"default": 5000,
+							"description": "Retry delay for status edit network failures (runtime clamped to 1000..60000)."
+						}
+					}
+				},
 				"debug": {
 					"type": "object",
 					"additionalProperties": true,
