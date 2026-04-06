@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-04-06
+
+### Added
+
+- **Telegram polling trace mode** — added verbose polling/update tracing for diagnostics via `telegram.debug.pollingTrace=true` and `IOSM_TELEGRAM_POLLING_TRACE=1`
+
+### Changed
+
+- **Telegram live status update cadence** — raised default status edit throttle to `3000ms`, applied runtime bounds `1000..10000ms`, and removed implicit animation-time override to reduce API pressure
+
+### Fixed
+
+- **Stale callback query handling** — `answerCallbackQuery` now safely ignores expired callback IDs (`query is too old` / invalid query) instead of surfacing noisy polling failures
+- **Polling network backoff** — transient `fetch failed` and related network errors now use exponential backoff (`2s` to `30s`) in long polling loop
+- **Status edit resilience on network loss** — transient status edit network failures now schedule coalesced retries instead of immediate repeated edits
+- **Telegram API transport diagnostics** — fetch-level Telegram API failures now include method context (`Telegram API <method> request failed`) for faster root-cause analysis
+
 ## [0.3.5] - 2026-04-06
 
 ### Fixed

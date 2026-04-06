@@ -520,8 +520,11 @@ describe("SettingsManager", () => {
 				allowedUserIds: [],
 				transport: "long-polling",
 				chatDefaults: {
-					statusEditThrottleMs: 1200,
+					statusEditThrottleMs: 3000,
 					maxSummaryChars: 3000,
+				},
+				debug: {
+					pollingTrace: false,
 				},
 			});
 		});
@@ -540,6 +543,9 @@ describe("SettingsManager", () => {
 							statusEditThrottleMs: 100,
 							maxSummaryChars: 120,
 						},
+						debug: {
+							pollingTrace: true,
+						},
 					},
 				}),
 			);
@@ -551,9 +557,35 @@ describe("SettingsManager", () => {
 				allowedUserIds: [111, 222],
 				transport: "long-polling",
 				chatDefaults: {
-					statusEditThrottleMs: 300,
+					statusEditThrottleMs: 1000,
 					maxSummaryChars: 256,
 				},
+				debug: {
+					pollingTrace: true,
+				},
+			});
+		});
+
+		it("caps telegram chat defaults to safe upper bounds", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					telegram: {
+						enabled: true,
+						allowedUserIds: [111],
+						chatDefaults: {
+							statusEditThrottleMs: 999999,
+							maxSummaryChars: 999999,
+						},
+					},
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getTelegramSettings().chatDefaults).toEqual({
+				statusEditThrottleMs: 10000,
+				maxSummaryChars: 12000,
 			});
 		});
 	});

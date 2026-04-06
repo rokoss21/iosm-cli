@@ -87,6 +87,64 @@
 					"description": "Fallback provider policy when primary lookup fails."
 				}
 			}
+		},
+		"telegram": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "Enable Telegram bridge mode."
+				},
+				"botToken": {
+					"type": "string",
+					"description": "Telegram bot token for Bot API access."
+				},
+				"allowedUserIds": {
+					"type": "array",
+					"items": {
+						"type": ["number", "string"]
+					},
+					"default": [],
+					"description": "Allowlist of Telegram user IDs permitted to control the bridge (non-numeric values are ignored at runtime)."
+				},
+				"transport": {
+					"type": "string",
+					"enum": ["long-polling"],
+					"default": "long-polling",
+					"description": "Telegram transport mode."
+				},
+				"chatDefaults": {
+					"type": "object",
+					"additionalProperties": true,
+					"properties": {
+						"statusEditThrottleMs": {
+							"type": "integer",
+							"minimum": 0,
+							"default": 3000,
+							"description": "Minimum milliseconds between live status edits in Telegram."
+						},
+						"maxSummaryChars": {
+							"type": "integer",
+							"minimum": 0,
+							"default": 3000,
+							"description": "Max characters in final chat summary before attaching full output as a file."
+						}
+					}
+				},
+				"debug": {
+					"type": "object",
+					"additionalProperties": true,
+					"properties": {
+						"pollingTrace": {
+							"type": "boolean",
+							"default": false,
+							"description": "Enable verbose polling/update tracing in terminal logs for Telegram bridge."
+						}
+					}
+				}
+			}
 		}
 	}
 }

@@ -98,9 +98,14 @@ export interface SandboxSettings {
 
 export interface TelegramChatDefaultsSettings {
 	/** Minimum milliseconds between live status edits in Telegram */
-	statusEditThrottleMs?: number; // default: 1200
+	statusEditThrottleMs?: number; // default: 3000
 	/** Max characters to keep in chat summary before attaching full output as file */
 	maxSummaryChars?: number; // default: 3000
+}
+
+export interface TelegramDebugSettings {
+	/** Enable verbose polling/update tracing in terminal logs. */
+	pollingTrace?: boolean; // default: false
 }
 
 export interface TelegramSettings {
@@ -109,6 +114,7 @@ export interface TelegramSettings {
 	allowedUserIds?: number[];
 	transport?: "long-polling"; // default: long-polling
 	chatDefaults?: TelegramChatDefaultsSettings;
+	debug?: TelegramDebugSettings;
 }
 
 export type TransportSetting = Transport;
@@ -1352,6 +1358,9 @@ export class SettingsManager {
 			statusEditThrottleMs: number;
 			maxSummaryChars: number;
 		};
+		debug: {
+			pollingTrace: boolean;
+		};
 	} {
 		const raw = this.settings.telegram;
 		const allowedUserIds = Array.isArray(raw?.allowedUserIds)
@@ -1364,12 +1373,13 @@ export class SettingsManager {
 		const maxSummaryCharsRaw = raw?.chatDefaults?.maxSummaryChars;
 		const statusEditThrottleMs =
 			typeof statusEditThrottleRaw === "number" && Number.isFinite(statusEditThrottleRaw)
-				? Math.max(300, Math.trunc(statusEditThrottleRaw))
-				: 1200;
+				? Math.max(1000, Math.min(10000, Math.trunc(statusEditThrottleRaw)))
+				: 3000;
 		const maxSummaryChars =
 			typeof maxSummaryCharsRaw === "number" && Number.isFinite(maxSummaryCharsRaw)
-				? Math.max(256, Math.trunc(maxSummaryCharsRaw))
+				? Math.max(256, Math.min(12000, Math.trunc(maxSummaryCharsRaw)))
 				: 3000;
+		const pollingTrace = raw?.debug?.pollingTrace === true;
 
 		return {
 			enabled: raw?.enabled ?? false,
@@ -1379,6 +1389,9 @@ export class SettingsManager {
 			chatDefaults: {
 				statusEditThrottleMs,
 				maxSummaryChars,
+			},
+			debug: {
+				pollingTrace,
 			},
 		};
 	}

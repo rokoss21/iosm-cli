@@ -93,6 +93,7 @@ interface ActiveTurnState {
 	statusEditTimer?: NodeJS.Timeout;
 	statusEditInFlight?: Promise<void>;
 	lastStatusEditAt: number;
+	lastAssistantTurnText?: string;
 }
 
 interface PendingConfirmation {
@@ -124,8 +125,10 @@ const COMMANDS_PAGE_SIZE = 8;
 const COMMAND_MENU_TTL_MS = 5 * 60 * 1000;
 const MODELS_PAGE_SIZE = 8;
 const MODEL_MENU_TTL_MS = 2 * 60 * 1000;
-const LIVE_STATUS_ANIMATION_MAX_THROTTLE_MS = 850;
 const TELEGRAM_API_MAX_429_RETRIES = 4;
+const TELEGRAM_NETWORK_BACKOFF_INITIAL_MS = 2_000;
+const TELEGRAM_NETWORK_BACKOFF_MAX_MS = 30_000;
+const TELEGRAM_STATUS_NETWORK_RETRY_MS = 5_000;
 const INPUT_BUTTON_HUB = "🧭 Hub";
 const INPUT_BUTTON_START = "▶️ Start";
 const INPUT_BUTTON_NEW = "🆕 New";
@@ -255,11 +258,24 @@ class TelegramBotApi {
 	}
 
 	async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<boolean> {
-		return this.call("answerCallbackQuery", {
-			callback_query_id: callbackQueryId,
-			text,
-			show_alert: false,
-		});
+		try {
+			return await this.call("answerCallbackQuery", {
+				callback_query_id: callbackQueryId,
+				text,
+				show_alert: false,
+			});
+		} catch (error) {
+			if (this.isExpiredCallbackError(error)) {
+				// Callback IDs have a short TTL in Telegram; stale callback acks are safe to ignore.
+				console.warn(
+					`[telegram] answerCallbackQuery ignored stale query: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+				return false;
+			}
+			throw error;
+		}
 	}
 
 	async sendTextDocument(chatId: TelegramChatId, filename: string, content: string, caption?: string): Promise<TelegramMessage> {
@@ -274,13 +290,19 @@ class TelegramBotApi {
 
 	private async call<T>(method: string, payload: Record<string, unknown>): Promise<T> {
 		for (let attempt = 0; ; attempt++) {
-			const response = await fetch(`${this.endpoint}/${method}`, {
-				method: "POST",
-				headers: {
-					"content-type": "application/json",
-				},
-				body: JSON.stringify(payload),
-			});
+			let response: Response;
+			try {
+				response = await fetch(`${this.endpoint}/${method}`, {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+					},
+					body: JSON.stringify(payload),
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(`Telegram API ${method} request failed: ${message}`);
+			}
 			const envelope = await this.readEnvelope<T>(response);
 			if (response.ok && envelope.ok && envelope.result !== undefined) {
 				return envelope.result;
@@ -300,10 +322,16 @@ class TelegramBotApi {
 
 	private async callMultipart<T>(method: string, form: FormData): Promise<T> {
 		for (let attempt = 0; ; attempt++) {
-			const response = await fetch(`${this.endpoint}/${method}`, {
-				method: "POST",
-				body: form,
-			});
+			let response: Response;
+			try {
+				response = await fetch(`${this.endpoint}/${method}`, {
+					method: "POST",
+					body: form,
+				});
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(`Telegram API ${method} request failed: ${message}`);
+			}
 			const envelope = await this.readEnvelope<T>(response);
 			if (response.ok && envelope.ok && envelope.result !== undefined) {
 				return envelope.result;
@@ -348,6 +376,15 @@ class TelegramBotApi {
 		if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
 		return seconds * 1000;
 	}
+
+	private isExpiredCallbackError(error: unknown): boolean {
+		const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+		return (
+			message.includes("query is too old") ||
+			message.includes("query id is invalid") ||
+			message.includes("query_id_invalid")
+		);
+	}
 }
 
 export async function runTelegramBridgeMode(options: TelegramBridgeModeOptions): Promise<never> {
@@ -364,6 +401,7 @@ class TelegramBridgeRuntime {
 	private readonly statusEditThrottleMs: number;
 	private readonly maxSummaryChars: number;
 	private readonly rpcClient: RpcClient;
+	private readonly pollingTraceEnabled: boolean;
 	private readonly queue: Array<{ chatId: TelegramChatId; text: string }> = [];
 	private readonly pendingConfirmations = new Map<string, PendingConfirmation>();
 	private readonly pendingConfirmationGroupIdsByKey = new Map<string, Set<string>>();
@@ -379,6 +417,7 @@ class TelegramBridgeRuntime {
 	private lastAuthorizedChatId: TelegramChatId | undefined;
 	private rpcConnected = false;
 	private bridgeStopped = false;
+	private pollingRetryDelayMs = TELEGRAM_NETWORK_BACKOFF_INITIAL_MS;
 
 	constructor(private readonly options: TelegramBridgeModeOptions) {
 		this.settingsManager = options.settingsManager;
@@ -400,6 +439,8 @@ class TelegramBridgeRuntime {
 		this.allowedUserIds = new Set(telegramSettings.allowedUserIds);
 		this.statusEditThrottleMs = telegramSettings.chatDefaults.statusEditThrottleMs;
 		this.maxSummaryChars = telegramSettings.chatDefaults.maxSummaryChars;
+		const envTrace = /^(1|true|yes|on)$/i.test(process.env.IOSM_TELEGRAM_POLLING_TRACE ?? "");
+		this.pollingTraceEnabled = telegramSettings.debug.pollingTrace || envTrace;
 		this.rpcClient = new RpcClient({
 			cliPath: options.cliPath,
 			cwd: options.cwd,
@@ -411,6 +452,9 @@ class TelegramBridgeRuntime {
 		const me = await this.bot.getMe();
 		await this.startRpc();
 		console.log(`[telegram] bridge online as @${me.username ?? "unknown"} (${me.id})`);
+		if (this.pollingTraceEnabled) {
+			console.log("[telegram] polling trace enabled");
+		}
 
 		const shutdown = async (signal: string) => {
 			console.log(`[telegram] received ${signal}, stopping bridge...`);
@@ -448,14 +492,33 @@ class TelegramBridgeRuntime {
 		// Keep polling forever.
 		for (;;) {
 			try {
+				const pollStartedAt = Date.now();
+				const offsetBeforePoll = this.nextUpdateOffset;
+				this.tracePolling(`getUpdates start offset=${offsetBeforePoll} timeout=25`);
 				const updates = await this.bot.getUpdates(this.nextUpdateOffset, 25);
+				this.tracePolling(
+					`getUpdates ok offset=${offsetBeforePoll} updates=${updates.length} elapsed=${Date.now() - pollStartedAt}ms`,
+				);
+				this.pollingRetryDelayMs = TELEGRAM_NETWORK_BACKOFF_INITIAL_MS;
 				for (const update of updates) {
-					this.nextUpdateOffset = Math.max(this.nextUpdateOffset, update.update_id + 1);
+					const prevOffset = this.nextUpdateOffset;
+					this.tracePolling(`update recv id=${update.update_id} ${this.describeUpdate(update)}`);
 					await this.handleUpdate(update);
+					this.nextUpdateOffset = Math.max(this.nextUpdateOffset, update.update_id + 1);
+					this.tracePolling(`update done id=${update.update_id} offset=${prevOffset}->${this.nextUpdateOffset}`);
 				}
 			} catch (error) {
-				console.error(`[telegram] polling error: ${error instanceof Error ? error.message : String(error)}`);
-				await sleepTimeout(2_000);
+				const message = error instanceof Error ? error.message : String(error);
+				const transient = this.isTransientNetworkError(error);
+				const waitMs = transient ? this.pollingRetryDelayMs : TELEGRAM_NETWORK_BACKOFF_INITIAL_MS;
+				console.error(
+					`[telegram] polling error: ${message}${transient ? ` (retry in ${Math.ceil(waitMs / 1000)}s)` : ""}`,
+				);
+				this.tracePolling(`polling exception transient=${transient} wait=${waitMs}ms`);
+				await sleepTimeout(waitMs);
+				this.pollingRetryDelayMs = transient
+					? Math.min(this.pollingRetryDelayMs * 2, TELEGRAM_NETWORK_BACKOFF_MAX_MS)
+					: TELEGRAM_NETWORK_BACKOFF_INITIAL_MS;
 			}
 		}
 	}
@@ -498,6 +561,35 @@ class TelegramBridgeRuntime {
 
 	private isAuthorizedUser(userId: number | undefined): userId is number {
 		return typeof userId === "number" && this.allowedUserIds.has(userId);
+	}
+
+	private tracePolling(message: string): void {
+		if (!this.pollingTraceEnabled) return;
+		console.log(`[telegram][poll] ${message}`);
+	}
+
+	private clipForLog(value: string | undefined, limit = 80): string {
+		if (!value) return "";
+		const normalized = value.replace(/\s+/g, " ").trim();
+		if (normalized.length <= limit) return normalized;
+		return `${normalized.slice(0, Math.max(0, limit - 1))}…`;
+	}
+
+	private describeUpdate(update: TelegramUpdate): string {
+		if (update.callback_query) {
+			const callback = update.callback_query;
+			const chatId = callback.message?.chat.id;
+			const userId = callback.from?.id;
+			const data = this.clipForLog(callback.data, 96);
+			return `callback chat=${chatId ?? "?"} user=${userId ?? "?"} id=${callback.id} data="${data}"`;
+		}
+		if (update.message) {
+			const message = update.message;
+			const userId = message.from?.id;
+			const text = this.clipForLog(message.text, 96);
+			return `message chat=${message.chat.id} user=${userId ?? "?"} message_id=${message.message_id} text="${text}"`;
+		}
+		return "unknown update payload";
 	}
 
 	private buildInputMenuKeyboard(stopped = this.bridgeStopped): TelegramReplyKeyboardMarkup {
@@ -590,10 +682,14 @@ class TelegramBridgeRuntime {
 
 	private async handleUpdate(update: TelegramUpdate): Promise<void> {
 		if (update.callback_query) {
+			this.tracePolling(`dispatch callback id=${update.callback_query.id}`);
 			await this.handleCallbackQuery(update.callback_query);
 			return;
 		}
-		if (!update.message?.text) return;
+		if (!update.message?.text) {
+			this.tracePolling(`skip update id=${update.update_id} reason=no-text-message`);
+			return;
+		}
 
 		const message = update.message;
 		const userId = message.from?.id;
@@ -601,32 +697,41 @@ class TelegramBridgeRuntime {
 			console.warn(
 				`[telegram] unauthorized message ignored (user=${userId ?? "unknown"}, chat=${message.chat.id})`,
 			);
+			this.tracePolling(`reject message chat=${message.chat.id} user=${userId ?? "?"} reason=unauthorized`);
 			return;
 		}
 
 		this.lastAuthorizedChatId = message.chat.id;
 		const text = (message.text ?? "").trim();
-		if (text.length === 0) return;
+		if (text.length === 0) {
+			this.tracePolling(`skip message chat=${message.chat.id} message_id=${message.message_id} reason=empty-text`);
+			return;
+		}
 		if (!this.inputMenuEnabledByChat.has(message.chat.id)) {
 			await this.ensureInputMenu(message.chat.id);
+			this.tracePolling(`input menu initialized chat=${message.chat.id}`);
 		}
 
 		const quickActionCommand = this.mapInputMenuAction(text);
 		if (quickActionCommand) {
+			this.tracePolling(`quick action chat=${message.chat.id} command=${quickActionCommand}`);
 			await this.handleCommandMessage(message.chat.id, quickActionCommand);
 			return;
 		}
 
 		if (text.startsWith("/")) {
+			this.tracePolling(`slash command chat=${message.chat.id} command=${this.clipForLog(text, 64)}`);
 			await this.handleCommandMessage(message.chat.id, text);
 			return;
 		}
 
 		if (this.bridgeStopped) {
 			await this.bot.sendMessage(message.chat.id, "Bridge is stopped. Use /start to resume.");
+			this.tracePolling(`prompt blocked chat=${message.chat.id} reason=bridge-stopped`);
 			return;
 		}
 
+		this.tracePolling(`enqueue prompt chat=${message.chat.id} size_before=${this.queue.length}`);
 		await this.enqueuePrompt(message.chat.id, text);
 	}
 
@@ -635,14 +740,17 @@ class TelegramBridgeRuntime {
 		if (!this.isAuthorizedUser(userId)) {
 			await this.bot.answerCallbackQuery(callback.id, "Unauthorized");
 			console.warn(`[telegram] unauthorized callback ignored (user=${userId ?? "unknown"})`);
+			this.tracePolling(`reject callback id=${callback.id} user=${userId ?? "?"} reason=unauthorized`);
 			return;
 		}
 
 		const data = callback.data?.trim();
 		if (!data) {
+			this.tracePolling(`skip callback id=${callback.id} reason=empty-data`);
 			await this.bot.answerCallbackQuery(callback.id);
 			return;
 		}
+		this.tracePolling(`callback route id=${callback.id} data=${this.clipForLog(data, 80)}`);
 
 		if (data.startsWith("confirm:")) {
 			const [, requestId, decision] = data.split(":");
@@ -652,6 +760,7 @@ class TelegramBridgeRuntime {
 			}
 			const confirmed = decision === "yes";
 			const pending = this.pendingConfirmations.get(requestId);
+			this.tracePolling(`confirmation callback id=${callback.id} request=${requestId} decision=${decision}`);
 			await this.respondConfirmation(requestId, confirmed);
 			const confirmChatId = callback.message?.chat.id;
 			const confirmMessageId = callback.message?.message_id;
@@ -664,22 +773,26 @@ class TelegramBridgeRuntime {
 		}
 
 		if (data.startsWith("hub:")) {
+			this.tracePolling(`hub callback id=${callback.id} action=${data.slice(4)}`);
 			await this.bot.answerCallbackQuery(callback.id);
 			await this.handleHubAction(callback.message?.chat.id, data.slice(4));
 			return;
 		}
 
 		if (data.startsWith("live:")) {
+			this.tracePolling(`live callback id=${callback.id} action=${data.slice(5)}`);
 			await this.handleLiveAction(callback, data);
 			return;
 		}
 
 		if (data.startsWith("cmd:")) {
+			this.tracePolling(`cmd callback id=${callback.id}`);
 			await this.handleCommandMenuCallback(callback, data);
 			return;
 		}
 
 		if (data.startsWith("model:")) {
+			this.tracePolling(`model callback id=${callback.id}`);
 			await this.handleModelMenuCallback(callback, data);
 			return;
 		}
@@ -1601,17 +1714,7 @@ class TelegramBridgeRuntime {
 		this.commandCatalogByChat.clear();
 		this.modelCatalogByChat.clear();
 
-		if (this.rpcConnected) {
-			for (const requestId of this.pendingConfirmations.keys()) {
-				try {
-					this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id: requestId, confirmed: false });
-				} catch {
-					// Ignore; bridge is stopping.
-				}
-			}
-		}
-		this.pendingConfirmations.clear();
-		this.pendingConfirmationGroupIdsByKey.clear();
+		this.clearPendingConfirmations(true);
 
 		const active = this.activeTurn;
 		if (active?.statusEditTimer) {
@@ -1844,6 +1947,7 @@ class TelegramBridgeRuntime {
 			await this.bot.sendMessage(chatId, "No active task.");
 			return;
 		}
+		this.tracePolling(`abort requested chat=${chatId} turn=${this.activeTurn.turnId}`);
 		try {
 			await this.ensureRpcConnected();
 			this.activeTurn.aborted = true;
@@ -1857,15 +1961,19 @@ class TelegramBridgeRuntime {
 
 	private async enqueuePrompt(chatId: TelegramChatId, text: string): Promise<void> {
 		if (!this.activeTurn) {
+			this.tracePolling(`start immediately chat=${chatId} queue=0`);
 			await this.startTurn(chatId, text);
 			return;
 		}
 		this.queue.push({ chatId, text });
+		this.tracePolling(`queued chat=${chatId} queue=${this.queue.length}`);
 		await this.bot.sendMessage(chatId, `⏸ queued · ${this.queue.length}`);
 		void this.editLiveStatus();
 	}
 
 	private async startTurn(chatId: TelegramChatId, text: string): Promise<void> {
+		// Avoid carrying stale confirmation group state into a fresh turn.
+		this.clearPendingConfirmations(true);
 		const statusMessage = await this.bot.sendMessage(chatId, this.formatStartingStatus(text));
 		this.activeTurn = {
 			turnId: this.nextTurnId++,
@@ -1878,6 +1986,7 @@ class TelegramBridgeRuntime {
 			statusEditPending: false,
 			lastStatusEditAt: 0,
 		};
+		this.tracePolling(`turn start turn=${this.activeTurn.turnId} chat=${chatId} queue=${this.queue.length}`);
 		try {
 			await this.ensureRpcConnected();
 			await this.rpcClient.prompt(text);
@@ -1893,6 +2002,10 @@ class TelegramBridgeRuntime {
 
 	private async onRpcEvent(event: AgentEvent): Promise<void> {
 		if (!this.activeTurn) return;
+		if (this.pollingTraceEnabled) {
+			const maybeTool = (event as { toolName?: string }).toolName;
+			this.tracePolling(`rpc event turn=${this.activeTurn.turnId} type=${event.type}${maybeTool ? ` tool=${maybeTool}` : ""}`);
+		}
 
 		switch (event.type) {
 			case "turn_start":
@@ -1910,15 +2023,23 @@ class TelegramBridgeRuntime {
 				this.activeTurn.lastTool = toolEvent.toolName ?? this.activeTurn.lastTool;
 				break;
 			}
-			case "turn_end": {
-				const turnEnd = event as AgentEvent;
-				const directText = this.extractAssistantTextFromTurnEnd(turnEnd);
+			case "message_end": {
+				const directText = this.extractAssistantTextFromTurnEnd(event as AgentEvent);
 				if (directText) {
-					// Keep as fallback in case getLastAssistantText fails.
-					this.activeTurn.phase = "finalizing";
+					this.activeTurn.lastAssistantTurnText = directText;
 				}
 				break;
 			}
+			case "turn_end": {
+				const turnEnd = event as AgentEvent;
+				const directText = this.extractAssistantTextFromTurnEnd(turnEnd);
+					if (directText) {
+						// Keep as fallback in case getLastAssistantText is empty.
+						this.activeTurn.lastAssistantTurnText = directText;
+						this.activeTurn.phase = "finalizing";
+					}
+					break;
+				}
 			case "agent_end":
 				await this.finishTurn();
 				return;
@@ -1979,6 +2100,24 @@ class TelegramBridgeRuntime {
 		return `${chatId}|confirm|${normalized}`;
 	}
 
+	private denyConfirmation(requestId: string): void {
+		try {
+			this.rpcClient.respondExtensionUi({ type: "extension_ui_response", id: requestId, confirmed: false });
+		} catch {
+			// Best-effort when RPC is disconnected or request no longer exists.
+		}
+	}
+
+	private clearPendingConfirmations(respondDeny = false): void {
+		if (respondDeny) {
+			for (const requestId of this.pendingConfirmations.keys()) {
+				this.denyConfirmation(requestId);
+			}
+		}
+		this.pendingConfirmations.clear();
+		this.pendingConfirmationGroupIdsByKey.clear();
+	}
+
 	private async queueConfirmationPrompt(
 		chatId: TelegramChatId,
 		requestId: string,
@@ -2003,16 +2142,31 @@ class TelegramBridgeRuntime {
 		const ids = new Set<string>([requestId]);
 		this.pendingConfirmationGroupIdsByKey.set(groupKey, ids);
 		this.pendingConfirmations.set(requestId, { chatId, requestId, label, groupKey });
-		await this.bot.sendMessage(chatId, label, {
-			replyMarkup: {
-				inline_keyboard: [
-					[
-						{ text: "Allow", callback_data: `confirm:${requestId}:yes` },
-						{ text: "Deny", callback_data: `confirm:${requestId}:no` },
+		try {
+			await this.bot.sendMessage(chatId, label, {
+				replyMarkup: {
+					inline_keyboard: [
+						[
+							{ text: "Allow", callback_data: `confirm:${requestId}:yes` },
+							{ text: "Deny", callback_data: `confirm:${requestId}:no` },
+						],
 					],
-				],
-			},
-		});
+				},
+			});
+		} catch (error) {
+			// Prompt could not be delivered; deny immediately to avoid deadlocking the turn.
+			this.pendingConfirmations.delete(requestId);
+			this.pendingConfirmationGroupIdsByKey.delete(groupKey);
+			this.denyConfirmation(requestId);
+			console.warn(
+				`[telegram] confirmation prompt delivery failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			if (this.activeTurn) {
+				this.activeTurn.phase = "permission denied";
+				await this.editLiveStatus(true);
+			}
+			return;
+		}
 		if (this.activeTurn) {
 			this.activeTurn.phase = "awaiting confirmation";
 			await this.editLiveStatus(true);
@@ -2362,6 +2516,21 @@ class TelegramBridgeRuntime {
 		return seconds * 1000;
 	}
 
+	private isTransientNetworkError(error: unknown): boolean {
+		const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+		return (
+			message.includes("fetch failed") ||
+			message.includes("network") ||
+			message.includes("econnreset") ||
+			message.includes("etimedout") ||
+			message.includes("enotfound") ||
+			message.includes("eai_again") ||
+			message.includes("socket hang up") ||
+			message.includes("connection reset") ||
+			message.includes("timeout")
+		);
+	}
+
 	private scheduleStatusEditRetry(turnId: number, retryAfterMs: number): void {
 		if (!this.activeTurn || this.activeTurn.turnId !== turnId) return;
 		if (this.activeTurn.statusEditPending) return;
@@ -2414,7 +2583,7 @@ class TelegramBridgeRuntime {
 		if (this.activeTurn.statusEditPending) return;
 		const turnId = this.activeTurn.turnId;
 		const now = Date.now();
-		const effectiveThrottleMs = Math.min(this.statusEditThrottleMs, LIVE_STATUS_ANIMATION_MAX_THROTTLE_MS);
+		const effectiveThrottleMs = this.statusEditThrottleMs;
 		const waitMs = this.activeTurn.lastStatusEditAt + effectiveThrottleMs - now;
 		if (!force && waitMs > 0) {
 			this.activeTurn.statusEditPending = true;
@@ -2440,6 +2609,12 @@ class TelegramBridgeRuntime {
 				const message = error instanceof Error ? error.message : String(error);
 				// Ignore no-op edit errors and transient "message is not modified".
 				if (!message.toLowerCase().includes("message is not modified")) {
+					if (this.isTransientNetworkError(error)) {
+						const retryMs = Math.max(TELEGRAM_STATUS_NETWORK_RETRY_MS, effectiveThrottleMs);
+						console.warn(`[telegram] status edit network failure, retrying in ${Math.ceil(retryMs / 1000)}s`);
+						this.scheduleStatusEditRetry(turnId, retryMs);
+						return;
+					}
 					const retryAfterMs = this.extractTelegramRetryAfterMs(error);
 					if (retryAfterMs) {
 						console.warn(`[telegram] status edit rate-limited, retrying in ${Math.ceil(retryAfterMs / 1000)}s`);
@@ -2466,6 +2641,8 @@ class TelegramBridgeRuntime {
 		const finishedTurn = this.activeTurn;
 		if (!finishedTurn) return;
 		this.activeTurn = undefined;
+		// Always flush confirmation state at turn boundary to avoid stale groups across turns.
+		this.clearPendingConfirmations(true);
 		if (finishedTurn.statusEditTimer) {
 			clearTimeout(finishedTurn.statusEditTimer);
 		}
@@ -2489,6 +2666,9 @@ class TelegramBridgeRuntime {
 					error: error instanceof Error ? error.message : String(error),
 				};
 			}
+		}
+		if (!options?.error && (!finalText || finalText.trim().length === 0) && finishedTurn.lastAssistantTurnText) {
+			finalText = finishedTurn.lastAssistantTurnText;
 		}
 
 		const statusLabel = options?.error
@@ -2517,6 +2697,16 @@ class TelegramBridgeRuntime {
 			}
 		} catch (error) {
 			console.warn(`[telegram] final output delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+			try {
+				await this.bot.sendMessage(
+					finishedTurn.chatId,
+					"Task completed, but delivery failed. Retry /status or rerun the task.",
+				);
+			} catch (fallbackError) {
+				console.warn(
+					`[telegram] final output fallback delivery failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`,
+				);
+			}
 		}
 
 		await this.drainQueue();
@@ -2536,6 +2726,7 @@ class TelegramBridgeRuntime {
 		if (this.activeTurn) return;
 		const next = this.queue.shift();
 		if (!next) return;
+		this.tracePolling(`dequeue next chat=${next.chatId} queue_remaining=${this.queue.length}`);
 		await this.startTurn(next.chatId, next.text);
 	}
 }
