@@ -23,6 +23,7 @@ describe("ask_user tool", () => {
 		expect(select).toHaveBeenCalledWith(
 			"Architecture decision\nWhich cache strategy should we use?\n\nContext:\nThis choice affects invalidation semantics.",
 			["Option A", "Option B", "Other (type custom answer)"],
+			{ timeout: 45_000 },
 		);
 		expect(input).not.toHaveBeenCalled();
 		expect(result.details).toMatchObject({
@@ -62,6 +63,7 @@ describe("ask_user tool", () => {
 		expect(input).toHaveBeenCalledWith(
 			"Refactor approach\nHow aggressive should the first pass be?",
 			"Type your answer",
+			{ timeout: 45_000 },
 		);
 	});
 
@@ -90,6 +92,7 @@ describe("ask_user tool", () => {
 		expect(input).toHaveBeenCalledWith(
 			"Boundaries\nWhat package layout do you prefer?",
 			"Describe your preferred layout",
+			{ timeout: 45_000 },
 		);
 	});
 
@@ -119,5 +122,29 @@ describe("ask_user tool", () => {
 			type: "text",
 			text: expect.stringContaining("User clarification was cancelled."),
 		});
+	});
+
+	it("supports custom timeout override", async () => {
+		const tool = createAskUserTool();
+		const select = vi.fn(async () => undefined);
+
+		await tool.execute(
+			"tool-call-5",
+			{
+				title: "Timeout check",
+				question: "Use explicit timeout?",
+				options: ["Yes", "No"],
+				timeoutMs: 12_345,
+			},
+			undefined,
+			undefined,
+			{ ui: { select, input: vi.fn(async () => undefined) } } as any,
+		);
+
+		expect(select).toHaveBeenCalledWith(
+			"Timeout check\nUse explicit timeout?",
+			["Yes", "No", "Other (type custom answer)"],
+			{ timeout: 12_345 },
+		);
 	});
 });

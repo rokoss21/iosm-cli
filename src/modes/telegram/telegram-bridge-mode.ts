@@ -13,6 +13,7 @@ import {
 	type TelegramReplyKeyboardMarkup,
 	type TelegramUpdate,
 } from "./telegram-api.js";
+import { TelegramOutboxStore } from "./outbox-store.js";
 import { TelegramPollingStateStore } from "./polling-state.js";
 import { TelegramPromptQueue } from "./prompt-queue.js";
 import type {
@@ -161,6 +162,7 @@ export async function runTelegramBridgeMode(options: TelegramBridgeModeOptions):
 class TelegramBridgeRuntime {
 	private readonly settingsManager: SettingsManager;
 	private readonly bot: TelegramBotApi;
+	private readonly outboxStore: TelegramOutboxStore;
 	private readonly botToken: string;
 	private readonly allowedUserIds: Set<number>;
 	private readonly statusEditThrottleMs: number;
@@ -205,12 +207,17 @@ class TelegramBridgeRuntime {
 		}
 
 		this.botToken = telegramSettings.botToken;
-		this.bot = new TelegramBotApi(telegramSettings.botToken, undefined, {
-			max429Retries: telegramSettings.retry.apiMax429Retries,
-			maxNetworkRetries: telegramSettings.retry.apiMaxNetworkRetries,
-			networkBackoffInitialMs: telegramSettings.retry.apiNetworkBackoffInitialMs,
-			networkBackoffMaxMs: telegramSettings.retry.apiNetworkBackoffMaxMs,
-		});
+		this.outboxStore = new TelegramOutboxStore();
+		this.bot = new TelegramBotApi(
+			telegramSettings.botToken,
+			{ outboxStore: this.outboxStore },
+			{
+				max429Retries: telegramSettings.retry.apiMax429Retries,
+				maxNetworkRetries: telegramSettings.retry.apiMaxNetworkRetries,
+				networkBackoffInitialMs: telegramSettings.retry.apiNetworkBackoffInitialMs,
+				networkBackoffMaxMs: telegramSettings.retry.apiNetworkBackoffMaxMs,
+			},
+		);
 		this.allowedUserIds = new Set(telegramSettings.allowedUserIds);
 		this.statusEditThrottleMs = telegramSettings.chatDefaults.statusEditThrottleMs;
 		this.maxSummaryChars = telegramSettings.chatDefaults.maxSummaryChars;
@@ -232,6 +239,18 @@ class TelegramBridgeRuntime {
 	async run(): Promise<void> {
 		const me = await this.bot.getMe();
 		await this.startRpc();
+		try {
+			const replay = await this.bot.replayOutbox();
+			if (replay.replayed > 0 || replay.failed > 0) {
+				console.log(
+					`[telegram] outbox replay: delivered=${replay.replayed} failed=${replay.failed} remaining=${replay.remaining}`,
+				);
+			}
+		} catch (error) {
+			console.warn(
+				`[telegram] outbox replay failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 		console.log(`[telegram] bridge online as @${me.username ?? "unknown"} (${me.id})`);
 		if (this.pollingTraceEnabled) {
 			console.log("[telegram] polling trace enabled");
@@ -1697,6 +1716,7 @@ class TelegramBridgeRuntime {
 		const state = this.activeSessionState;
 		const model = state?.model ? `${state.model.provider}/${state.model.id}` : "not selected";
 		const queueSize = this.promptQueue.size;
+		const outboxStats = this.outboxStore.getStats();
 		const mcpState = "RPC child";
 		const permissionMode = state?.permissionMode ?? "ask";
 		const resolvedView = options?.view ?? this.hubViewByChat.get(chatId) ?? "compact";
@@ -1708,6 +1728,7 @@ class TelegramBridgeRuntime {
 			`${this.formatConnectionStatus()} · ${this.formatPermissionShort(permissionMode)} · q${queueSize} · ${this.formatCompactTurn()}`,
 			`🤖 ${this.formatModelShort(model)}`,
 			`💬 ${this.formatSessionShort(state?.sessionName, state?.sessionId)}`,
+			`📤 Outbox p${outboxStats.pending}/f${outboxStats.failed}`,
 		].join("\n");
 		const detailsText = [
 			`${header} · Details`,
@@ -1717,6 +1738,7 @@ class TelegramBridgeRuntime {
 			`Session: ${state?.sessionName ?? state?.sessionId ?? "unknown"}`,
 			`Turn: ${this.activeTurn ? `${this.activeTurn.phase} (${Math.floor((Date.now() - this.activeTurn.startedAt) / 1000)}s)` : "idle"}`,
 			`Queue: ${queueSize}`,
+			`Outbox: pending=${outboxStats.pending}, failed=${outboxStats.failed}`,
 			`MCP: ${mcpState}`,
 			"Telegram: active",
 		].join("\n");

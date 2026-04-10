@@ -1,4 +1,10 @@
 import { setTimeout as sleepTimeout } from "node:timers/promises";
+import {
+	TelegramOutboxStore,
+	type TelegramOutboxEntry,
+	type TelegramOutboxSendMessagePayload,
+	type TelegramOutboxSendTextDocumentPayload,
+} from "./outbox-store.js";
 
 export type TelegramChatId = number;
 
@@ -62,6 +68,7 @@ const TELEGRAM_NETWORK_BACKOFF_MAX_MS = 30_000;
 interface TelegramBotApiDependencies {
 	fetchImpl?: typeof fetch;
 	sleep?: (ms: number) => Promise<void>;
+	outboxStore?: TelegramOutboxStore;
 }
 
 export interface TelegramBotApiRetryOptions {
@@ -71,10 +78,17 @@ export interface TelegramBotApiRetryOptions {
 	networkBackoffMaxMs?: number;
 }
 
+export interface TelegramOutboxReplayResult {
+	replayed: number;
+	failed: number;
+	remaining: number;
+}
+
 export class TelegramBotApi {
 	private outboundSerial: Promise<void> = Promise.resolve();
 	private readonly fetchImpl: typeof fetch;
 	private readonly sleep: (ms: number) => Promise<void>;
+	private readonly outboxStore?: TelegramOutboxStore;
 	private readonly max429Retries: number;
 	private readonly maxNetworkRetries: number;
 	private readonly networkBackoffInitialMs: number;
@@ -87,6 +101,7 @@ export class TelegramBotApi {
 	) {
 		this.fetchImpl = deps?.fetchImpl ?? fetch;
 		this.sleep = deps?.sleep ?? ((ms: number) => sleepTimeout(ms).then(() => undefined));
+		this.outboxStore = deps?.outboxStore;
 		this.max429Retries = clampInteger(retryOptions?.max429Retries, 0, 20, TELEGRAM_API_MAX_429_RETRIES);
 		this.maxNetworkRetries = clampInteger(retryOptions?.maxNetworkRetries, 0, 20, TELEGRAM_API_MAX_NETWORK_RETRIES);
 		this.networkBackoffInitialMs = clampInteger(
@@ -133,15 +148,18 @@ export class TelegramBotApi {
 			parseMode?: "HTML";
 		},
 	): Promise<TelegramMessage> {
-		return this.enqueueOutbound(() =>
-			this.call("sendMessage", {
-				chat_id: chatId,
-				text,
-				reply_markup: options?.replyMarkup,
-				disable_notification: options?.disableNotification ?? false,
-				parse_mode: options?.parseMode,
-			}),
-		);
+		const payload: TelegramOutboxSendMessagePayload = {
+			chatId,
+			text,
+			options: options
+				? {
+						replyMarkup: options.replyMarkup,
+						disableNotification: options.disableNotification,
+						parseMode: options.parseMode,
+				  }
+				: undefined,
+		};
+		return this.sendMessageWithOutbox(payload);
 	}
 
 	async editMessageText(
@@ -204,13 +222,145 @@ export class TelegramBotApi {
 	}
 
 	async sendTextDocument(chatId: TelegramChatId, filename: string, content: string, caption?: string): Promise<TelegramMessage> {
-		const form = new FormData();
-		form.set("chat_id", String(chatId));
-		if (caption) {
-			form.set("caption", caption);
+		const payload: TelegramOutboxSendTextDocumentPayload = {
+			chatId,
+			filename,
+			content,
+			caption,
+		};
+		return this.sendTextDocumentWithOutbox(payload);
+	}
+
+	async replayOutbox(): Promise<TelegramOutboxReplayResult> {
+		if (!this.outboxStore) {
+			return { replayed: 0, failed: 0, remaining: 0 };
 		}
-		form.set("document", new Blob([content], { type: "text/plain" }), filename);
+
+		const pending = this.outboxStore.listPending();
+		let replayed = 0;
+		let failed = 0;
+
+		for (const entry of pending) {
+			try {
+				await this.dispatchOutboxEntry(entry);
+				this.safeAckOutboxEntry(entry.id);
+				replayed += 1;
+			} catch (error) {
+				this.safeNoteOutboxFailure(entry.id, error);
+				failed += 1;
+			}
+		}
+
+		return {
+			replayed,
+			failed,
+			remaining: this.outboxStore.listPending().length,
+		};
+	}
+
+	private async dispatchOutboxEntry(entry: TelegramOutboxEntry): Promise<void> {
+		if (entry.operation === "sendMessage") {
+			await this.sendMessageNow(entry.payload);
+			return;
+		}
+		if (entry.operation === "sendTextDocument") {
+			await this.sendTextDocumentNow(entry.payload);
+			return;
+		}
+	}
+
+	private async sendMessageWithOutbox(payload: TelegramOutboxSendMessagePayload): Promise<TelegramMessage> {
+		if (!this.outboxStore) {
+			return this.sendMessageNow(payload);
+		}
+
+		let entryId: string | undefined;
+		try {
+			entryId = this.outboxStore.enqueueMessage(payload).id;
+		} catch (error) {
+			console.warn(
+				`[telegram] outbox enqueue failed for sendMessage: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+
+		try {
+			const response = await this.sendMessageNow(payload);
+			if (entryId) this.safeAckOutboxEntry(entryId);
+			return response;
+		} catch (error) {
+			if (entryId) this.safeNoteOutboxFailure(entryId, error);
+			throw error;
+		}
+	}
+
+	private async sendTextDocumentWithOutbox(payload: TelegramOutboxSendTextDocumentPayload): Promise<TelegramMessage> {
+		if (!this.outboxStore) {
+			return this.sendTextDocumentNow(payload);
+		}
+
+		let entryId: string | undefined;
+		try {
+			entryId = this.outboxStore.enqueueTextDocument(payload).id;
+		} catch (error) {
+			console.warn(
+				`[telegram] outbox enqueue failed for sendDocument: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+
+		try {
+			const response = await this.sendTextDocumentNow(payload);
+			if (entryId) this.safeAckOutboxEntry(entryId);
+			return response;
+		} catch (error) {
+			if (entryId) this.safeNoteOutboxFailure(entryId, error);
+			throw error;
+		}
+	}
+
+	private sendMessageNow(payload: TelegramOutboxSendMessagePayload): Promise<TelegramMessage> {
+		return this.enqueueOutbound(() =>
+			this.call("sendMessage", {
+				chat_id: payload.chatId,
+				text: payload.text,
+				reply_markup: payload.options?.replyMarkup,
+				disable_notification: payload.options?.disableNotification ?? false,
+				parse_mode: payload.options?.parseMode,
+			}),
+		);
+	}
+
+	private sendTextDocumentNow(payload: TelegramOutboxSendTextDocumentPayload): Promise<TelegramMessage> {
+		const form = new FormData();
+		form.set("chat_id", String(payload.chatId));
+		if (payload.caption) {
+			form.set("caption", payload.caption);
+		}
+		form.set("document", new Blob([payload.content], { type: "text/plain" }), payload.filename);
 		return this.enqueueOutbound(() => this.callMultipart("sendDocument", form));
+	}
+
+	private safeAckOutboxEntry(entryId: string): void {
+		if (!this.outboxStore) return;
+		try {
+			this.outboxStore.ack(entryId);
+		} catch (error) {
+			console.warn(
+				`[telegram] outbox ack failed for ${entryId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+
+	private safeNoteOutboxFailure(entryId: string, error: unknown): void {
+		if (!this.outboxStore) return;
+		try {
+			this.outboxStore.noteFailure(entryId, error);
+		} catch (noteError) {
+			console.warn(
+				`[telegram] outbox failure update failed for ${entryId}: ${
+					noteError instanceof Error ? noteError.message : String(noteError)
+				}`,
+			);
+		}
 	}
 
 	private enqueueOutbound<T>(task: () => Promise<T>): Promise<T> {

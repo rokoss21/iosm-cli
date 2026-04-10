@@ -398,4 +398,59 @@ describe("AgentSession concurrent prompt guard", () => {
 			"assistant",
 		]);
 	});
+
+	it("isolates listener failures so message persistence and other listeners continue", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+			},
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage("") });
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Done") });
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const seenEvents: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "message_end") {
+				throw new Error("boom");
+			}
+		});
+		session.subscribe((event) => {
+			seenEvents.push(event.type);
+		});
+
+		await session.prompt("hello");
+		await session.agent.waitForIdle();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+
+		expect(seenEvents).toContain("message_end");
+		expect(seenEvents).toContain("turn_end");
+
+		const messageEntries = sessionManager.getEntries().filter((entry) => entry.type === "message");
+		expect(messageEntries.map((entry) => entry.message.role)).toEqual(["user", "assistant"]);
+	});
 });

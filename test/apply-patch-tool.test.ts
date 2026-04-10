@@ -66,6 +66,10 @@ describe("apply_patch tool", () => {
 			expect.objectContaining({
 				toolName: "apply_patch",
 				requiredPermission: "workspace-write",
+				input: expect.objectContaining({
+					patchLength: VALID_PATCH.length,
+					readRequiredPaths: ["src/example.ts"],
+				}),
 			}),
 		);
 		expect(applyPatch).not.toHaveBeenCalled();

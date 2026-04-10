@@ -28,6 +28,7 @@ describe("createAgentSession default profile tools", () => {
 
 		const active = session.getActiveToolNames();
 		expect(active).toContain("semantic_search");
+		expect(active).toContain("lsp");
 		expect(active).toContain("rg");
 		expect(active).toContain("fd");
 		expect(active).toContain("ast_grep");

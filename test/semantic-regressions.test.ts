@@ -4,11 +4,14 @@ import { BUILTIN_SLASH_COMMANDS } from "../src/core/slash-commands.js";
 import { allTools, createAllTools, readOnlyTools } from "../src/core/tools/index.js";
 
 describe("semantic integration regressions", () => {
-	it("registers semantic_search in built-in tool registries", () => {
+	it("registers semantic_search and lsp in built-in tool registries", () => {
 		expect("semantic_search" in allTools).toBe(true);
+		expect("lsp" in allTools).toBe(true);
 		expect(readOnlyTools.some((tool) => tool.name === "semantic_search")).toBe(true);
+		expect(readOnlyTools.some((tool) => tool.name === "lsp")).toBe(true);
 		const perCwdTools = createAllTools(process.cwd());
 		expect("semantic_search" in perCwdTools).toBe(true);
+		expect("lsp" in perCwdTools).toBe(true);
 	});
 
 	it("registers fetch/web_search/git_read/git_write/fs_ops/test/lint/typecheck/db tools in the expected registries", () => {
@@ -50,17 +53,22 @@ describe("semantic integration regressions", () => {
 		expect(slashNames).not.toContain("shadow");
 	});
 
-	it("enables semantic_search in full/meta/explore/iosm profiles", () => {
+	it("enables semantic_search and lsp in full/meta/explore/iosm profiles", () => {
 		expect(AGENT_PROFILES.full.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.meta.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.explore.tools).toContain("semantic_search");
 		expect(AGENT_PROFILES.iosm.tools).toContain("semantic_search");
+		expect(AGENT_PROFILES.full.tools).toContain("lsp");
+		expect(AGENT_PROFILES.meta.tools).toContain("lsp");
+		expect(AGENT_PROFILES.explore.tools).toContain("lsp");
+		expect(AGENT_PROFILES.iosm.tools).toContain("lsp");
 	});
 
 	it("enables fetch/web_search/git_read in read-only profiles and structured engineering tools in write profiles", () => {
 		expect(AGENT_PROFILES.explore.tools).toContain("fetch");
 		expect(AGENT_PROFILES.explore.tools).toContain("web_search");
 		expect(AGENT_PROFILES.explore.tools).toContain("git_read");
+		expect(AGENT_PROFILES.explore.tools).toContain("lsp");
 		expect(AGENT_PROFILES.explore.tools).not.toContain("git_write");
 		expect(AGENT_PROFILES.explore.tools).not.toContain("fs_ops");
 		expect(AGENT_PROFILES.explore.tools).not.toContain("test_run");
@@ -71,6 +79,7 @@ describe("semantic integration regressions", () => {
 		expect(AGENT_PROFILES.plan.tools).toContain("fetch");
 		expect(AGENT_PROFILES.plan.tools).toContain("web_search");
 		expect(AGENT_PROFILES.plan.tools).toContain("git_read");
+		expect(AGENT_PROFILES.plan.tools).toContain("lsp");
 		expect(AGENT_PROFILES.plan.tools).not.toContain("git_write");
 		expect(AGENT_PROFILES.plan.tools).not.toContain("fs_ops");
 		expect(AGENT_PROFILES.plan.tools).not.toContain("test_run");

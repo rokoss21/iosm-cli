@@ -241,7 +241,7 @@ ${chalk.bold("Options:")}
                                  Supports globs (anthropic/*, *sonnet*) and fuzzy matching
   --no-tools                     Disable all built-in tools
   --tools <tools>                Comma-separated list of tools to enable (default: read,bash,edit,write)
-                                 Available: read, bash, edit, write, apply_patch, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read, git_write, fs_ops, test_run, lint_run, typecheck_run, db_run, todo_read, todo_write, tool_search, tool_suggest
+                                 Available: read, bash, edit, write, apply_patch, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, lsp, fetch, web_search, git_read, git_write, fs_ops, test_run, lint_run, typecheck_run, db_run, todo_read, todo_write, tool_search, tool_suggest
   --thinking <level>             Set thinking level: off, minimal, low, medium, high, xhigh
   --extension, -e <path>         Load an extension file (can be used multiple times)
   --no-extensions, -ne           Disable extension discovery (explicit -e paths still work)
@@ -369,7 +369,7 @@ ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   read   - Read file contents
   bash   - Execute bash commands
   edit   - Edit files with find/replace
-  write  - Write files (creates/overwrites)
+  write  - Write files (new files by default; existing-file overwrite requires explicit opt-in)
   apply_patch - Structured patch application tool with formal grammar
   grep   - Search file contents (read-only, off by default)
   find   - Find files by glob pattern (read-only, off by default)
@@ -383,6 +383,7 @@ ${chalk.bold("Available Tools (default: read, bash, edit, write):")}
   semgrep - Structural static/security scan tool
   sed    - Stream editing/extraction tool (no in-place edits)
   semantic_search - Embedding-based semantic search (status/index/rebuild/query)
+  lsp    - Language Server Protocol semantic navigation (definition/references/hover/symbols/diagnostics)
   fetch  - HTTP request tool with bounded body capture and redirect control
   web_search - Web discovery tool (Tavily primary with SearXNG/DuckDuckGo fallback)
   git_read - Structured read-only git introspection (status/diff/log/blame/show/branch_list/remote_list/rev_parse)

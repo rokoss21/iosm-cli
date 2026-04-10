@@ -125,6 +125,23 @@ function validateApplyPatchGrammar(patch: string): void {
 	}
 }
 
+function extractApplyPatchReadRequiredPaths(patch: string): string[] {
+	const unique = new Set<string>();
+	const lines = patch.replace(/\r/g, "").split("\n");
+	for (const line of lines) {
+		if (line.startsWith("*** Update File: ")) {
+			const value = line.slice("*** Update File: ".length).trim();
+			if (value.length > 0) unique.add(value);
+			continue;
+		}
+		if (line.startsWith("*** Delete File: ")) {
+			const value = line.slice("*** Delete File: ".length).trim();
+			if (value.length > 0) unique.add(value);
+		}
+	}
+	return Array.from(unique);
+}
+
 const defaultApplyPatchOperations: ApplyPatchOperations = {
 	applyPatch: async (cwd, patch) => {
 		const bin = process.env.IOSM_APPLY_PATCH_BIN?.trim() || "apply_patch";
@@ -178,12 +195,16 @@ export function createApplyPatchTool(cwd: string, options?: ApplyPatchToolOption
 		execute: async (_toolCallId: string, input: ApplyPatchToolInput) => {
 			const patch = input.patch ?? "";
 			validateApplyPatchGrammar(patch);
+			const readRequiredPaths = extractApplyPatchReadRequiredPaths(patch);
 
 			if (permissionGuard) {
 				const allowed = await permissionGuard({
 					toolName: "apply_patch",
 					cwd,
-					input: { patchLength: patch.length },
+					input: {
+						patchLength: patch.length,
+						readRequiredPaths,
+					},
 					summary: "apply structured patch",
 					requiredPermission: "workspace-write",
 				});

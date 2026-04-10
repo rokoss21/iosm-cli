@@ -16,6 +16,9 @@ describe("buildIosmRuntimeDirective", () => {
 		expect(directive).toContain("Behave like a professional, direct engineering agent in user-facing replies.");
 		expect(directive).toContain("Do not volunteer IOSM metrics, indices, confidence scores, phase names, or artifact details");
 		expect(directive).toContain("Explain outcomes in normal engineering language");
+		expect(directive).toContain("IOSM Execution Contract: prefer minimal, surgical edits");
+		expect(directive).toContain("IOSM Execution Contract: for existing files, default to edit/apply_patch");
+		expect(directive).toContain("overwriteExisting=true + rewriteReason");
 	});
 
 	test("avoids forcing IOSM framing for lightweight messages", () => {

@@ -58,4 +58,25 @@ describe("tool_search and tool_suggest tools", () => {
 
 		expect(getText(result)).toContain("No strong tool suggestion found");
 	});
+
+	it("includes cost annotation and fallback route for semantic navigation tasks", async () => {
+		const tool = createToolSuggestTool({
+			resolveCatalog: () => [
+				{ name: "lsp", description: "Language Server Protocol navigation", active: true },
+				{ name: "ast_grep", description: "AST structural search", active: true },
+				{ name: "rg", description: "Fast regex search", active: true },
+				{ name: "read", description: "Read files", active: true },
+			],
+		});
+
+		const result = await tool.execute("tool-suggest-3", {
+			task: "Find definition and references for this symbol",
+			limit: 4,
+		});
+
+		const text = getText(result);
+		expect(text).toContain("lsp [active] (cost:3)");
+		expect(text).toContain("Fallback route:");
+		expect(text).toContain("Detected intents: search, semantic");
+	});
 });

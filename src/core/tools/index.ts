@@ -143,6 +143,17 @@ export {
 	DEFAULT_LINT_RUN_TIMEOUT_SECONDS,
 } from "./lint-run.js";
 export {
+	createLspTool,
+	type LspLanguage,
+	type LspLocation,
+	type LspToolDetails,
+	type LspToolExecutionResult,
+	type LspToolInput,
+	type LspToolOptions,
+	type LspToolRuntime,
+	lspTool,
+} from "./lsp.js";
+export {
 	createLsTool,
 	type LsOperations,
 	type LsToolDetails,
@@ -256,6 +267,7 @@ export {
 	type TypecheckRunStatus,
 	type TypecheckRunToolDetails,
 	type TypecheckRunToolInput,
+	type TypecheckRunToolOptions,
 	typecheckRunTool,
 	DEFAULT_TYPECHECK_RUN_TIMEOUT_SECONDS,
 } from "./typecheck-run.js";
@@ -282,6 +294,7 @@ import { createGitWriteTool, type GitWriteToolOptions, gitWriteTool } from "./gi
 import { createJqTool, jqTool } from "./jq.js";
 import { createDbRunTool, type DbRunToolOptions, dbRunTool } from "./db-run.js";
 import { createLintRunTool, lintRunTool } from "./lint-run.js";
+import { createLspTool, type LspToolOptions, lspTool } from "./lsp.js";
 import { createLsTool, lsTool } from "./ls.js";
 import { createReadTool, type ReadToolOptions, readTool } from "./read.js";
 import { createRgTool, rgTool } from "./rg.js";
@@ -298,7 +311,7 @@ import { createWriteTool, type WriteToolOptions, writeTool } from "./write.js";
 import { createYqTool, yqTool } from "./yq.js";
 import { todoWriteTool, todoReadTool } from "./todo.js";
 import { createTestRunTool, testRunTool } from "./test-run.js";
-import { createTypecheckRunTool, typecheckRunTool } from "./typecheck-run.js";
+import { createTypecheckRunTool, type TypecheckRunToolOptions, typecheckRunTool } from "./typecheck-run.js";
 
 /** Tool type (AgentTool from pi-ai) */
 export type Tool = AgentTool<any>;
@@ -339,6 +352,7 @@ const prebuiltBaseTools = {
 	fs_ops: fsOpsTool,
 	test_run: testRunTool,
 	lint_run: lintRunTool,
+	lsp: lspTool,
 	typecheck_run: typecheckRunTool,
 	db_run: dbRunTool,
 	todo_write: todoWriteTool,
@@ -382,6 +396,7 @@ export const readOnlyTools: Tool[] = [
 	semgrepTool,
 	sedTool,
 	semanticSearchTool,
+	lspTool,
 	createFetchTool(process.cwd(), {
 		resolveAllowedMethods: () => getAllowedFetchMethodsForProfile("plan"),
 	}),
@@ -416,6 +431,15 @@ export interface ToolsOptions {
 	fsOps?: FsOpsToolOptions;
 	/** Options for the db_run tool */
 	dbRun?: DbRunToolOptions;
+	/** Options for the lsp tool */
+	lsp?: LspToolOptions;
+	/** Verification batching settings used by tools that support command batching. */
+	verification?: {
+		/** Default: sequential. */
+		batchMode?: "sequential" | "parallel";
+		/** Bounded parallelism when batchMode=parallel. */
+		maxParallel?: number;
+	};
 	/** Optional dynamic catalog source used by tool_search/tool_suggest. */
 	toolCatalog?: {
 		resolveCatalog?: () => ToolSearchCatalogEntry[];
@@ -460,6 +484,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		createFetchTool(cwd, fetchOptions),
 		createWebSearchTool(cwd, options?.webSearch),
 		createGitReadTool(cwd),
+		createLspTool(cwd, options?.lsp),
 	];
 
 	let dynamicToolSearch: Tool = defaultToolSearchTool;
@@ -482,6 +507,10 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
  * Create all tools configured for a specific working directory.
  */
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
+	const typecheckOptions: TypecheckRunToolOptions = {
+		resolveBatchMode: () => options?.verification?.batchMode ?? "sequential",
+		resolveMaxParallel: () => options?.verification?.maxParallel ?? 4,
+	};
 	const baseTools = {
 		read: createReadTool(cwd, options?.read),
 		bash: createBashTool(cwd, options?.bash),
@@ -507,7 +536,8 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		fs_ops: createFsOpsTool(cwd, options?.fsOps),
 		test_run: createTestRunTool(cwd),
 		lint_run: createLintRunTool(cwd),
-		typecheck_run: createTypecheckRunTool(cwd),
+		lsp: createLspTool(cwd, options?.lsp),
+		typecheck_run: createTypecheckRunTool(cwd, typecheckOptions),
 		db_run: createDbRunTool(cwd, options?.dbRun),
 		todo_write: todoWriteTool,
 		todo_read: todoReadTool,

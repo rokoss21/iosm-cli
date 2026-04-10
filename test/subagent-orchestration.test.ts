@@ -20,7 +20,7 @@ describe("subagent orchestration", () => {
 
 	afterEach(() => {
 		for (const dir of tempDirs.splice(0, tempDirs.length)) {
-			rmSync(dir, { recursive: true, force: true });
+			rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
 		}
 	});
 
@@ -525,6 +525,99 @@ describe("subagent orchestration", () => {
 		expect(observed[0]?.prompt).toContain("inspect repository");
 		expect(observed[0]?.prompt).toContain("[SHARED_MEMORY]");
 		expect(observed[0]?.systemPrompt).toContain("Audit with strict evidence.");
+	});
+
+	it("auto-routes orchestration frontend CSS tasks to specialized agents", async () => {
+		const cwd = makeTempDir();
+		const run = createTeamRun({
+			cwd,
+			mode: "parallel",
+			agents: 1,
+			task: "frontend css fix",
+			assignments: [{ profile: "full", cwd, dependsOn: [] }],
+		});
+		const observedProfiles: string[] = [];
+		const tool = createTaskTool(
+			cwd,
+			async (options) => {
+				observedProfiles.push(options.profileName);
+				return { output: "ok" };
+			},
+			{
+				resolveCustomSubagent: (name) =>
+					name === "frontend_developer"
+						? {
+								name: "frontend_developer",
+								description: "Frontend implementation specialist",
+								sourcePath: "fixture",
+								profile: "full",
+								instructions: "Implement frontend fixes.",
+							}
+						: name === "ui_designer"
+							? {
+									name: "ui_designer",
+									description: "UI design specialist",
+									sourcePath: "fixture",
+									profile: "full",
+									instructions: "Refine visual design.",
+								}
+							: undefined,
+				availableCustomSubagents: ["frontend_developer", "ui_designer"],
+			},
+		);
+
+		const result = await tool.execute("call_auto_route_frontend_css", {
+			description: "Fix CSS missing variables and JS syntax for mobile menu",
+			prompt: "Fix CSS missing variables and JS syntax for mobile menu",
+			profile: "full",
+			run_id: run.runId,
+			task_id: "task_1",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toContain("ok");
+		expect(result.details?.agent).toBe("frontend_developer");
+		expect(result.details?.profile).toBe("full");
+		expect(observedProfiles[0]).toBe("full");
+	});
+
+	it("auto-routes meta-host visual asset tasks even without run_id/task_id", async () => {
+		const cwd = makeTempDir();
+		const tool = createTaskTool(
+			cwd,
+			async () => ({ output: "ok" }),
+			{
+				resolveCustomSubagent: (name) =>
+					name === "frontend_developer"
+						? {
+								name: "frontend_developer",
+								description: "Frontend implementation specialist",
+								sourcePath: "fixture",
+								profile: "full",
+								instructions: "Implement frontend fixes.",
+							}
+						: name === "ui_designer"
+							? {
+									name: "ui_designer",
+									description: "UI design specialist",
+									sourcePath: "fixture",
+									profile: "full",
+									instructions: "Refine visual design.",
+								}
+							: undefined,
+				availableCustomSubagents: ["frontend_developer", "ui_designer"],
+				getHostProfileName: () => "meta",
+			},
+		);
+
+		const result = await tool.execute("call_auto_route_visual_assets_meta", {
+			description: "Create missing SVG/image assets for dashboard",
+			prompt: "Create missing SVG/image assets for dashboard",
+			profile: "full",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toContain("ok");
+		expect(result.details?.agent).toBe("ui_designer");
+		expect(result.details?.profile).toBe("full");
 	});
 
 	it("uses full-capability tools for meta profile", async () => {

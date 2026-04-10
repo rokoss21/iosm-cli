@@ -61,15 +61,31 @@ export type InternalUiMetaDetails =
 			kind: "orchestration_context";
 			rawPrompt?: string;
 			displayText?: string;
+	  }
+	| {
+			kind: "runtime_agent_context";
+			agentName: string;
+			agentProfile?: string;
+			rawPrompt?: string;
+			displayText?: string;
 	  };
 
 export function isInternalUiMetaDetails(value: unknown): value is InternalUiMetaDetails {
 	if (!value || typeof value !== "object") return false;
 	const candidate = value as Record<string, unknown>;
-	if (candidate.kind !== "orchestration_context") return false;
-	if (candidate.rawPrompt !== undefined && typeof candidate.rawPrompt !== "string") return false;
-	if (candidate.displayText !== undefined && typeof candidate.displayText !== "string") return false;
-	return true;
+	if (candidate.kind === "orchestration_context") {
+		if (candidate.rawPrompt !== undefined && typeof candidate.rawPrompt !== "string") return false;
+		if (candidate.displayText !== undefined && typeof candidate.displayText !== "string") return false;
+		return true;
+	}
+	if (candidate.kind === "runtime_agent_context") {
+		if (typeof candidate.agentName !== "string" || candidate.agentName.trim().length === 0) return false;
+		if (candidate.agentProfile !== undefined && typeof candidate.agentProfile !== "string") return false;
+		if (candidate.rawPrompt !== undefined && typeof candidate.rawPrompt !== "string") return false;
+		if (candidate.displayText !== undefined && typeof candidate.displayText !== "string") return false;
+		return true;
+	}
+	return false;
 }
 
 export interface BranchSummaryMessage {

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11] - 2026-04-10
+
+### Added
+
+- **Runtime specialist instruction overlay** — `full` root session can now inject a selected custom/core agent instruction block at runtime (`runtime_agent_context`) so the same root conversation dynamically applies task-specific specialist guidance.
+- **Assistant/runtime specialist labeling** — interactive UI now renders specialist identity on assistant/tool frames when runtime specialist context is active (instead of always showing only the default root label).
+- **Expanded core specialist catalog** — added/extended practical specialist agents for workflow optimization, tooling evaluation, readiness validation, data engineering, brand consistency, and result analytics.
+
+### Changed
+
+- **Root-agent specialist routing behavior** — runtime specialist selection now prefers semantic routing using agent descriptions/instructions (embedding-backed when available) with deterministic fallback behavior.
+- **Orchestration worker visibility** — orchestration progress now surfaces explicit worker identity with `agent@profile` formatting where a specialized agent is chosen.
+- **Task-agent auto-routing plumbing** — task tool routing interfaces now carry richer agent hint metadata (name/description/instructions/profile) for higher-quality specialist selection.
+
+### Fixed
+
+- **Runtime overlay activation gaps** — specialist overlay path now covers non-imperative task requests more reliably instead of requiring narrow action-keyword patterns.
+- **UI consistency for specialist context** — runtime specialist metadata is now consistently queued/consumed with display alias handling, preventing mismatched labels during turn rendering.
+
 ## [0.3.10] - 2026-04-06
 
 ### Changed

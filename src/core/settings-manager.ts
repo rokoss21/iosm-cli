@@ -23,6 +23,20 @@ export interface RetrySettings {
 	maxDelayMs?: number; // default: 60000 (max server-requested delay before failing)
 }
 
+export interface VerificationSettings {
+	batchMode?: "sequential" | "parallel"; // default: sequential
+	maxParallel?: number; // default: 4 (clamped to 1..16)
+}
+
+export type ExecutionGuardMode = "off" | "warn" | "enforce";
+
+export interface ExecutionGuardsSettings {
+	readBeforeMutateMode?: ExecutionGuardMode; // default: warn
+	repeatedFailureMode?: ExecutionGuardMode; // default: warn
+	repeatedFailureLimit?: number; // default: 2 (clamped to 1..5)
+	misrouteMode?: "off" | "warn"; // default: warn
+}
+
 export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
@@ -165,6 +179,8 @@ export interface Settings {
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
 	retry?: RetrySettings;
+	verification?: VerificationSettings;
+	executionGuards?: ExecutionGuardsSettings;
 	hideThinkingBlock?: boolean;
 	shellPath?: string; // Custom shell path (e.g., for Cygwin users on Windows)
 	quietStartup?: boolean;
@@ -800,6 +816,36 @@ export class SettingsManager {
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
 			maxDelayMs: this.settings.retry?.maxDelayMs ?? 60000,
 		};
+	}
+
+	getVerificationBatchMode(): "sequential" | "parallel" {
+		return this.settings.verification?.batchMode === "parallel" ? "parallel" : "sequential";
+	}
+
+	getVerificationMaxParallel(): number {
+		const value = this.settings.verification?.maxParallel;
+		if (typeof value !== "number" || !Number.isFinite(value)) return 4;
+		return Math.max(1, Math.min(16, Math.floor(value)));
+	}
+
+	getExecutionGuardReadBeforeMutateMode(): ExecutionGuardMode {
+		const mode = this.settings.executionGuards?.readBeforeMutateMode;
+		return mode === "off" || mode === "enforce" ? mode : "warn";
+	}
+
+	getExecutionGuardRepeatedFailureMode(): ExecutionGuardMode {
+		const mode = this.settings.executionGuards?.repeatedFailureMode;
+		return mode === "off" || mode === "enforce" ? mode : "warn";
+	}
+
+	getExecutionGuardRepeatedFailureLimit(): number {
+		const value = this.settings.executionGuards?.repeatedFailureLimit;
+		if (typeof value !== "number" || !Number.isFinite(value)) return 2;
+		return Math.max(1, Math.min(5, Math.floor(value)));
+	}
+
+	getExecutionGuardMisrouteMode(): "off" | "warn" {
+		return this.settings.executionGuards?.misrouteMode === "off" ? "off" : "warn";
 	}
 
 	getHideThinkingBlock(): boolean {

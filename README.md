@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.10</h1>
+<h1>IOSM CLI 0.3.11</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,14 +32,16 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.10
+## ✦ What's New in 0.3.11
 
-- Improved Telegram live execution visibility:
-  - status card now shows compact streaming trace entries for assistant/tool lifecycle events while the task is running
-  - users can observe intermediate execution flow without flooding chat with separate progress messages
-- Fixed Telegram streaming trace duplication:
-  - assistant streaming entries now update in place (upsert) instead of stacking repeated duplicate lines
-  - trace update matching is deterministic across both visible trace and full trace history buffers
+- Runtime specialist instruction overlays in `full` profile:
+  - root session can dynamically activate specialist instructions from custom/core agents per task context
+  - specialist identity is now visible in assistant/tool labels when overlay is active
+- Better specialist routing for live tasks:
+  - semantic routing path now prioritizes agent descriptions/instructions (with embedding-backed selection when available)
+  - improved fallback behavior for requests that are not phrased as imperative commands
+- Orchestration visibility improvements:
+  - orchestration worker status now surfaces explicit specialist identity using `agent@profile` labels
 
 ## ✦ Major Additions in 0.2.16
 
@@ -525,7 +527,7 @@ Run `/settings` inside the TUI to view and modify all settings interactively.
 ┌──────────▼──────────────────────────▼───────────────────┐
 │                       Tool layer                        │
 │  read · edit · write · fs_ops · test_run · lint_run · typecheck_run · db_run · bash · grep · rg · fd · ast_grep │
-│  comby · jq · yq · semgrep · sed · semantic_search · fetch · web_search · git_read · git_write │
+│  comby · jq · yq · semgrep · sed · semantic_search · lsp · fetch · web_search · git_read · git_write │
 └─────────────────────────┬───────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────┐

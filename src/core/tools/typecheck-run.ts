@@ -10,10 +10,12 @@ import {
 	detectPackageManager,
 	ensureCommandOrThrow,
 	formatVerificationOutput,
+	getCommandExistsCacheStatsSnapshot,
 	readPackageJson,
 	resolvePackageManagerExecInvocation,
 	resolvePackageManagerRunInvocation,
 	runVerificationCommandBatch,
+	type VerificationBatchMode,
 } from "./verification-runner.js";
 
 const typecheckRunSchema = Type.Object({
@@ -92,9 +94,32 @@ export interface TypecheckRunToolDetails {
 	durationMs: number;
 	runs: TypecheckRunItemDetails[];
 	aggregateExitCode: number;
+	batchMode: VerificationBatchMode;
+	maxParallel?: number;
+	commandChecks?: {
+		checks: number;
+		cacheHits: number;
+		cacheMisses: number;
+		pathInvalidations: number;
+	};
 }
 
 export const DEFAULT_TYPECHECK_RUN_TIMEOUT_SECONDS = 600;
+const DEFAULT_TYPECHECK_BATCH_MAX_PARALLEL = 4;
+const MIN_TYPECHECK_BATCH_MAX_PARALLEL = 1;
+const MAX_TYPECHECK_BATCH_MAX_PARALLEL = 16;
+
+export interface TypecheckRunToolOptions {
+	resolveBatchMode?: () => VerificationBatchMode;
+	resolveMaxParallel?: () => number;
+}
+
+function normalizeTypecheckBatchMaxParallel(raw: number | undefined): number {
+	if (raw === undefined) return DEFAULT_TYPECHECK_BATCH_MAX_PARALLEL;
+	const parsed = Math.floor(raw);
+	if (!Number.isFinite(parsed)) return DEFAULT_TYPECHECK_BATCH_MAX_PARALLEL;
+	return Math.max(MIN_TYPECHECK_BATCH_MAX_PARALLEL, Math.min(MAX_TYPECHECK_BATCH_MAX_PARALLEL, parsed));
+}
 
 function normalizeTimeoutSeconds(raw: number | undefined): number {
 	if (raw === undefined) return DEFAULT_TYPECHECK_RUN_TIMEOUT_SECONDS;
@@ -362,10 +387,19 @@ function renderSummary(details: TypecheckRunToolDetails, outputs: Array<{ runner
 	const lines: string[] = [
 		`typecheck_run status: ${details.status}`,
 		`cwd: ${details.cwd}`,
+		`batch_mode: ${details.batchMode}`,
 		`runs: ${details.runs.length}`,
 		`aggregate_exit_code: ${details.aggregateExitCode}`,
 		`duration_ms: ${details.durationMs}`,
 	];
+	if (details.maxParallel !== undefined) {
+		lines.push(`max_parallel: ${details.maxParallel}`);
+	}
+	if (details.commandChecks) {
+		lines.push(
+			`command_checks: total=${details.commandChecks.checks}, cache_hits=${details.commandChecks.cacheHits}, cache_misses=${details.commandChecks.cacheMisses}, path_invalidations=${details.commandChecks.pathInvalidations}`,
+		);
+	}
 
 	for (let index = 0; index < details.runs.length; index += 1) {
 		const run = details.runs[index];
@@ -382,7 +416,7 @@ function renderSummary(details: TypecheckRunToolDetails, outputs: Array<{ runner
 	return lines.join("\n");
 }
 
-export function createTypecheckRunTool(cwd: string): AgentTool<typeof typecheckRunSchema> {
+export function createTypecheckRunTool(cwd: string, options?: TypecheckRunToolOptions): AgentTool<typeof typecheckRunSchema> {
 	return {
 		name: "typecheck_run",
 		label: "typecheck_run",
@@ -397,6 +431,7 @@ export function createTypecheckRunTool(cwd: string): AgentTool<typeof typecheckR
 			const runner = input.runner ?? "auto";
 			const script = normalizeOptionalScriptName(input.script) ?? "typecheck";
 
+			const commandStatsBefore = getCommandExistsCacheStatsSnapshot();
 			const commands =
 				runner === "auto"
 					? resolveAutoCommands({
@@ -416,6 +451,13 @@ export function createTypecheckRunTool(cwd: string): AgentTool<typeof typecheckR
 					];
 
 			const startedAt = Date.now();
+			const configuredBatchMode = options?.resolveBatchMode?.() ?? "sequential";
+			const canParallelizeAutoBatch = runner === "auto" && commands.length > 1 && configuredBatchMode === "parallel";
+			const selectedBatchMode: VerificationBatchMode = canParallelizeAutoBatch ? "parallel" : "sequential";
+			const selectedMaxParallel = canParallelizeAutoBatch
+				? normalizeTypecheckBatchMaxParallel(options?.resolveMaxParallel?.())
+				: undefined;
+
 			const batch = await runVerificationCommandBatch(
 				commands.map((command, index) => ({
 					key: `${command.resolvedRunner}-${index}`,
@@ -425,8 +467,19 @@ export function createTypecheckRunTool(cwd: string): AgentTool<typeof typecheckR
 					timeoutMs: timeoutSeconds * 1000,
 					signal,
 				})),
+				{
+					mode: selectedBatchMode,
+					maxParallel: selectedMaxParallel,
+				},
 			);
 			const durationMs = Date.now() - startedAt;
+			const commandStatsAfter = getCommandExistsCacheStatsSnapshot();
+			const commandChecksDelta = {
+				checks: Math.max(0, commandStatsAfter.checks - commandStatsBefore.checks),
+				cacheHits: Math.max(0, commandStatsAfter.cacheHits - commandStatsBefore.cacheHits),
+				cacheMisses: Math.max(0, commandStatsAfter.cacheMisses - commandStatsBefore.cacheMisses),
+				pathInvalidations: Math.max(0, commandStatsAfter.pathInvalidations - commandStatsBefore.pathInvalidations),
+			};
 
 			const runDetails: TypecheckRunItemDetails[] = [];
 			const renderedOutputs: Array<{ runner: string; text: string }> = [];
@@ -465,6 +518,9 @@ export function createTypecheckRunTool(cwd: string): AgentTool<typeof typecheckR
 				durationMs,
 				runs: runDetails,
 				aggregateExitCode: resolveAggregateExitCode(status, runDetails),
+				batchMode: selectedBatchMode,
+				maxParallel: selectedMaxParallel,
+				commandChecks: commandChecksDelta.checks > 0 ? commandChecksDelta : undefined,
 			};
 
 			return {

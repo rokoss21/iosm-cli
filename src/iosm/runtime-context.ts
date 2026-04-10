@@ -136,6 +136,10 @@ export function buildIosmRuntimeDirective(input: IosmRuntimeDirectiveInput): str
 		"- Do not start with docs lookup unless explicitly requested or blocked.",
 		"- Begin substantive work with a short execution plan, then carry it through without unnecessary back-and-forth.",
 		"- Prefer targeted repository reads/searches over broad listings and keep tool output bounded.",
+		"- IOSM Execution Contract: prefer minimal, surgical edits and explicit evidence over broad rewrites.",
+		"- IOSM Execution Contract: for existing files, default to edit/apply_patch; use write only for new files or intentional full rewrites.",
+		"- IOSM Execution Contract: if an existing file must be fully rewritten, make that intent explicit (overwriteExisting=true + rewriteReason).",
+		"- IOSM Execution Contract: preserve unrelated user modifications and do not revert them unless explicitly requested.",
 		"- After edits, run the smallest meaningful verification and report the exact check that passed or failed.",
 		"- Do not declare completion without evidence; if verification was not possible, say so explicitly.",
 	);

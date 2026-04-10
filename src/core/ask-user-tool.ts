@@ -3,6 +3,9 @@ import { Type, type Static } from "@sinclair/typebox";
 import type { ToolDefinition } from "./extensions/index.js";
 
 const CUSTOM_ANSWER_LABEL = "Other (type custom answer)";
+const DEFAULT_ASK_USER_TIMEOUT_MS = 45_000;
+const MIN_ASK_USER_TIMEOUT_MS = 1_000;
+const MAX_ASK_USER_TIMEOUT_MS = 300_000;
 
 export const askUserToolParameters = Type.Object({
 	title: Type.String({ minLength: 1, maxLength: 120 }),
@@ -16,6 +19,14 @@ export const askUserToolParameters = Type.Object({
 	allowCustomAnswer: Type.Optional(Type.Boolean()),
 	context: Type.Optional(Type.String({ maxLength: 2000 })),
 	placeholder: Type.Optional(Type.String({ maxLength: 160 })),
+	timeoutMs: Type.Optional(
+		Type.Number({
+			minimum: MIN_ASK_USER_TIMEOUT_MS,
+			maximum: MAX_ASK_USER_TIMEOUT_MS,
+			description:
+				"Optional dialog timeout in milliseconds. Defaults to 45000ms; when timeout expires, ask_user returns cancelled.",
+		}),
+	),
 });
 
 export type AskUserToolInput = Static<typeof askUserToolParameters>;
@@ -56,6 +67,14 @@ function buildPromptBody(input: Pick<AskUserToolInput, "question" | "context">):
 
 function buildDialogTitle(input: Pick<AskUserToolInput, "title" | "question" | "context">): string {
 	return `${input.title}\n${buildPromptBody(input)}`;
+}
+
+function normalizeDialogTimeout(timeoutMs: unknown): number {
+	if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs)) {
+		return DEFAULT_ASK_USER_TIMEOUT_MS;
+	}
+	const rounded = Math.floor(timeoutMs);
+	return Math.max(MIN_ASK_USER_TIMEOUT_MS, Math.min(MAX_ASK_USER_TIMEOUT_MS, rounded));
 }
 
 function buildAnsweredResult(
@@ -123,7 +142,8 @@ export function createAskUserTool(): ToolDefinition<typeof askUserToolParameters
 		description: "Ask the user a blocking product or architecture question and wait for the answer.",
 		promptSnippet: "Ask the user a targeted clarification question with options and optional freeform answer.",
 		promptGuidelines: [
-			"Use ask_user when a material product or architecture ambiguity would change the implementation.",
+			"Use ask_user only for blocking product or architecture ambiguities that would materially change implementation.",
+			"When a safe conservative assumption is available, proceed without ask_user and state the assumption explicitly.",
 			"Offer 2-5 concise options when possible and allow a custom answer unless the choice is naturally fixed.",
 			"After ask_user returns, continue the task in the same turn using the user's answer.",
 		],
@@ -131,11 +151,12 @@ export function createAskUserTool(): ToolDefinition<typeof askUserToolParameters
 		execute: async (_toolCallId, input, _signal, _onUpdate, ctx) => {
 			const options = normalizeOptions(input.options);
 			const allowCustomAnswer = input.allowCustomAnswer ?? true;
+			const timeout = normalizeDialogTimeout(input.timeoutMs);
 			const dialogTitle = buildDialogTitle(input);
 
 			if (options.length > 0) {
 				const selectorOptions = allowCustomAnswer ? [...options, CUSTOM_ANSWER_LABEL] : options;
-				const selection = await ctx.ui.select(dialogTitle, selectorOptions);
+				const selection = await ctx.ui.select(dialogTitle, selectorOptions, { timeout });
 				if (selection === undefined) {
 					return buildCancelledResult(input, options);
 				}
@@ -145,7 +166,9 @@ export function createAskUserTool(): ToolDefinition<typeof askUserToolParameters
 				}
 			}
 
-			const customAnswer = await ctx.ui.input(dialogTitle, input.placeholder ?? "Type your answer");
+			const customAnswer = await ctx.ui.input(dialogTitle, input.placeholder ?? "Type your answer", {
+				timeout,
+			});
 			const normalizedAnswer = customAnswer?.trim();
 			if (!normalizedAnswer) {
 				return buildCancelledResult(input, options);

@@ -13,8 +13,9 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 import { spawnSync } from "node:child_process";
 import type {
 	Agent,
@@ -519,6 +520,9 @@ export interface SessionStats {
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 const MAX_PROMPT_PROTOCOL_AUTO_REPAIR_ATTEMPTS = 2;
+const READ_LOOP_WARNING_THRESHOLD = 3;
+const EDIT_CHAIN_WARNING_THRESHOLD = 5;
+const WRITE_OVERWRITE_WARNING_LINE_THRESHOLD = 200;
 
 /** Thinking levels including xhigh (for supported models) */
 const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
@@ -530,10 +534,24 @@ const BUILTIN_TOOL_REQUIRED_PERMISSIONS: Record<string, ToolRequiredPermission> 
 	apply_patch: "workspace-write",
 	fetch: "read-only",
 	web_search: "read-only",
+	lsp: "read-only",
 	git_write: "workspace-write",
 	fs_ops: "workspace-write",
 	db_run: "workspace-write",
 };
+
+interface TurnToolGuardState {
+	readCountsByPath: Map<string, number>;
+	readWarnedPaths: Set<string>;
+	writeWarnedPaths: Set<string>;
+	mutatingEditCount: number;
+	editChainWarned: boolean;
+	toolCallSignatures: Map<string, string>;
+	failureCountsBySignature: Map<string, number>;
+	repeatedFailureWarnedSignatures: Set<string>;
+	readBeforeMutateWarnedSignatures: Set<string>;
+	misrouteWarnedSignatures: Set<string>;
+}
 
 // ============================================================================
 // AgentSession Class
@@ -583,6 +601,7 @@ export class AgentSession {
 	// Extension system
 	private _extensionRunner: ExtensionRunner | undefined = undefined;
 	private _turnIndex = 0;
+	private _turnToolGuardState: TurnToolGuardState = this._createTurnToolGuardState();
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -620,6 +639,7 @@ export class AgentSession {
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
+	private _systemPromptMemo?: { signature: string; prompt: string };
 	private _systemPromptSuffix?: string;
 	private _iosmAutopilotEnabled = true;
 	private _profileName?: string;
@@ -676,8 +696,17 @@ export class AgentSession {
 
 	/** Emit an event to all listeners */
 	private _emit(event: AgentSessionEvent): void {
-		for (const l of this._eventListeners) {
-			l(event);
+		const listeners = [...this._eventListeners];
+		for (const listener of listeners) {
+			try {
+				listener(event);
+			} catch (error) {
+				this._appendSessionTrace({
+					type: "event_listener_error",
+					eventType: event.type,
+					errorMessage: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
 	}
 
@@ -765,6 +794,223 @@ export class AgentSession {
 			.join("\n");
 	}
 
+	private _createTurnToolGuardState(): TurnToolGuardState {
+		return {
+			readCountsByPath: new Map<string, number>(),
+			readWarnedPaths: new Set<string>(),
+			writeWarnedPaths: new Set<string>(),
+			mutatingEditCount: 0,
+			editChainWarned: false,
+			toolCallSignatures: new Map<string, string>(),
+			failureCountsBySignature: new Map<string, number>(),
+			repeatedFailureWarnedSignatures: new Set<string>(),
+			readBeforeMutateWarnedSignatures: new Set<string>(),
+			misrouteWarnedSignatures: new Set<string>(),
+		};
+	}
+
+	private _resetTurnToolGuards(): void {
+		this._turnToolGuardState = this._createTurnToolGuardState();
+	}
+
+	private _resolveToolPathFromArgs(args: unknown): string | undefined {
+		if (!isRecord(args)) return undefined;
+		const rawPath = typeof args.path === "string" ? args.path.trim() : "";
+		if (!rawPath) return undefined;
+		const candidate = isAbsolute(rawPath) ? rawPath : join(this._cwd, rawPath);
+		return normalize(candidate).replace(/\\/g, "/");
+	}
+
+	private _countLines(value: string): number {
+		if (!value) return 0;
+		return value.split(/\r?\n/).length;
+	}
+
+	private _resolveExistingFileLineCount(absolutePath: string): number | undefined {
+		try {
+			if (!existsSync(absolutePath)) return undefined;
+			const stat = statSync(absolutePath);
+			if (!stat.isFile()) return undefined;
+			const content = readFileSync(absolutePath, "utf8");
+			return this._countLines(content);
+		} catch {
+			return undefined;
+		}
+	}
+
+	private _trackRuntimeToolGuardsOnStart(event: ToolExecutionStartEvent): void {
+		const signatureInput = isRecord(event.args) ? event.args : {};
+		const toolCallSignature = this._computeToolCallSignature(event.toolName, signatureInput);
+		this._turnToolGuardState.toolCallSignatures.set(event.toolCallId, toolCallSignature);
+
+		if (event.toolName === "bash" && this.settingsManager.getExecutionGuardMisrouteMode() === "warn") {
+			const command = isRecord(event.args) && typeof event.args.command === "string" ? event.args.command.trim() : "";
+			if (command.length > 0) {
+				const misroute = this._detectBashMisroute(command);
+				if (misroute && !this._turnToolGuardState.misrouteWarnedSignatures.has(toolCallSignature)) {
+					this._turnToolGuardState.misrouteWarnedSignatures.add(toolCallSignature);
+					this._appendSessionTrace({
+						type: "runtime_guard_warning",
+						guard: "misroute_tool_selection",
+						severity: "warning",
+						turnIndex: this._turnIndex,
+						toolCallId: event.toolCallId,
+						command: misroute.matchedCommand,
+						preferredTool: misroute.preferredTool,
+						suggestion: `Prefer ${misroute.preferredTool} tool over bash for this operation.`,
+					});
+				}
+			}
+		}
+
+		if (event.toolName === "read") {
+			const resolvedPath = this._resolveToolPathFromArgs(event.args);
+			if (!resolvedPath) return;
+			const nextCount = (this._turnToolGuardState.readCountsByPath.get(resolvedPath) ?? 0) + 1;
+			this._turnToolGuardState.readCountsByPath.set(resolvedPath, nextCount);
+			if (
+				nextCount > READ_LOOP_WARNING_THRESHOLD &&
+				!this._turnToolGuardState.readWarnedPaths.has(resolvedPath)
+			) {
+				this._turnToolGuardState.readWarnedPaths.add(resolvedPath);
+				this._appendSessionTrace({
+					type: "runtime_guard_warning",
+					guard: "read_loop",
+					severity: "warning",
+					turnIndex: this._turnIndex,
+					threshold: READ_LOOP_WARNING_THRESHOLD,
+					readsForPath: nextCount,
+					path: resolvedPath,
+					toolCallId: event.toolCallId,
+					suggestion:
+						"Repeated reads detected. Prefer rg/lsp narrowing and read offset/limit (or one full read) instead of repeated small reads.",
+				});
+			}
+			return;
+		}
+
+		if (event.toolName === "write") {
+			const resolvedPath = this._resolveToolPathFromArgs(event.args);
+			if (!resolvedPath) return;
+			if (this._turnToolGuardState.writeWarnedPaths.has(resolvedPath)) return;
+			const existingLineCount = this._resolveExistingFileLineCount(resolvedPath);
+			if (
+				existingLineCount === undefined ||
+				existingLineCount < WRITE_OVERWRITE_WARNING_LINE_THRESHOLD
+			) {
+				return;
+			}
+			this._turnToolGuardState.writeWarnedPaths.add(resolvedPath);
+			const args = isRecord(event.args) ? event.args : undefined;
+			const newContent = typeof args?.content === "string" ? args.content : undefined;
+			this._appendSessionTrace({
+				type: "runtime_guard_warning",
+				guard: "write_over_large_existing_file",
+				severity: "warning",
+				turnIndex: this._turnIndex,
+				threshold: WRITE_OVERWRITE_WARNING_LINE_THRESHOLD,
+				path: resolvedPath,
+				existingLineCount,
+				newContentLineCount: typeof newContent === "string" ? this._countLines(newContent) : undefined,
+				toolCallId: event.toolCallId,
+				suggestion:
+					"Large existing file overwrite detected. Prefer edit/apply_patch for localized fixes and reserve write for new files or intentional full rewrites.",
+			});
+			return;
+		}
+
+		if (event.toolName !== "edit" && event.toolName !== "apply_patch") {
+			return;
+		}
+		this._turnToolGuardState.mutatingEditCount += 1;
+		if (
+			this._turnToolGuardState.mutatingEditCount > EDIT_CHAIN_WARNING_THRESHOLD &&
+			!this._turnToolGuardState.editChainWarned
+		) {
+			this._turnToolGuardState.editChainWarned = true;
+			this._appendSessionTrace({
+				type: "runtime_guard_warning",
+				guard: "edit_chain",
+				severity: "warning",
+				turnIndex: this._turnIndex,
+				threshold: EDIT_CHAIN_WARNING_THRESHOLD,
+				mutatingEditCalls: this._turnToolGuardState.mutatingEditCount,
+				toolCallId: event.toolCallId,
+				suggestion: "Long edit chain detected. Prefer consolidating related updates into a single apply_patch.",
+			});
+		}
+	}
+
+	private _trackRuntimeToolGuardsOnEnd(event: ToolExecutionEndEvent): void {
+		const signature = this._turnToolGuardState.toolCallSignatures.get(event.toolCallId);
+		if (!signature) return;
+		this._turnToolGuardState.toolCallSignatures.delete(event.toolCallId);
+
+		if (event.isError) {
+			const nextFailures = (this._turnToolGuardState.failureCountsBySignature.get(signature) ?? 0) + 1;
+			this._turnToolGuardState.failureCountsBySignature.set(signature, nextFailures);
+			return;
+		}
+
+		this._turnToolGuardState.failureCountsBySignature.delete(signature);
+		this._turnToolGuardState.repeatedFailureWarnedSignatures.delete(signature);
+	}
+
+	private _appendVerificationRuntimeTrace(toolName: string, details: Record<string, unknown> | undefined): void {
+		if (!details) return;
+		const batchMode = typeof details.batchMode === "string" ? details.batchMode : undefined;
+		const maxParallel = typeof details.maxParallel === "number" ? details.maxParallel : undefined;
+		if (batchMode) {
+			this._appendSessionTrace({
+				type: "verification_batch_mode",
+				toolName,
+				batchMode,
+				maxParallel,
+			});
+		}
+
+		const commandChecks = isRecord(details.commandChecks) ? details.commandChecks : undefined;
+		if (!commandChecks) return;
+		const checks = typeof commandChecks.checks === "number" ? commandChecks.checks : 0;
+		const cacheHits = typeof commandChecks.cacheHits === "number" ? commandChecks.cacheHits : 0;
+		const cacheMisses = typeof commandChecks.cacheMisses === "number" ? commandChecks.cacheMisses : 0;
+		const pathInvalidations =
+			typeof commandChecks.pathInvalidations === "number" ? commandChecks.pathInvalidations : 0;
+		if (checks <= 0) return;
+		this._appendSessionTrace({
+			type: "command_exists_cache_probe",
+			toolName,
+			checks,
+			cacheHits,
+			cacheMisses,
+			pathInvalidations,
+		});
+	}
+
+	private _appendTaskCleanupRuntimeTrace(details: Record<string, unknown> | undefined): void {
+		if (!details) return;
+		const cleanup = isRecord(details.cleanup) ? details.cleanup : undefined;
+		if (!cleanup) return;
+		const retries = typeof cleanup.retries === "number" ? cleanup.retries : 0;
+		const failures = typeof cleanup.failures === "number" ? cleanup.failures : 0;
+		if (retries > 0) {
+			this._appendSessionTrace({
+				type: "task_cleanup_retry",
+				retries,
+				failures,
+				lastErrorCode: typeof cleanup.lastErrorCode === "string" ? cleanup.lastErrorCode : undefined,
+			});
+		}
+		if (failures > 0) {
+			this._appendSessionTrace({
+				type: "task_cleanup_failure",
+				failures,
+				lastErrorCode: typeof cleanup.lastErrorCode === "string" ? cleanup.lastErrorCode : undefined,
+				lastErrorMessage: typeof cleanup.lastErrorMessage === "string" ? cleanup.lastErrorMessage : undefined,
+			});
+		}
+	}
+
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	private _lastTaskPlanSignature: string | undefined = undefined;
@@ -826,6 +1072,12 @@ export class AgentSession {
 
 		let processedEvent = event;
 		let taskPlanSnapshot: TaskPlanSnapshot | undefined;
+		if (processedEvent.type === "agent_start" || processedEvent.type === "turn_start") {
+			this._resetTurnToolGuards();
+		}
+		if (processedEvent.type === "tool_execution_start") {
+			this._trackRuntimeToolGuardsOnStart(processedEvent);
+		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			const extracted = extractTaskPlanFromAssistantMessage(event.message);
 			taskPlanSnapshot = extracted.planSnapshot;
@@ -925,12 +1177,24 @@ export class AgentSession {
 		}
 
 		if (processedEvent.type === "tool_execution_end") {
+			this._trackRuntimeToolGuardsOnEnd(processedEvent);
+
 			const notices = applyPostToolUseHooks(this._hooksConfig, {
 				toolName: processedEvent.toolName,
 				outputText: this._extractToolResultText(processedEvent.result),
 				isError: processedEvent.isError,
 			});
 			this._queueHookNotices("PostToolUse", notices);
+
+			const details = isRecord(processedEvent.result) && isRecord(processedEvent.result.details)
+				? (processedEvent.result.details as Record<string, unknown>)
+				: undefined;
+			if (processedEvent.toolName === "typecheck_run") {
+				this._appendVerificationRuntimeTrace(processedEvent.toolName, details);
+			}
+			if (processedEvent.toolName === "task") {
+				this._appendTaskCleanupRuntimeTrace(details);
+			}
 		}
 
 		// Check auto-retry and auto-compaction after agent completes
@@ -1440,6 +1704,189 @@ export class AgentSession {
 		return preview;
 	}
 
+	private _stableSerializeForGuardSignature(value: unknown): string {
+		if (value === null) return "null";
+		if (value === undefined) return "undefined";
+		if (typeof value === "string") {
+			const normalized = value.length > 512 ? `${value.slice(0, 512)}...[len=${value.length}]` : value;
+			return JSON.stringify(normalized);
+		}
+		if (typeof value === "number" || typeof value === "boolean") {
+			return JSON.stringify(value);
+		}
+		if (Array.isArray(value)) {
+			return `[${value.map((entry) => this._stableSerializeForGuardSignature(entry)).join(",")}]`;
+		}
+		if (isRecord(value)) {
+			const keys = Object.keys(value).sort();
+			const entries = keys.map(
+				(key) => `${JSON.stringify(key)}:${this._stableSerializeForGuardSignature(value[key])}`,
+			);
+			return `{${entries.join(",")}}`;
+		}
+		return JSON.stringify(String(value));
+	}
+
+	private _extractApplyPatchReadRequiredPathsFromPatch(patch: string): string[] {
+		const lines = patch.replace(/\r/g, "").split("\n");
+		const unique = new Set<string>();
+		for (const line of lines) {
+			if (line.startsWith("*** Update File: ")) {
+				const value = line.slice("*** Update File: ".length).trim();
+				if (value.length > 0) unique.add(value);
+				continue;
+			}
+			if (line.startsWith("*** Delete File: ")) {
+				const value = line.slice("*** Delete File: ".length).trim();
+				if (value.length > 0) unique.add(value);
+			}
+		}
+		return Array.from(unique);
+	}
+
+	private _normalizeInputForGuardSignature(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+		if (toolName === "edit") {
+			const oldText =
+				typeof input.oldText === "string"
+					? input.oldText
+					: typeof input.findText === "string"
+						? input.findText
+						: undefined;
+			const newText =
+				typeof input.newText === "string"
+					? input.newText
+					: typeof input.replaceText === "string"
+						? input.replaceText
+						: undefined;
+			return {
+				path: typeof input.path === "string" ? input.path : undefined,
+				oldTextLength:
+					typeof input.oldTextLength === "number"
+						? input.oldTextLength
+						: typeof oldText === "string"
+							? oldText.length
+							: undefined,
+				newTextLength:
+					typeof input.newTextLength === "number"
+						? input.newTextLength
+						: typeof newText === "string"
+							? newText.length
+							: undefined,
+			};
+		}
+
+		if (toolName === "write") {
+			return {
+				path: typeof input.path === "string" ? input.path : undefined,
+				contentLength:
+					typeof input.contentLength === "number"
+						? input.contentLength
+						: typeof input.content === "string"
+							? input.content.length
+							: undefined,
+				overwriteExisting:
+					typeof input.overwriteExisting === "boolean" ? input.overwriteExisting : undefined,
+				rewriteReason: typeof input.rewriteReason === "string" ? input.rewriteReason : undefined,
+			};
+		}
+
+		if (toolName === "apply_patch") {
+			const readRequiredPaths = this._extractApplyPatchReadRequiredPaths(input);
+			return {
+				patchLength:
+					typeof input.patchLength === "number"
+						? input.patchLength
+						: typeof input.patch === "string"
+							? input.patch.length
+							: undefined,
+				readRequiredPaths: readRequiredPaths.length > 0 ? readRequiredPaths.sort() : undefined,
+			};
+		}
+
+		return input;
+	}
+
+	private _computeToolCallSignature(toolName: string, input: Record<string, unknown>): string {
+		const normalizedInput = this._normalizeInputForGuardSignature(toolName, input);
+		const serialized = this._stableSerializeForGuardSignature(normalizedInput);
+		const digest = createHash("sha256").update(`${toolName}\n${serialized}`).digest("hex");
+		return `${toolName}:${digest.slice(0, 24)}`;
+	}
+
+	private _resolveToAbsolutePath(pathValue: string): string {
+		const candidate = isAbsolute(pathValue) ? pathValue : join(this._cwd, pathValue);
+		return normalize(candidate).replace(/\\/g, "/");
+	}
+
+	private _extractApplyPatchReadRequiredPaths(input: Record<string, unknown>): string[] {
+		const rawPaths = Array.isArray(input.readRequiredPaths)
+			? input.readRequiredPaths.filter((entry): entry is string => typeof entry === "string")
+			: [];
+		const fromPatch =
+			typeof input.patch === "string" ? this._extractApplyPatchReadRequiredPathsFromPatch(input.patch) : [];
+		const unique = new Set<string>();
+		for (const rawPath of [...rawPaths, ...fromPatch]) {
+			const trimmed = rawPath.trim();
+			if (trimmed.length === 0) continue;
+			unique.add(this._resolveToAbsolutePath(trimmed));
+		}
+		return Array.from(unique);
+	}
+
+	private _resolveReadBeforeMutateMissingPaths(request: ToolPermissionRequest): string[] {
+		if (!isRecord(request.input)) return [];
+		const hasReadPath = (absolutePath: string) => this._turnToolGuardState.readCountsByPath.has(absolutePath);
+
+		if (request.toolName === "edit") {
+			const path = this._resolveToolPathFromArgs(request.input);
+			if (!path) return [];
+			return hasReadPath(path) ? [] : [path];
+		}
+
+		if (request.toolName === "write") {
+			const path = this._resolveToolPathFromArgs(request.input);
+			if (!path || !existsSync(path)) return [];
+			return hasReadPath(path) ? [] : [path];
+		}
+
+		if (request.toolName === "apply_patch") {
+			const candidatePaths = this._extractApplyPatchReadRequiredPaths(request.input);
+			return candidatePaths.filter((path) => !hasReadPath(path));
+		}
+
+		return [];
+	}
+
+	private _detectBashMisroute(command: string): { matchedCommand: string; preferredTool: string } | undefined {
+		const activeTools = new Set(this.getActiveToolNames());
+		const checks: Array<{ pattern: RegExp; matchedCommand: string; preferredTool: string }> = [
+			{ pattern: /(^|[;&|]\s*|&&\s*|\|\|\s*|\n)\s*cat\b/, matchedCommand: "cat", preferredTool: "read" },
+			{ pattern: /(^|[;&|]\s*|&&\s*|\|\|\s*|\n)\s*ls\b/, matchedCommand: "ls", preferredTool: "ls" },
+			{ pattern: /(^|[;&|]\s*|&&\s*|\|\|\s*|\n)\s*(find|fd)\b/, matchedCommand: "find", preferredTool: "find" },
+			{
+				pattern: /(^|[;&|]\s*|&&\s*|\|\|\s*|\n)\s*(rg|ripgrep)\b/,
+				matchedCommand: "rg",
+				preferredTool: "rg",
+			},
+			{
+				pattern: /(^|[;&|]\s*|&&\s*|\|\|\s*|\n)\s*grep\b/,
+				matchedCommand: "grep",
+				preferredTool: activeTools.has("rg") ? "rg" : "grep",
+			},
+		];
+
+		for (const check of checks) {
+			if (!activeTools.has(check.preferredTool)) continue;
+			if (check.pattern.test(command)) {
+				return {
+					matchedCommand: check.matchedCommand,
+					preferredTool: check.preferredTool,
+				};
+			}
+		}
+		return undefined;
+	}
+
 	private _captureGitSnapshotCommand(args: string[]): string | undefined {
 		const result = spawnSync("git", ["-C", this._cwd, ...args], {
 			encoding: "utf8",
@@ -1515,12 +1962,111 @@ export class AgentSession {
 				request.requiredPermission ?? this._toolRequiredPermissions.get(request.toolName) ?? undefined,
 			toolSource: request.toolSource ?? "builtin",
 		};
+		const signatureInput = isRecord(normalizedRequest.input) ? normalizedRequest.input : {};
+		const toolCallSignature = this._computeToolCallSignature(normalizedRequest.toolName, signatureInput);
+
 		const hookResult = applyPreToolUseHooks(this._hooksConfig, normalizedRequest);
 		this._queueHookNotices("PreToolUse", hookResult.notices);
 		if (!hookResult.allowed) {
 			throw new Error(hookResult.message ?? "Tool blocked by PreToolUse hook.");
 		}
+
+		const readBeforeMutateMode = this.settingsManager.getExecutionGuardReadBeforeMutateMode();
+		if (readBeforeMutateMode !== "off") {
+			const missingPaths = this._resolveReadBeforeMutateMissingPaths(normalizedRequest);
+			if (missingPaths.length > 0) {
+				const shouldEmitWarning =
+					!this._turnToolGuardState.readBeforeMutateWarnedSignatures.has(toolCallSignature);
+				if (shouldEmitWarning) {
+					this._turnToolGuardState.readBeforeMutateWarnedSignatures.add(toolCallSignature);
+					this._appendSessionTrace({
+						type: "runtime_guard_warning",
+						guard: "read_before_mutate",
+						severity: readBeforeMutateMode === "enforce" ? "error" : "warning",
+						turnIndex: this._turnIndex,
+						toolName: normalizedRequest.toolName,
+						summary: normalizedRequest.summary,
+						paths: missingPaths,
+						mode: readBeforeMutateMode,
+						inputPreview: this._summarizeToolPermissionInput(signatureInput),
+						suggestion: "Read target file(s) first, then mutate with edit/apply_patch/write.",
+					});
+				}
+				if (readBeforeMutateMode === "enforce") {
+					throw new Error(
+						`Read-before-mutate guard blocked ${normalizedRequest.toolName}. Read these path(s) first in this turn: ${missingPaths.join(", ")}`,
+					);
+				}
+			}
+		}
+
+		const repeatedFailureMode = this.settingsManager.getExecutionGuardRepeatedFailureMode();
+		if (repeatedFailureMode !== "off") {
+			const failureLimit = this.settingsManager.getExecutionGuardRepeatedFailureLimit();
+			const failureCount = this._turnToolGuardState.failureCountsBySignature.get(toolCallSignature) ?? 0;
+			if (failureCount >= failureLimit) {
+				const shouldEmitWarning =
+					!this._turnToolGuardState.repeatedFailureWarnedSignatures.has(toolCallSignature);
+				if (shouldEmitWarning) {
+					this._turnToolGuardState.repeatedFailureWarnedSignatures.add(toolCallSignature);
+					this._appendSessionTrace({
+						type: "runtime_guard_warning",
+						guard: "repeated_failure_loop",
+						severity: repeatedFailureMode === "enforce" ? "error" : "warning",
+						turnIndex: this._turnIndex,
+						toolName: normalizedRequest.toolName,
+						summary: normalizedRequest.summary,
+						failureCount,
+						failureLimit,
+						mode: repeatedFailureMode,
+						inputPreview: this._summarizeToolPermissionInput(signatureInput),
+						suggestion: "Same input failed repeatedly. Change strategy or adjust tool arguments before retrying.",
+					});
+				}
+				if (repeatedFailureMode === "enforce") {
+					throw new Error(
+						`Repeated-failure guard blocked ${normalizedRequest.toolName}: identical input failed ${failureCount} times this turn. Change strategy before retrying.`,
+					);
+				}
+			}
+		}
+
 		return this._toolPermissionHandler ? this._toolPermissionHandler(normalizedRequest) : true;
+	}
+
+	private _computeSystemPromptRebuildSignature(input: {
+		toolNames: string[];
+		toolSnippets: Record<string, string>;
+		promptGuidelines: string[];
+		loaderSystemPrompt?: string;
+		appendSystemPrompt?: string;
+		skills: unknown[];
+		contextFiles: Array<{ path: string; content: string }>;
+		contextProcessing: {
+			enableContextDedupe: boolean;
+			maxContextCharsPerFile: number;
+			maxTotalContextChars: number;
+			enableGitSnapshotContext: boolean;
+		};
+	}): string {
+		const hash = createHash("sha256");
+		hash.update(`cwd:${this._cwd}\n`);
+		hash.update(`autopilot:${this._iosmAutopilotEnabled ? "1" : "0"}\n`);
+		hash.update(`suffix:${this._systemPromptSuffix ?? ""}\n`);
+		hash.update(`tools:${input.toolNames.join(",")}\n`);
+		hash.update(`toolSnippets:${JSON.stringify(input.toolSnippets)}\n`);
+		hash.update(`guidelines:${JSON.stringify(input.promptGuidelines)}\n`);
+		hash.update(`loaderSystemPrompt:${input.loaderSystemPrompt ?? ""}\n`);
+		hash.update(`appendSystemPrompt:${input.appendSystemPrompt ?? ""}\n`);
+		hash.update(`contextProcessing:${JSON.stringify(input.contextProcessing)}\n`);
+		for (const skill of input.skills) {
+			hash.update(`skill:${JSON.stringify(skill)}\n`);
+		}
+		for (const file of input.contextFiles) {
+			hash.update(`file:${file.path}\n`);
+			hash.update(`content:${file.content}\n`);
+		}
+		return hash.digest("hex");
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
@@ -1561,6 +2107,29 @@ export class AgentSession {
 			maxTotalContextChars: this.settingsManager.getPromptContextMaxTotalChars(),
 			enableGitSnapshotContext: this.settingsManager.getPromptContextEnableGitSnapshotContext(),
 		};
+		const rebuildSignature = this._computeSystemPromptRebuildSignature({
+			toolNames: validToolNames,
+			toolSnippets,
+			promptGuidelines,
+			loaderSystemPrompt,
+			appendSystemPrompt,
+			skills: loadedSkills,
+			contextFiles: loadedContextFiles,
+			contextProcessing: promptContextOptions,
+		});
+		if (this._systemPromptMemo?.signature === rebuildSignature) {
+			this._appendSessionTrace({
+				type: "system_prompt_rebuild_cache",
+				cache: "hit",
+				tool_count: validToolNames.length,
+			});
+			return this._systemPromptMemo.prompt;
+		}
+		this._appendSessionTrace({
+			type: "system_prompt_rebuild_cache",
+			cache: "miss",
+			tool_count: validToolNames.length,
+		});
 		const gitSnapshotMaxChars = this.settingsManager.getPromptContextGitSnapshotMaxChars();
 		const gitSnapshotResult = promptContextOptions.enableGitSnapshotContext
 			? this._buildGitSnapshotContext(gitSnapshotMaxChars)
@@ -1574,7 +2143,7 @@ export class AgentSession {
 					} as GitSnapshotContextDiagnostics,
 				};
 
-		return buildSystemPrompt({
+		const prompt = buildSystemPrompt({
 			cwd: this._cwd,
 			skills: loadedSkills,
 			contextFiles: loadedContextFiles,
@@ -1603,6 +2172,11 @@ export class AgentSession {
 				});
 			},
 		});
+		this._systemPromptMemo = {
+			signature: rebuildSignature,
+			prompt,
+		};
+		return prompt;
 	}
 
 	// =========================================================================
@@ -3745,10 +4319,14 @@ export class AgentSession {
 					fsOps: {
 						permissionGuard: async (request) => this._evaluateToolPermission(request),
 					},
-						dbRun: {
-							resolveRuntimeConfig: () => this.settingsManager.getDbToolsSettings(),
-							permissionGuard: async (request) => this._evaluateToolPermission(request),
-						},
+					dbRun: {
+						resolveRuntimeConfig: () => this.settingsManager.getDbToolsSettings(),
+						permissionGuard: async (request) => this._evaluateToolPermission(request),
+					},
+					verification: {
+						batchMode: this.settingsManager.getVerificationBatchMode(),
+						maxParallel: this.settingsManager.getVerificationMaxParallel(),
+					},
 						toolCatalog: {
 							resolveCatalog: () => {
 								const activeToolNames = new Set(this.getActiveToolNames());

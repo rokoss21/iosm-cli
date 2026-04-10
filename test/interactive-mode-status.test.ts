@@ -2586,6 +2586,153 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 		expect(generatedPrompt).toContain("DELEGATION_IMPOSSIBLE: <reason>");
 	});
 
+	test("injects runtime specialist overlay for actionable full-profile UI tasks", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "iosm-runtime-overlay-"));
+		try {
+			const agentsDir = join(tempDir, ".iosm", "agents");
+			mkdirSync(agentsDir, { recursive: true });
+			writeFileSync(
+				join(agentsDir, "frontend-developer.md"),
+				[
+					"---",
+					"name: frontend_developer",
+					"description: Frontend implementation specialist",
+					"profile: full",
+					"---",
+					"",
+					"Implement frontend fixes with clean structure and regression-safe changes.",
+					"",
+				].join("\n"),
+			);
+			writeFileSync(
+				join(agentsDir, "ui-designer.md"),
+				[
+					"---",
+					"name: ui_designer",
+					"description: UI design specialist",
+					"profile: full",
+					"---",
+					"",
+					"Improve UI composition and visual consistency.",
+					"",
+				].join("\n"),
+			);
+
+			const prompt = vi.fn(async () => {});
+			const sendCustomMessage = vi.fn(async () => {});
+			const showStatus = vi.fn();
+			const fakeThis: any = {
+				sessionManager: { getCwd: () => tempDir },
+				session: { prompt, sendCustomMessage },
+				activeProfileName: "full",
+				showStatus,
+				resolveMentionedAgent: vi.fn(() => undefined),
+			};
+			fakeThis.resolveRuntimeSpecialistOverlay =
+				(InteractiveMode as any).prototype.resolveRuntimeSpecialistOverlay.bind(fakeThis);
+
+			await (InteractiveMode as any).prototype.promptWithTaskFallback.call(
+				fakeThis,
+				"Исправь UI и CSS в настройках профиля",
+			);
+
+			expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+			expect(sendCustomMessage.mock.calls[0]?.[0]).toMatchObject({
+				customType: INTERNAL_UI_META_CUSTOM_TYPE,
+				details: expect.objectContaining({
+					kind: "runtime_agent_context",
+					agentName: "frontend_developer",
+				}),
+			});
+			expect(prompt).toHaveBeenCalledTimes(1);
+			const [generatedPrompt, options] = prompt.mock.calls[0] as [string, Record<string, unknown>];
+			expect(generatedPrompt).toContain('<runtime_agent_context agent="frontend_developer"');
+			expect(generatedPrompt).toContain("specialist_instructions:");
+			expect(generatedPrompt).toContain("user_request: Исправь UI и CSS в настройках профиля");
+			expect(options).toEqual({
+				expandPromptTemplates: false,
+				skipProtocolAutoRepair: true,
+				source: "interactive",
+			});
+			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("Runtime specialist overlay: frontend_developer"));
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test("injects runtime specialist overlay for architecture requests without imperative phrasing", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "iosm-runtime-overlay-arch-"));
+		try {
+			const agentsDir = join(tempDir, ".iosm", "agents");
+			mkdirSync(agentsDir, { recursive: true });
+			writeFileSync(
+				join(agentsDir, "software-architect.md"),
+				[
+					"---",
+					"name: software_architect",
+					"description: System design specialist for architecture options and ADR trade-offs.",
+					"profile: plan",
+					"---",
+					"",
+					"Produce architecture options, trade-offs, and implementation guidance.",
+					"",
+				].join("\n"),
+			);
+			writeFileSync(
+				join(agentsDir, "frontend-developer.md"),
+				[
+					"---",
+					"name: frontend_developer",
+					"description: Frontend implementation specialist for UI fixes.",
+					"profile: full",
+					"---",
+					"",
+					"Implement frontend fixes with regression-safe changes.",
+					"",
+				].join("\n"),
+			);
+
+			const prompt = vi.fn(async () => {});
+			const sendCustomMessage = vi.fn(async () => {});
+			const showStatus = vi.fn();
+			const fakeThis: any = {
+				sessionManager: { getCwd: () => tempDir },
+				session: { prompt, sendCustomMessage },
+				activeProfileName: "full",
+				showStatus,
+				resolveMentionedAgent: vi.fn(() => undefined),
+			};
+			fakeThis.resolveRuntimeSpecialistOverlay =
+				(InteractiveMode as any).prototype.resolveRuntimeSpecialistOverlay.bind(fakeThis);
+
+			await (InteractiveMode as any).prototype.promptWithTaskFallback.call(
+				fakeThis,
+				"can you work on architecture?",
+			);
+
+			expect(sendCustomMessage).toHaveBeenCalledTimes(1);
+			expect(sendCustomMessage.mock.calls[0]?.[0]).toMatchObject({
+				customType: INTERNAL_UI_META_CUSTOM_TYPE,
+				details: expect.objectContaining({
+					kind: "runtime_agent_context",
+					agentName: expect.stringMatching(/(?:software|backend|ux)_architect/),
+				}),
+			});
+			expect(prompt).toHaveBeenCalledTimes(1);
+			const [generatedPrompt, options] = prompt.mock.calls[0] as [string, Record<string, unknown>];
+			expect(generatedPrompt).toContain('<runtime_agent_context agent="');
+			expect(generatedPrompt).toContain("user_request: can you work on architecture?");
+			expect(options).toEqual({
+				expandPromptTemplates: false,
+				skipProtocolAutoRepair: true,
+				source: "interactive",
+			});
+			expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("Runtime specialist overlay:"));
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
 	test("accepts orchestrate slash command at max agent and parallel limits", () => {
 		const fakeThis: any = {
 			parseSlashArgs: (InteractiveMode as any).prototype.parseSlashArgs,
@@ -2695,12 +2842,18 @@ describe("InteractiveMode.promptWithTaskFallback", () => {
 			expect(prompt).toHaveBeenCalledTimes(1);
 			const payload = (prompt.mock.calls[0] as [string])[0];
 			expect(payload).toContain("<orchestrate");
-			expect(payload).toContain("profile=meta");
+			expect(payload).toContain("agent=software_architect");
+			expect(payload).toContain('agent="software_architect"');
+			expect(payload).toContain("agent=test_results_analyzer");
+			expect(payload).toContain('agent="test_results_analyzer"');
 			expect(payload).toContain("delegate_parallel_hint=");
 			expect(payload).toContain("required_task_calls:");
+			expect(payload).toContain(
+				"when assignment lines include agent=<name>, propagate the same agent argument in corresponding task calls",
+			);
 			expect(payload).toContain("include delegate_parallel_hint from each assignment/task_call hint");
 			expect(fakeThis.showStatus).toHaveBeenCalledWith(
-				expect.stringContaining("auto-profile: using `meta` workers"),
+				expect.stringContaining("auto-agent routing: 2/2 assignments mapped to core/custom agents"),
 			);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -4093,6 +4246,36 @@ describe("InteractiveMode.handleInternalUiMetaMessage", () => {
 		expect(fakeThis.pendingAssistantOrchestrationContexts).toBe(1);
 		expect(fakeThis.pendingInternalUserDisplayAliases).toHaveLength(1);
 	});
+
+	test("queues runtime agent label and display alias for runtime agent context", () => {
+		const fakeThis: any = {
+			pendingAssistantOrchestrationContexts: 0,
+			pendingInternalUserDisplayAliases: [],
+			pendingAssistantRuntimeAgentLabels: [],
+		};
+		const message: any = {
+			role: "custom",
+			customType: INTERNAL_UI_META_CUSTOM_TYPE,
+			details: {
+				kind: "runtime_agent_context",
+				agentName: "frontend_developer",
+				agentProfile: "full",
+				rawPrompt: "<runtime_agent_context ...>",
+				displayText: "Исправь UI",
+			},
+		};
+
+		(InteractiveMode as any).prototype.handleInternalUiMetaMessage.call(fakeThis, message);
+
+		expect(fakeThis.pendingAssistantOrchestrationContexts).toBe(0);
+		expect(fakeThis.pendingAssistantRuntimeAgentLabels).toEqual(["frontend_developer"]);
+		expect(fakeThis.pendingInternalUserDisplayAliases).toEqual([
+			{
+				rawPrompt: "<runtime_agent_context ...>",
+				displayText: "Исправь UI",
+			},
+		]);
+	});
 });
 
 describe("InteractiveMode.showMetaModeInterruptionHint", () => {
@@ -4317,6 +4500,73 @@ describe("InteractiveMode orchestration panel rendering", () => {
 		expect(rendered).toContain("ORCH 0/12 done | 12 running");
 		expect(rendered).toContain("Security stream 1");
 		expect(rendered).toContain("Security stream 12");
+	});
+
+	test("computes non-placeholder ETA for active orchestration", () => {
+		const now = Date.now();
+		const fakeThis: any = {
+			orchestrationContainer: new Container(),
+			subagentComponents: new Map([
+				[
+					"task_running",
+					{
+						startTime: now - 12_000,
+						profile: "explore",
+						description: "Map monorepo structure",
+						phase: "running",
+						phaseState: "running",
+						toolCallsStarted: 7,
+						toolCallsCompleted: 7,
+						assistantMessages: 3,
+					},
+				],
+				[
+					"task_queued",
+					{
+						startTime: now - 6_000,
+						profile: "plan",
+						description: "Assess architecture patterns",
+						phase: "queued",
+						phaseState: "queued",
+						toolCallsStarted: 0,
+						toolCallsCompleted: 0,
+						assistantMessages: 0,
+					},
+				],
+			]),
+			orchestrationCompletedSubagents: [
+				{
+					finishedAt: now - 2_000,
+					status: "done",
+					profile: "analyst",
+					description: "Analyze tech stack",
+					durationMs: 8_000,
+					toolCallsStarted: 4,
+					toolCallsCompleted: 4,
+					assistantMessages: 1,
+					outputLength: 2048,
+					waitMs: 120,
+				},
+				{
+					finishedAt: now - 1_000,
+					status: "error",
+					profile: "verifier",
+					description: "Review build/test configs",
+					durationMs: 11_000,
+					toolCallsStarted: 6,
+					toolCallsCompleted: 5,
+					assistantMessages: 2,
+					errorMessage: "timeout while running tests",
+				},
+			],
+		};
+
+		(InteractiveMode as any).prototype.refreshOrchestrationSummaryDisplay.call(fakeThis);
+
+		const rendered = stripAnsi(renderAll(fakeThis.orchestrationContainer, 180));
+		expect(rendered).toContain("ETA ");
+		expect(rendered).not.toContain("ETA --:--");
+		expect(rendered).toContain("ETA 00:14");
 	});
 
 	test("does not add subagent cards to chat on task tool start", async () => {

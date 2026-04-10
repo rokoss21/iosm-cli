@@ -53,6 +53,92 @@ export interface VerificationBatchResult {
 	result: VerificationCommandResult;
 }
 
+export type VerificationBatchMode = "sequential" | "parallel";
+
+export interface VerificationBatchOptions {
+	mode?: VerificationBatchMode;
+	maxParallel?: number;
+}
+
+interface CommandExistsCacheEntry {
+	exists: boolean;
+	expiresAt: number;
+	pathFingerprint: string;
+}
+
+export interface CommandExistsCacheStatsSnapshot {
+	checks: number;
+	cacheHits: number;
+	cacheMisses: number;
+	pathInvalidations: number;
+	cacheEntries: number;
+	ttlMs: number;
+}
+
+const DEFAULT_COMMAND_EXISTS_CACHE_TTL_MS = 30_000;
+const MIN_COMMAND_EXISTS_CACHE_TTL_MS = 1_000;
+const MAX_COMMAND_EXISTS_CACHE_TTL_MS = 300_000;
+const DEFAULT_VERIFICATION_BATCH_MAX_PARALLEL = 4;
+
+const commandExistsCache = new Map<string, CommandExistsCacheEntry>();
+let commandExistsPathFingerprint = "";
+let commandExistsChecks = 0;
+let commandExistsCacheHits = 0;
+let commandExistsCacheMisses = 0;
+let commandExistsPathInvalidations = 0;
+
+function resolveCommandExistsCacheTtlMs(): number {
+	const raw = process.env.IOSM_COMMAND_EXISTS_CACHE_TTL_MS;
+	if (!raw) return DEFAULT_COMMAND_EXISTS_CACHE_TTL_MS;
+	const parsed = Number.parseInt(raw, 10);
+	if (!Number.isFinite(parsed)) return DEFAULT_COMMAND_EXISTS_CACHE_TTL_MS;
+	return Math.max(MIN_COMMAND_EXISTS_CACHE_TTL_MS, Math.min(MAX_COMMAND_EXISTS_CACHE_TTL_MS, parsed));
+}
+
+function currentPathFingerprint(): string {
+	return `${process.platform}\n${process.env.PATH ?? ""}\n${process.env.PATHEXT ?? ""}`;
+}
+
+function applyPathInvalidationIfNeeded(nextFingerprint: string): void {
+	if (commandExistsPathFingerprint === "") {
+		commandExistsPathFingerprint = nextFingerprint;
+		return;
+	}
+	if (commandExistsPathFingerprint !== nextFingerprint) {
+		commandExistsPathFingerprint = nextFingerprint;
+		commandExistsCache.clear();
+		commandExistsPathInvalidations += 1;
+	}
+}
+
+function normalizeMaxParallel(raw: number | undefined, itemsLength: number): number {
+	const fallback = Math.min(DEFAULT_VERIFICATION_BATCH_MAX_PARALLEL, Math.max(1, itemsLength));
+	if (raw === undefined) return fallback;
+	const parsed = Math.floor(raw);
+	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+	return Math.max(1, Math.min(itemsLength, parsed));
+}
+
+export function getCommandExistsCacheStatsSnapshot(): CommandExistsCacheStatsSnapshot {
+	return {
+		checks: commandExistsChecks,
+		cacheHits: commandExistsCacheHits,
+		cacheMisses: commandExistsCacheMisses,
+		pathInvalidations: commandExistsPathInvalidations,
+		cacheEntries: commandExistsCache.size,
+		ttlMs: resolveCommandExistsCacheTtlMs(),
+	};
+}
+
+export function resetCommandExistsCacheForTests(): void {
+	commandExistsCache.clear();
+	commandExistsPathFingerprint = "";
+	commandExistsChecks = 0;
+	commandExistsCacheHits = 0;
+	commandExistsCacheMisses = 0;
+	commandExistsPathInvalidations = 0;
+}
+
 function captureChunk(
 	chunk: Buffer,
 	chunks: Buffer[],
@@ -72,13 +158,33 @@ function captureChunk(
 }
 
 export function commandExists(command: string): boolean {
+	commandExistsChecks += 1;
+	const pathFingerprint = currentPathFingerprint();
+	applyPathInvalidationIfNeeded(pathFingerprint);
+	const now = Date.now();
+	const ttlMs = resolveCommandExistsCacheTtlMs();
+	const cached = commandExistsCache.get(command);
+	if (cached && cached.pathFingerprint === pathFingerprint && cached.expiresAt > now) {
+		commandExistsCacheHits += 1;
+		return cached.exists;
+	}
+
+	commandExistsCacheMisses += 1;
+	let exists = false;
 	try {
 		const result = spawnSync(command, ["--version"], { stdio: "pipe" });
 		const err = result.error as NodeJS.ErrnoException | undefined;
-		return !err || err.code !== "ENOENT";
+		exists = !err || err.code !== "ENOENT";
 	} catch {
-		return false;
+		exists = false;
 	}
+
+	commandExistsCache.set(command, {
+		exists,
+		expiresAt: now + ttlMs,
+		pathFingerprint,
+	});
+	return exists;
 }
 
 export function resolveCommandCandidate(candidates: string[]): string | undefined {
@@ -293,16 +399,50 @@ export async function runVerificationCommand(input: RunVerificationCommandInput)
 	});
 }
 
-export async function runVerificationCommandBatch(items: VerificationBatchItem[]): Promise<VerificationBatchResult[]> {
-	const results: VerificationBatchResult[] = [];
-	for (const item of items) {
-		const result = await runVerificationCommand(item);
-		results.push({
-			key: item.key,
-			input: item,
-			result,
-		});
+export async function runVerificationCommandBatch(
+	items: VerificationBatchItem[],
+	options?: VerificationBatchOptions,
+): Promise<VerificationBatchResult[]> {
+	if (items.length === 0) {
+		return [];
 	}
+
+	const mode: VerificationBatchMode = options?.mode === "parallel" ? "parallel" : "sequential";
+	if (mode === "sequential" || items.length === 1) {
+		const sequentialResults: VerificationBatchResult[] = [];
+		for (const item of items) {
+			const result = await runVerificationCommand(item);
+			sequentialResults.push({
+				key: item.key,
+				input: item,
+				result,
+			});
+		}
+		return sequentialResults;
+	}
+
+	const maxParallel = normalizeMaxParallel(options?.maxParallel, items.length);
+	const results = new Array<VerificationBatchResult>(items.length);
+	let nextIndex = 0;
+
+	const worker = async (): Promise<void> => {
+		while (true) {
+			const currentIndex = nextIndex;
+			nextIndex += 1;
+			if (currentIndex >= items.length) {
+				return;
+			}
+			const item = items[currentIndex]!;
+			const result = await runVerificationCommand(item);
+			results[currentIndex] = {
+				key: item.key,
+				input: item,
+				result,
+			};
+		}
+	};
+
+	await Promise.all(Array.from({ length: maxParallel }, () => worker()));
 	return results;
 }
 

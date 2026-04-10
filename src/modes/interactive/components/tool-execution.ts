@@ -280,6 +280,7 @@ function expandHint(remaining: number, total?: number): string {
 
 export interface ToolExecutionOptions {
 	showImages?: boolean; // default: true (only used if terminal supports images)
+	actorLabel?: string;
 }
 
 type WriteHighlightCache = {
@@ -342,8 +343,10 @@ export class ToolExecutionComponent extends Container {
 		this.addChild(new Spacer(1));
 
 		this.frameContent = new Container();
+		const actorLabel = typeof options.actorLabel === "string" ? options.actorLabel.trim() : "";
+		const frameLabel = actorLabel.length > 0 ? `tool · ${actorLabel}` : "tool";
 		this.messageWindow = new MessageWindow(this.frameContent, {
-			label: "tool",
+			label: frameLabel,
 			lineColor: "success",
 			labelColor: "success",
 			paddingY: 1,

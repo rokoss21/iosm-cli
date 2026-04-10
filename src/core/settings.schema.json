@@ -88,6 +88,51 @@
 				}
 			}
 		},
+		"verification": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"batchMode": {
+					"type": "string",
+					"default": "sequential",
+					"description": "Batch execution mode for verification runners that support command batching."
+				},
+				"maxParallel": {
+					"type": "number",
+					"default": 4,
+					"description": "Maximum concurrent commands when verification.batchMode is parallel."
+				}
+			}
+		},
+		"executionGuards": {
+			"type": "object",
+			"additionalProperties": true,
+			"properties": {
+				"readBeforeMutateMode": {
+					"type": "string",
+					"enum": ["off", "warn", "enforce"],
+					"default": "warn",
+					"description": "Read-before-mutate runtime guard mode for edit/write/apply_patch flows."
+				},
+				"repeatedFailureMode": {
+					"type": "string",
+					"enum": ["off", "warn", "enforce"],
+					"default": "warn",
+					"description": "Loop-break guard mode for repeated identical tool failures in a single turn."
+				},
+				"repeatedFailureLimit": {
+					"type": "number",
+					"default": 2,
+					"description": "Consecutive failure threshold before repeated-failure guard warns/blocks."
+				},
+				"misrouteMode": {
+					"type": "string",
+					"enum": ["off", "warn"],
+					"default": "warn",
+					"description": "Warn when bash is used for operations covered by active specialized tools."
+				}
+			}
+		},
 		"telegram": {
 			"type": "object",
 			"additionalProperties": true,

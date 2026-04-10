@@ -282,7 +282,7 @@ iosm --api-key sk-test-123           # Override for this run
 
 ### Available Tools
 
-`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `fetch`, `web_search`, `git_read`, `git_write`, `fs_ops`, `test_run`, `lint_run`, `typecheck_run`, `db_run`, `todo_read`, `todo_write`
+`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `rg`, `fd`, `ast_grep`, `comby`, `jq`, `yq`, `semgrep`, `sed`, `semantic_search`, `lsp`, `fetch`, `web_search`, `git_read`, `git_write`, `fs_ops`, `test_run`, `lint_run`, `typecheck_run`, `db_run`, `todo_read`, `todo_write`
 
 Tool notes:
 - `bash` supports optional `run_in_background=true` for detached execution; returned details include `backgroundTaskId` and metadata/log paths.
@@ -290,6 +290,11 @@ Tool notes:
 - `ast_grep`, `comby`, `jq`, `yq`, `semgrep` are optional external CLIs and should be available in `PATH` to use their tools.
 - `sed` tool is preview/extraction-oriented; in-place edits are intentionally blocked.
 - `semantic_search` uses configured embeddings provider/index (`/semantic setup`).
+- `lsp` provides semantic language navigation (`status`, `definition`, `references`, `hover`, `document_symbols`, `workspace_symbols`, `prepare_rename`, `diagnostics`).
+- `lsp` ships with bundled Node-based servers for TypeScript/JavaScript (`typescript-language-server`) and Python (`pyright-langserver`) when available in the iosm-cli installation.
+- `lsp` for Go/Rust still requires system servers (`gopls`, `rust-analyzer`) in `PATH`; Python fallback to `pylsp` is supported when `pyright` is unavailable.
+- `lsp` includes fallback behavior for partially implemented servers: `workspace_symbols` falls back to heuristic declaration scanning, and `prepare_rename` falls back to identifier + references heuristics when server methods are missing.
+- Python import-line ergonomics: when server `definition`/`hover` returns empty on `import`/`from ... import ...` tokens, iosm applies a targeted fallback that resolves the module path and symbol declaration when possible.
 - `fetch` is profile-aware: read-only profiles allow only `GET/HEAD/OPTIONS`; write-capable profiles allow full HTTP method set.
 - `fetch` can be used for remote GitHub inspection without cloning via GitHub API/RAW endpoints (for example `api.github.com`, `raw.githubusercontent.com`).
 - `web_search` is discovery-oriented (Tavily primary, fallback chain configurable via settings/environment). Use `fetch` to read specific URLs.

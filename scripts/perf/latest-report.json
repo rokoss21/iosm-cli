@@ -1,0 +1,46 @@
+{
+  "baseline": {
+    "date": "2026-04-08",
+    "promptChars": 23677,
+    "commandExistsNodeAvgMs": 10.71,
+    "suiteBaselinesMs": {
+      "orchestrationCore": 5450,
+      "verificationSettings": 9180
+    }
+  },
+  "report": {
+    "timestamp": "2026-04-08T09:48:07.582Z",
+    "repoRoot": "/Users/deus21/Desktop/Projects/iosm-cli",
+    "harness": {
+      "promptChars": 17997,
+      "commandExists": {
+        "command": "node",
+        "coldAvgMs": 10.795036033333341,
+        "warmAvgMs": 0.0013804199999998446,
+        "speedup": 7820.10984579661
+      }
+    },
+    "suites": [
+      {
+        "name": "orchestrationCore",
+        "durationMs": 5050.478958,
+        "ok": true,
+        "status": 0,
+        "signal": null
+      },
+      {
+        "name": "verificationSettings",
+        "durationMs": 9049.205167,
+        "ok": true,
+        "status": 0,
+        "signal": null
+      }
+    ]
+  },
+  "thresholds": {
+    "promptMaxChars": 18941,
+    "requiredCommandExistsSpeedup": 5,
+    "runtimeRegressionFactor": 1.15
+  },
+  "failures": []
+}

@@ -25,6 +25,7 @@ export class AssistantMessageComponent extends Container {
 	private contentContainer: Container;
 	private messageWindow: MessageWindow;
 	private hideThinkingBlock: boolean;
+	private messageLabel: string;
 	private expanded = false;
 	private isStreaming = false;
 	private renderEnabled = true;
@@ -35,18 +36,20 @@ export class AssistantMessageComponent extends Container {
 		message?: AssistantMessage,
 		hideThinkingBlock = false,
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
+		messageLabel = "IOSM Agent",
 	) {
 		super();
 
 		this.hideThinkingBlock = hideThinkingBlock;
 		this.markdownTheme = markdownTheme;
+		this.messageLabel = messageLabel.trim() || "IOSM Agent";
 
 		this.addChild(new Spacer(1));
 
 		// Container for message content
 		this.contentContainer = new Container();
 		this.messageWindow = new MessageWindow(this.contentContainer, {
-			label: "IOSM Agent",
+			label: this.messageLabel,
 			lineColor: "borderMuted",
 			labelColor: "muted",
 			paddingY: 1,

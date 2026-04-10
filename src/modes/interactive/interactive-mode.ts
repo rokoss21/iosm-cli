@@ -139,6 +139,7 @@ import {
 	type SingularStageFit,
 } from "../../core/singular.js";
 import {
+	createSemanticEmbeddingProvider,
 	getDefaultSemanticSearchConfig,
 	getSemanticConfigPath,
 	getSemanticIndexDir,
@@ -207,6 +208,7 @@ import { type SessionContext, SessionManager } from "../../core/session-manager.
 import { SettingsManager, type PackageSource } from "../../core/settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import { getToolPermissionSignature, type ToolPermissionRequest } from "../../core/tools/index.js";
+import { pickAutoDelegateAgent, type AutoDelegateAgentHint } from "../../core/tools/task.js";
 import {
 	coerceTaskPlanSnapshot,
 	TASK_PLAN_CUSTOM_TYPE,
@@ -1106,6 +1108,31 @@ const DOCTOR_CLI_TOOL_SPECS: DoctorCliToolSpec[] = [
 		hint: "Install pyright (npm i -D pyright or pipx install pyright).",
 	},
 	{
+		tool: "typescript-language-server",
+		candidates: ["typescript-language-server"],
+		hint: "Install TypeScript language server (npm i -D typescript-language-server typescript).",
+	},
+	{
+		tool: "pyright-langserver",
+		candidates: ["pyright-langserver"],
+		hint: "Install pyright language server (npm i -D pyright).",
+	},
+	{
+		tool: "pylsp",
+		candidates: ["pylsp", "python3"],
+		hint: "Optional fallback: install python-lsp-server (pip install python-lsp-server).",
+	},
+	{
+		tool: "gopls",
+		candidates: ["gopls"],
+		hint: "Install Go language server (go install golang.org/x/tools/gopls@latest).",
+	},
+	{
+		tool: "rust-analyzer",
+		candidates: ["rust-analyzer"],
+		hint: "Install rust-analyzer and expose it in PATH.",
+	},
+	{
 		tool: "mypy",
 		candidates: ["mypy", "python3"],
 		hint: "Install mypy (python3 -m pip install mypy or pipx install mypy).",
@@ -1482,6 +1509,81 @@ function formatElapsedClock(ms: number): string {
 	return `${pad2(minutes)}:${pad2(seconds)}`;
 }
 
+const DEFAULT_ORCHESTRATION_EXPECTED_TASK_DURATION_MS = 90_000;
+const MIN_ORCHESTRATION_EXPECTED_TASK_DURATION_MS = 5_000;
+const MAX_ORCHESTRATION_EXPECTED_TASK_DURATION_MS = 30 * 60_000;
+const MIN_ORCHESTRATION_RUNNING_TAIL_MS = 5_000;
+
+function clampNumber(value: number, min: number, max: number): number {
+	return Math.max(min, Math.min(max, value));
+}
+
+function medianNumber(values: number[]): number | undefined {
+	const finite = values
+		.filter((value) => Number.isFinite(value) && value >= 0)
+		.sort((left, right) => left - right);
+	if (finite.length === 0) return undefined;
+	const midpoint = Math.floor(finite.length / 2);
+	if (finite.length % 2 === 1) return finite[midpoint];
+	return (finite[midpoint - 1] + finite[midpoint]) / 2;
+}
+
+function deriveOrchestrationExpectedTaskDurationMs(input: {
+	now: number;
+	runningStates: RunningSubagentState[];
+	completedStates: CompletedSubagentState[];
+}): number {
+	const completedDurations = input.completedStates.map((state) => state.durationMs);
+	const completedMedian = medianNumber(completedDurations);
+	if (typeof completedMedian === "number") {
+		return clampNumber(
+			Math.floor(completedMedian),
+			MIN_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
+			MAX_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
+		);
+	}
+
+	const runningElapsed = input.runningStates
+		.filter((state) => state.phaseState !== "queued")
+		.map((state) => Math.max(0, input.now - state.startTime));
+	const runningMedian = medianNumber(runningElapsed);
+	if (typeof runningMedian === "number") {
+		return clampNumber(
+			Math.floor(runningMedian * 1.2),
+			MIN_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
+			MAX_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
+		);
+	}
+
+	return DEFAULT_ORCHESTRATION_EXPECTED_TASK_DURATION_MS;
+}
+
+function computeOrchestrationEtaMs(input: {
+	now: number;
+	runningStates: RunningSubagentState[];
+	completedStates: CompletedSubagentState[];
+}): number | undefined {
+	const runningTasks = input.runningStates.filter((state) => state.phaseState !== "queued");
+	const queuedCount = input.runningStates.length - runningTasks.length;
+	if (runningTasks.length === 0 && queuedCount === 0) {
+		return undefined;
+	}
+
+	const expectedTaskDurationMs = deriveOrchestrationExpectedTaskDurationMs(input);
+	const runningRemaining = runningTasks.map((state) => {
+		const elapsed = Math.max(0, input.now - state.startTime);
+		return Math.max(MIN_ORCHESTRATION_RUNNING_TAIL_MS, expectedTaskDurationMs - elapsed);
+	});
+
+	const queuedWorkMs = queuedCount * expectedTaskDurationMs;
+	const totalWorkMs = runningRemaining.reduce((sum, value) => sum + value, 0) + queuedWorkMs;
+	const workerCount = Math.max(1, runningTasks.length);
+	const longestRunningMs = runningRemaining.length > 0 ? Math.max(...runningRemaining) : 0;
+	const queuedLowerBoundMs = queuedCount > 0 ? expectedTaskDurationMs : 0;
+	const lowerBoundMs = Math.max(longestRunningMs, queuedLowerBoundMs);
+	return Math.max(lowerBoundMs, Math.ceil(totalWorkMs / workerCount));
+}
+
 function hasDependencyCycle(
 	agents: number,
 	dependencies: Array<{ agent: number; dependsOn: number[] }>,
@@ -1599,6 +1701,7 @@ type SwarmSubagentProgress = {
 	phase?: string;
 	phaseState?: SubagentPhaseState;
 	cwd?: string;
+	agent?: string;
 	activeTool?: string;
 	toolCallsStarted?: number;
 	toolCallsCompleted?: number;
@@ -1618,6 +1721,133 @@ function getKnownSubagentToolNamesFromSession(session: unknown): string[] | unde
 	const maybeSession = session as { getAllTools?: () => Array<{ name: string }> };
 	if (typeof maybeSession.getAllTools !== "function") return undefined;
 	return maybeSession.getAllTools().map((tool) => tool.name);
+}
+
+type OrchestrationAgentCatalog = {
+	names: string[];
+	entriesByLowerName: Map<string, CustomSubagentEntry>;
+};
+
+function buildOrchestrationAgentCatalog(input: {
+	cwd: string;
+	agentDir: string;
+	knownToolNames?: string[];
+}): OrchestrationAgentCatalog {
+	const loaded = loadCustomSubagents({
+		cwd: input.cwd,
+		agentDir: input.agentDir,
+		knownToolNames: input.knownToolNames,
+	});
+	const names = loaded.agents.map((agent) => agent.name);
+	const entriesByLowerName = new Map<string, CustomSubagentEntry>();
+	for (const agent of loaded.agents) {
+		entriesByLowerName.set(agent.name.toLowerCase(), agent);
+	}
+	return { names, entriesByLowerName };
+}
+
+function coerceAgentProfileName(value: string | undefined, fallback: AgentProfileName): AgentProfileName {
+	const normalized = value?.trim().toLowerCase();
+	if (!normalized || !isValidProfileName(normalized)) return fallback;
+	return normalized as AgentProfileName;
+}
+
+function resolveOrchestrationAgentSelection(input: {
+	workstream: string;
+	fallbackProfile: AgentProfileName;
+	catalog: OrchestrationAgentCatalog;
+}): { agentName?: string; profile: AgentProfileName } {
+	const selectedAgentName = pickAutoDelegateAgent(input.workstream, input.catalog.names);
+	if (!selectedAgentName) {
+		return { profile: input.fallbackProfile };
+	}
+	const selectedAgentEntry = input.catalog.entriesByLowerName.get(selectedAgentName.toLowerCase());
+	return {
+		agentName: selectedAgentEntry?.name ?? selectedAgentName,
+		profile: coerceAgentProfileName(selectedAgentEntry?.profile, input.fallbackProfile),
+	};
+}
+
+function buildOrchestrateAssignmentWorkstreamHint(input: {
+	task: string;
+	index: number;
+	total: number;
+}): string {
+	const ordinal = input.index + 1;
+	const roleHint =
+		input.total <= 1
+			? "implementation execution"
+			: ordinal === 1
+				? "analysis recon architecture"
+				: ordinal === input.total
+					? "verification testing review"
+					: "implementation execution";
+	return `agent ${ordinal}/${input.total}: ${roleHint}\n${input.task}`;
+}
+
+function formatOrchestrationWorkerLabel(profile: string, agent?: string): string {
+	const normalizedProfile = profile.trim();
+	const normalizedAgent = agent?.trim();
+	if (!normalizedAgent) return normalizedProfile;
+	if (normalizedAgent.toLowerCase() === normalizedProfile.toLowerCase()) return normalizedAgent;
+	return `${normalizedAgent}@${normalizedProfile}`;
+}
+
+const DEFAULT_ASSISTANT_LABEL = "IOSM Agent";
+const RUNTIME_AGENT_EMBEDDING_MIN_SCORE = 0.12;
+const RUNTIME_AGENT_EMBEDDING_MIN_MARGIN = 0.015;
+const RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS = 2200;
+const RUNTIME_AGENT_ROUTING_MODE = (process.env.IOSM_RUNTIME_AGENT_ROUTING ?? "auto").trim().toLowerCase();
+
+function shouldExcludeRuntimeOverlayAgent(agent: CustomSubagentEntry): boolean {
+	const normalizedName = agent.name.trim().toLowerCase();
+	const normalizedProfile = (agent.profile ?? "").trim().toLowerCase();
+	if (!normalizedName) return true;
+	if (normalizedProfile === "meta") return true;
+	if (normalizedName.includes("orchestrator")) return true;
+	return false;
+}
+
+function computeVectorNorm(vector: readonly number[]): number {
+	let sum = 0;
+	for (const value of vector) {
+		sum += value * value;
+	}
+	return Math.sqrt(sum);
+}
+
+function cosineSimilarity(input: {
+	left: readonly number[];
+	leftNorm: number;
+	right: readonly number[];
+	rightNorm: number;
+}): number {
+	if (input.left.length === 0 || input.right.length === 0) return 0;
+	if (input.left.length !== input.right.length) return 0;
+	if (input.leftNorm <= 0 || input.rightNorm <= 0) return 0;
+	let dot = 0;
+	for (let index = 0; index < input.left.length; index += 1) {
+		dot += input.left[index]! * input.right[index]!;
+	}
+	return dot / (input.leftNorm * input.rightNorm);
+}
+
+function buildRuntimeAgentOverlayPrompt(input: {
+	userInput: string;
+	agent: CustomSubagentEntry;
+}): string {
+	return [
+		`<runtime_agent_context agent="${input.agent.name}" profile="${input.agent.profile ?? "full"}" mode="additive">`,
+		"Apply the specialist guidance below in addition to your base system instructions.",
+		"Base safety and global policy constraints remain authoritative.",
+		"",
+		`specialist_description: ${input.agent.description}`,
+		"specialist_instructions:",
+		input.agent.instructions.trim(),
+		"",
+		`user_request: ${input.userInput}`,
+		"</runtime_agent_context>",
+	].join("\n");
 }
 
 export class InteractiveMode {
@@ -1682,7 +1912,13 @@ export class InteractiveMode {
 	// Internal UI metadata emitted by runtime for orchestration rendering.
 	private pendingInternalUserDisplayAliases: Array<{ rawPrompt: string; displayText: string }> = [];
 	private pendingAssistantOrchestrationContexts = 0;
+	private pendingAssistantRuntimeAgentLabels: string[] = [];
 	private activeAssistantOrchestrationContext = false;
+	private activeAssistantRuntimeAgentLabel: string | undefined = undefined;
+	private runtimeOverlayEmbeddingCacheKey: string | undefined = undefined;
+	private runtimeOverlayEmbeddingByAgent = new Map<string, { vector: number[]; norm: number }>();
+	private runtimeOverlayLastRoutingQuery: string | undefined = undefined;
+	private runtimeOverlayLastAgentName: string | undefined = undefined;
 
 	// Tool output expansion state
 	private toolOutputExpanded = false;
@@ -4856,25 +5092,26 @@ export class InteractiveMode {
 			const toolProgress = formatOrchestrationToolProgress(state.toolCallsStarted, state.toolCallsCompleted);
 			const msgCount = Math.max(0, state.assistantMessages ?? 0);
 			const isQueuedTask = state.phaseState === "queued";
+			const workerLabel = formatOrchestrationWorkerLabel(state.profile, state.agent);
 			const delegateRows: string[] = [];
 			appendDelegateTreeRows(delegateRows, state, { indent: "   " });
 			if (isQueuedTask) {
 				pushTaskBlock(
 					queuedRows,
 					[
-					`• ${state.profile}  ${compactOneLineText(state.description, 52)}  reason: ${phase}`,
+					`• ${workerLabel}  ${compactOneLineText(state.description, 52)}  reason: ${phase}`,
 					...delegateRows,
 					],
 					sectionCounters.queued,
 				);
 			} else {
 				if (criticalPath.length < 3) {
-					criticalPath.push(state.profile);
+					criticalPath.push(workerLabel);
 				}
 				pushTaskBlock(
 					runningRows,
 					[
-					`▶ ${state.profile}  ${compactOneLineText(state.description, 52)}  ${elapsed}  ${toolProgress}  msgs ${msgCount}  last: ${phase}`,
+					`▶ ${workerLabel}  ${compactOneLineText(state.description, 52)}  ${elapsed}  ${toolProgress}  msgs ${msgCount}  last: ${phase}`,
 					...delegateRows,
 					],
 					sectionCounters.running,
@@ -4886,10 +5123,11 @@ export class InteractiveMode {
 			const elapsed = formatElapsedClock(state.durationMs);
 			const toolProgress = formatOrchestrationToolProgress(state.toolCallsStarted, state.toolCallsCompleted);
 			const msgCount = Math.max(0, state.assistantMessages ?? 0);
+			const workerLabel = formatOrchestrationWorkerLabel(state.profile, state.agent);
 			const delegateRows: string[] = [];
 			appendDelegateTreeRows(delegateRows, state, { indent: "   " });
 			if (state.status === "error") {
-				const row = `[!] ${state.profile}  ${compactOneLineText(state.description, 46)}  ${elapsed}  ${toolProgress}  msgs ${msgCount}  error: ${compactOneLineText(state.errorMessage || "error", 46)}`;
+				const row = `[!] ${workerLabel}  ${compactOneLineText(state.description, 46)}  ${elapsed}  ${toolProgress}  msgs ${msgCount}  error: ${compactOneLineText(state.errorMessage || "error", 46)}`;
 				pushTaskBlock(failedRows, [row, ...delegateRows], sectionCounters.failed);
 				continue;
 			}
@@ -4901,7 +5139,7 @@ export class InteractiveMode {
 				typeof state.waitMs === "number" && Number.isFinite(state.waitMs) && state.waitMs >= 0
 					? `queue ${Math.max(0, Math.floor(state.waitMs))}ms`
 					: "queue -";
-			const row = `[x] ${state.profile}  ${compactOneLineText(state.description, 46)}  ${elapsed}  ${toolProgress}  msgs ${msgCount}  out ${outputText}  ${queueText}`;
+			const row = `[x] ${workerLabel}  ${compactOneLineText(state.description, 46)}  ${elapsed}  ${toolProgress}  msgs ${msgCount}  out ${outputText}  ${queueText}`;
 			pushTaskBlock(completedRows, [row, ...delegateRows], sectionCounters.completed);
 		}
 		if (sectionCounters.running.hidden > 0) {
@@ -4927,7 +5165,8 @@ export class InteractiveMode {
 			return;
 		}
 
-		const etaText = runningCount > 0 || queuedCount > 0 ? "--:--" : "done";
+		const etaMs = computeOrchestrationEtaMs({ now, runningStates, completedStates });
+		const etaText = typeof etaMs === "number" ? formatElapsedClock(etaMs) : "done";
 		const header =
 			theme.fg("warning", "ORCH") +
 			theme.fg("customMessageText", ` ${doneCount}/${totalCount} done`) +
@@ -5063,6 +5302,7 @@ export class InteractiveMode {
 		taskId: string;
 		task: SwarmTaskPlan;
 		profile?: string;
+		agent?: string;
 	}): RunningSubagentState {
 		const key = this.getSwarmSubagentKey(input.runId, input.taskId);
 		const existing = this.subagentComponents.get(key);
@@ -5074,6 +5314,7 @@ export class InteractiveMode {
 			profile: (input.profile?.trim() || this.resolveSwarmTaskProfile(input.task)).trim(),
 			description: input.task.brief || input.task.id,
 			cwd: this.sessionManager.getCwd(),
+			agent: input.agent?.trim() || undefined,
 			phase: "starting subagent",
 			phaseState: "starting",
 			toolCallsStarted: 0,
@@ -5095,6 +5336,7 @@ export class InteractiveMode {
 		taskId: string;
 		task: SwarmTaskPlan;
 		profile?: string;
+		agent?: string;
 		progress: SwarmSubagentProgress;
 	}): void {
 		const state = this.ensureSwarmSubagentDisplay({
@@ -5102,6 +5344,7 @@ export class InteractiveMode {
 			taskId: input.taskId,
 			task: input.task,
 			profile: input.profile,
+			agent: input.agent,
 		});
 		const progress = input.progress;
 		if (typeof progress.phase === "string" && progress.phase.trim()) {
@@ -5112,6 +5355,12 @@ export class InteractiveMode {
 		}
 		if (typeof progress.cwd === "string" && progress.cwd.trim()) {
 			state.cwd = progress.cwd.trim();
+		}
+		if (typeof input.agent === "string" && input.agent.trim()) {
+			state.agent = input.agent.trim();
+		}
+		if (typeof progress.agent === "string" && progress.agent.trim()) {
+			state.agent = progress.agent.trim();
 		}
 		if ("activeTool" in progress) {
 			state.activeTool =
@@ -5268,11 +5517,12 @@ export class InteractiveMode {
 		this.footer.invalidate();
 
 		switch (event.type) {
-			case "agent_start":
-				this.currentTurnSawAssistantMessage = false;
-				this.currentTurnSawTaskToolCall = false;
-				this.turnAllowedToolSignatures.clear();
-				this.orchestrationArchivedForTurn = false;
+				case "agent_start":
+					this.currentTurnSawAssistantMessage = false;
+					this.currentTurnSawTaskToolCall = false;
+					this.turnAllowedToolSignatures.clear();
+					this.activeAssistantRuntimeAgentLabel = undefined;
+					this.orchestrationArchivedForTurn = false;
 				if (typeof (this as any).resetOrchestrationSummary === "function") {
 					(this as any).resetOrchestrationSummary();
 				} else {
@@ -5328,10 +5578,20 @@ export class InteractiveMode {
 					if (this.activeAssistantOrchestrationContext) {
 						this.pendingAssistantOrchestrationContexts -= 1;
 					}
+					const consumeRuntimeLabel = (this as unknown as { consumePendingAssistantRuntimeAgentLabel?: () => string | undefined })
+						.consumePendingAssistantRuntimeAgentLabel;
+					this.activeAssistantRuntimeAgentLabel =
+						typeof consumeRuntimeLabel === "function" ? consumeRuntimeLabel.call(this) : undefined;
+					const formatAssistantLabel = (this as unknown as { formatAssistantLabel?: (label?: string) => string }).formatAssistantLabel;
+					const assistantLabel =
+						typeof formatAssistantLabel === "function"
+							? formatAssistantLabel.call(this, this.activeAssistantRuntimeAgentLabel)
+							: this.activeAssistantRuntimeAgentLabel?.trim() || DEFAULT_ASSISTANT_LABEL;
 					this.streamingComponent = new AssistantMessageComponent(
 						undefined,
 						this.hideThinkingBlock,
 						this.getMarkdownThemeWithSettings(),
+						assistantLabel,
 					);
 					this.streamingComponent.setExpanded(this.toolOutputExpanded);
 					this.streamingComponent.setStreaming(true);
@@ -5357,15 +5617,16 @@ export class InteractiveMode {
 								}
 								continue;
 							}
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
+								if (!this.pendingTools.has(content.id)) {
+									const component = new ToolExecutionComponent(
+										content.name,
+										content.arguments,
+										{
+											showImages: this.settingsManager.getShowImages(),
+											actorLabel: this.activeAssistantRuntimeAgentLabel,
+										},
+										this.getRegisteredToolDefinition(content.name),
+										this.ui,
 								);
 								component.setExpanded(this.toolOutputExpanded);
 								this.chatContainer.addChild(component);
@@ -5426,11 +5687,12 @@ export class InteractiveMode {
 					if (interruptedStopReason) {
 						this.showMetaModeInterruptionHint(interruptedStopReason);
 					}
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
-					this.activeAssistantOrchestrationContext = false;
-					this.footer.invalidate();
-				}
+						this.streamingComponent = undefined;
+						this.streamingMessage = undefined;
+						this.activeAssistantOrchestrationContext = false;
+						this.activeAssistantRuntimeAgentLabel = undefined;
+						this.footer.invalidate();
+					}
 				this.ui.requestRender();
 				break;
 
@@ -5488,6 +5750,7 @@ export class InteractiveMode {
 						event.args,
 						{
 							showImages: this.settingsManager.getShowImages(),
+							actorLabel: this.activeAssistantRuntimeAgentLabel,
 						},
 						this.getRegisteredToolDefinition(event.toolName),
 						this.ui,
@@ -5528,6 +5791,9 @@ export class InteractiveMode {
 						}
 						if (typeof progress.cwd === "string") {
 							subagent.cwd = progress.cwd;
+						}
+						if (typeof progress.agent === "string" && progress.agent.trim().length > 0) {
+							subagent.agent = progress.agent.trim();
 						}
 						if ("activeTool" in progress) {
 							subagent.activeTool =
@@ -5608,6 +5874,8 @@ export class InteractiveMode {
 				if (subagent) {
 					const durationMs = Date.now() - subagent.startTime;
 					const details = event.result?.details as Record<string, unknown> | undefined;
+					const resolvedAgent =
+						typeof details?.agent === "string" && details.agent.trim().length > 0 ? details.agent.trim() : subagent.agent;
 					const outputLength = typeof details?.outputLength === "number" ? details.outputLength : undefined;
 					const waitMs = typeof details?.waitMs === "number" ? details.waitMs : undefined;
 					const toolCallsStarted =
@@ -5636,12 +5904,12 @@ export class InteractiveMode {
 						this.pushOrchestrationCompletedSubagent({
 							toolCallId: event.toolCallId,
 							finishedAt: Date.now(),
-							status: event.isError ? "error" : "done",
+						status: event.isError ? "error" : "done",
 						profile: subagent.profile,
 						description: subagent.description,
 						durationMs,
 						cwd: subagent.cwd,
-						agent: subagent.agent,
+						agent: resolvedAgent,
 						lockKey: subagent.lockKey,
 						isolation: subagent.isolation,
 						phase: subagent.phase,
@@ -5815,6 +6083,261 @@ export class InteractiveMode {
 		}
 	}
 
+	private consumePendingAssistantRuntimeAgentLabel(): string | undefined {
+		if (!Array.isArray(this.pendingAssistantRuntimeAgentLabels) || this.pendingAssistantRuntimeAgentLabels.length === 0) {
+			return undefined;
+		}
+		const next = this.pendingAssistantRuntimeAgentLabels.shift();
+		if (typeof next !== "string") return undefined;
+		const trimmed = next.trim();
+		return trimmed.length > 0 ? trimmed : undefined;
+	}
+
+	private peekPendingAssistantRuntimeAgentLabel(): string | undefined {
+		if (!Array.isArray(this.pendingAssistantRuntimeAgentLabels) || this.pendingAssistantRuntimeAgentLabels.length === 0) {
+			return undefined;
+		}
+		const next = this.pendingAssistantRuntimeAgentLabels[0];
+		if (typeof next !== "string") return undefined;
+		const trimmed = next.trim();
+		return trimmed.length > 0 ? trimmed : undefined;
+	}
+
+	private formatAssistantLabel(runtimeAgentName?: string): string {
+		const trimmed = runtimeAgentName?.trim();
+		return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_ASSISTANT_LABEL;
+	}
+
+	private buildRuntimeOverlaySemanticHints(agents: readonly CustomSubagentEntry[]): AutoDelegateAgentHint[] {
+		return agents.map((agent) => ({
+			name: agent.name,
+			description: agent.description,
+			profile: agent.profile,
+			instructions: agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS),
+		}));
+	}
+
+	private getRuntimeOverlaySemanticProviderConfig(): SemanticProviderConfig | undefined {
+		const cwd = this.sessionManager.getCwd();
+		const merged = loadMergedSemanticConfig(cwd, getAgentDir());
+		const config = merged.config;
+		if (config?.enabled) return config.provider;
+		// Allow runtime specialist routing to use semantic embeddings even when /semantic
+		// indexing is not explicitly enabled, so agent instruction routing stays dynamic.
+		return getDefaultSemanticSearchConfig().provider;
+	}
+
+	private shouldReusePreviousRuntimeRoutingContext(userInput: string): boolean {
+		const normalized = userInput.trim();
+		if (!normalized) return false;
+		if (normalized.length <= 42) return true;
+		const tokenCount = (normalized.match(/[\p{L}\p{N}_-]+/gu) ?? []).length;
+		if (tokenCount <= 7) return true;
+		if (/^[\p{P}\p{S}\s]+$/u.test(normalized)) return true;
+		return false;
+	}
+
+	private buildRuntimeOverlayEmbeddingCacheKey(input: {
+		provider: SemanticProviderConfig;
+		agents: readonly CustomSubagentEntry[];
+	}): string {
+		const signature = input.agents
+			.map((agent) =>
+				[
+					agent.name.trim().toLowerCase(),
+					(agent.profile ?? "").trim().toLowerCase(),
+					agent.description.trim(),
+					agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS).trim(),
+				].join("\n"),
+			)
+			.join("\n\n");
+		const hash = crypto.createHash("sha1");
+		hash.update(input.provider.type);
+		hash.update("\n");
+		hash.update(input.provider.model);
+		hash.update("\n");
+		hash.update(input.provider.baseUrl ?? "");
+		hash.update("\n");
+		hash.update(signature);
+		return hash.digest("hex");
+	}
+
+	private async pickRuntimeOverlayAgentByEmbedding(
+		userInput: string,
+		agents: readonly CustomSubagentEntry[],
+	): Promise<CustomSubagentEntry | undefined> {
+		if (agents.length === 0) return undefined;
+		if (!(this.runtimeOverlayEmbeddingByAgent instanceof Map)) {
+			this.runtimeOverlayEmbeddingByAgent = new Map<string, { vector: number[]; norm: number }>();
+		}
+		const providerConfig = this.getRuntimeOverlaySemanticProviderConfig();
+		if (!providerConfig) return undefined;
+
+		let provider: Awaited<ReturnType<typeof createSemanticEmbeddingProvider>>;
+		try {
+			provider = await createSemanticEmbeddingProvider(providerConfig, {
+				authStorage: (
+					this.session as unknown as { modelRegistry?: { authStorage?: AuthStorage } }
+				).modelRegistry?.authStorage,
+			});
+		} catch {
+			return undefined;
+		}
+
+		const cacheKey = this.buildRuntimeOverlayEmbeddingCacheKey({
+			provider: providerConfig,
+			agents,
+		});
+		if (this.runtimeOverlayEmbeddingCacheKey !== cacheKey) {
+			this.runtimeOverlayEmbeddingCacheKey = cacheKey;
+			this.runtimeOverlayEmbeddingByAgent.clear();
+		}
+
+		const byLowerName = new Map<string, CustomSubagentEntry>();
+		for (const agent of agents) {
+			byLowerName.set(agent.name.trim().toLowerCase(), agent);
+		}
+
+		const missingAgents = agents.filter((agent) => !this.runtimeOverlayEmbeddingByAgent.has(agent.name.trim().toLowerCase()));
+		if (missingAgents.length > 0) {
+			let vectors: number[][];
+			try {
+				vectors = await provider.embed(
+					missingAgents.map((agent) =>
+						[
+							`agent: ${agent.name}`,
+							`profile: ${agent.profile ?? "full"}`,
+							`description: ${agent.description}`,
+							"instructions:",
+							agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS),
+						].join("\n"),
+					),
+				);
+			} catch {
+				return undefined;
+			}
+			if (vectors.length !== missingAgents.length) return undefined;
+			for (let index = 0; index < missingAgents.length; index += 1) {
+				const agent = missingAgents[index];
+				const vector = vectors[index];
+				if (!agent || !vector) continue;
+				this.runtimeOverlayEmbeddingByAgent.set(agent.name.trim().toLowerCase(), {
+					vector,
+					norm: computeVectorNorm(vector),
+				});
+			}
+		}
+
+		let queryVector: number[] | undefined;
+		try {
+			const embedded = await provider.embed([userInput]);
+			queryVector = embedded[0];
+		} catch {
+			queryVector = undefined;
+		}
+		if (!queryVector || queryVector.length === 0) return undefined;
+		const queryNorm = computeVectorNorm(queryVector);
+		if (queryNorm <= 0) return undefined;
+
+		const scored = agents
+			.map((agent) => {
+				const vector = this.runtimeOverlayEmbeddingByAgent.get(agent.name.trim().toLowerCase());
+				if (!vector) return undefined;
+				let score = cosineSimilarity({
+					left: queryVector!,
+					leftNorm: queryNorm,
+					right: vector.vector,
+					rightNorm: vector.norm,
+				});
+				if (!Number.isFinite(score)) return undefined;
+				const normalizedProfile = (agent.profile ?? "").trim().toLowerCase();
+				if (normalizedProfile === "full" || normalizedProfile === "iosm") {
+					score += 0.005;
+				}
+				return { agent, score };
+			})
+			.filter((item): item is { agent: CustomSubagentEntry; score: number } => !!item)
+			.sort((left, right) => right.score - left.score);
+
+		const best = scored[0];
+		if (!best) return undefined;
+		if (best.score < RUNTIME_AGENT_EMBEDDING_MIN_SCORE) return undefined;
+		const second = scored[1];
+		if (second && best.score < RUNTIME_AGENT_EMBEDDING_MIN_SCORE + 0.06 && best.score - second.score < RUNTIME_AGENT_EMBEDDING_MIN_MARGIN) {
+			return undefined;
+		}
+		return byLowerName.get(best.agent.name.trim().toLowerCase());
+	}
+
+	private async resolveRuntimeSpecialistOverlay(
+		userInput: string,
+	): Promise<{ agent: CustomSubagentEntry; prompt: string } | undefined> {
+		if (this.activeProfileName !== "full") return undefined;
+		const trimmedInput = userInput.trim();
+		if (!trimmedInput) return undefined;
+		const cwd = this.sessionManager.getCwd();
+		const loaded = loadCustomSubagents({
+			cwd,
+			agentDir: getAgentDir(),
+			knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+		});
+		const runtimeCandidates = loaded.agents.filter((agent) => !shouldExcludeRuntimeOverlayAgent(agent));
+		if (runtimeCandidates.length === 0) return undefined;
+		const routingInput =
+			this.runtimeOverlayLastRoutingQuery &&
+			this.runtimeOverlayLastRoutingQuery.trim().length > 0 &&
+			this.shouldReusePreviousRuntimeRoutingContext(trimmedInput)
+				? `${this.runtimeOverlayLastRoutingQuery}\nfollow_up: ${trimmedInput}`
+				: trimmedInput;
+
+		const pickByEmbedding = (
+			this as unknown as {
+				pickRuntimeOverlayAgentByEmbedding?: (
+					input: string,
+					agents: readonly CustomSubagentEntry[],
+				) => Promise<CustomSubagentEntry | undefined>;
+			}
+		).pickRuntimeOverlayAgentByEmbedding;
+		let selectedAgent =
+			typeof pickByEmbedding === "function"
+				? await pickByEmbedding.call(this, routingInput, runtimeCandidates)
+				: undefined;
+		const semanticOnlyRouting =
+			RUNTIME_AGENT_ROUTING_MODE === "semantic-only" || RUNTIME_AGENT_ROUTING_MODE === "embedding-only";
+		if (!selectedAgent && !semanticOnlyRouting) {
+			const buildHints = (
+				this as unknown as {
+					buildRuntimeOverlaySemanticHints?: (agents: readonly CustomSubagentEntry[]) => AutoDelegateAgentHint[];
+				}
+			).buildRuntimeOverlaySemanticHints;
+			const runtimeHints =
+				typeof buildHints === "function"
+					? buildHints.call(this, runtimeCandidates)
+					: runtimeCandidates.map((agent) => ({
+						name: agent.name,
+						description: agent.description,
+						profile: agent.profile,
+						instructions: agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS),
+					}));
+			const selectedAgentName = pickAutoDelegateAgent(
+				routingInput,
+				runtimeCandidates.map((agent) => agent.name),
+				runtimeHints,
+			);
+			if (selectedAgentName) {
+				selectedAgent = runtimeCandidates.find((agent) => agent.name.toLowerCase() === selectedAgentName.toLowerCase());
+			}
+		}
+		if (!selectedAgent) return undefined;
+		this.runtimeOverlayLastRoutingQuery = routingInput;
+		this.runtimeOverlayLastAgentName = selectedAgent.name;
+		const prompt = buildRuntimeAgentOverlayPrompt({
+			userInput: trimmedInput,
+			agent: selectedAgent,
+		});
+		return { agent: selectedAgent, prompt };
+	}
+
 	/** Extract text content from a user message */
 	private getUserMessageText(message: Message): string {
 		if (message.role !== "user") return "";
@@ -5836,19 +6359,32 @@ export class InteractiveMode {
 		if (message.role !== "custom") return;
 		if (message.customType !== INTERNAL_UI_META_CUSTOM_TYPE) return;
 		if (!isInternalUiMetaDetails(message.details)) return;
-		if (message.details.kind !== "orchestration_context") return;
-
-		// Hide assistant prose only for explicit legacy orchestration contracts.
-		// META profile guidance should not suppress normal chat/task responses.
-		const rawPrompt = message.details.rawPrompt ?? "";
-		if (rawPrompt.includes("[ORCHESTRATION_DIRECTIVE]")) {
-			this.pendingAssistantOrchestrationContexts += 1;
+		if (message.details.kind === "orchestration_context") {
+			// Hide assistant prose only for explicit legacy orchestration contracts.
+			// META profile guidance should not suppress normal chat/task responses.
+			const rawPrompt = message.details.rawPrompt ?? "";
+			if (rawPrompt.includes("[ORCHESTRATION_DIRECTIVE]")) {
+				this.pendingAssistantOrchestrationContexts += 1;
+			}
+			if (message.details.rawPrompt && message.details.displayText) {
+				this.pendingInternalUserDisplayAliases.push({
+					rawPrompt: message.details.rawPrompt,
+					displayText: message.details.displayText,
+				});
+			}
+			return;
 		}
-		if (message.details.rawPrompt && message.details.displayText) {
-			this.pendingInternalUserDisplayAliases.push({
-				rawPrompt: message.details.rawPrompt,
-				displayText: message.details.displayText,
-			});
+		if (message.details.kind === "runtime_agent_context") {
+			const agentLabel = message.details.agentName.trim();
+			if (agentLabel.length > 0) {
+				this.pendingAssistantRuntimeAgentLabels.push(agentLabel);
+			}
+			if (message.details.rawPrompt && message.details.displayText) {
+				this.pendingInternalUserDisplayAliases.push({
+					rawPrompt: message.details.rawPrompt,
+					displayText: message.details.displayText,
+				});
+			}
 		}
 	}
 
@@ -5999,20 +6535,29 @@ export class InteractiveMode {
 				}
 				break;
 			}
-			case "assistant": {
-				const hasOrchestrationContext = this.pendingAssistantOrchestrationContexts > 0;
-				if (hasOrchestrationContext) {
-					this.pendingAssistantOrchestrationContexts -= 1;
-				}
-				const previousOrchestrationContext = this.activeAssistantOrchestrationContext;
-				this.activeAssistantOrchestrationContext = hasOrchestrationContext;
-				const displayMessage = this.sanitizeAssistantDisplayMessage(message);
-				this.activeAssistantOrchestrationContext = previousOrchestrationContext;
-				const assistantComponent = new AssistantMessageComponent(
-					displayMessage,
-					this.hideThinkingBlock,
-					this.getMarkdownThemeWithSettings(),
-				);
+				case "assistant": {
+					const hasOrchestrationContext = this.pendingAssistantOrchestrationContexts > 0;
+					if (hasOrchestrationContext) {
+						this.pendingAssistantOrchestrationContexts -= 1;
+					}
+					const consumeRuntimeLabel = (this as unknown as { consumePendingAssistantRuntimeAgentLabel?: () => string | undefined })
+						.consumePendingAssistantRuntimeAgentLabel;
+					const runtimeAgentLabel = typeof consumeRuntimeLabel === "function" ? consumeRuntimeLabel.call(this) : undefined;
+					const previousOrchestrationContext = this.activeAssistantOrchestrationContext;
+					this.activeAssistantOrchestrationContext = hasOrchestrationContext;
+					const displayMessage = this.sanitizeAssistantDisplayMessage(message);
+					this.activeAssistantOrchestrationContext = previousOrchestrationContext;
+					const formatAssistantLabel = (this as unknown as { formatAssistantLabel?: (label?: string) => string }).formatAssistantLabel;
+					const assistantLabel =
+						typeof formatAssistantLabel === "function"
+							? formatAssistantLabel.call(this, runtimeAgentLabel)
+							: runtimeAgentLabel?.trim() || DEFAULT_ASSISTANT_LABEL;
+					const assistantComponent = new AssistantMessageComponent(
+						displayMessage,
+						this.hideThinkingBlock,
+						this.getMarkdownThemeWithSettings(),
+						assistantLabel,
+					);
 				assistantComponent.setExpanded(this.toolOutputExpanded);
 				this.chatContainer.addChild(assistantComponent);
 				break;
@@ -6041,7 +6586,9 @@ export class InteractiveMode {
 		this.resetOrchestrationSummary();
 		this.pendingInternalUserDisplayAliases = [];
 		this.pendingAssistantOrchestrationContexts = 0;
+		this.pendingAssistantRuntimeAgentLabels = [];
 		this.activeAssistantOrchestrationContext = false;
+		this.activeAssistantRuntimeAgentLabel = undefined;
 		const pendingSubagentHistory = new Map<
 			string,
 			{
@@ -6059,12 +6606,16 @@ export class InteractiveMode {
 			this.updateEditorBorderColor();
 		}
 
-		for (const message of sessionContext.messages) {
-			// Assistant messages need special handling for tool calls
-			if (message.role === "assistant") {
-				this.addMessageToChat(message);
-				// Render tool call components
-				for (const content of message.content) {
+			for (const message of sessionContext.messages) {
+				// Assistant messages need special handling for tool calls
+				if (message.role === "assistant") {
+					const peekRuntimeLabel = (this as unknown as { peekPendingAssistantRuntimeAgentLabel?: () => string | undefined })
+						.peekPendingAssistantRuntimeAgentLabel;
+					const replayRuntimeAgentLabel =
+						typeof peekRuntimeLabel === "function" ? peekRuntimeLabel.call(this) : undefined;
+					this.addMessageToChat(message);
+					// Render tool call components
+					for (const content of message.content) {
 					if (content.type === "toolCall") {
 						if (content.name === "task") {
 							const args = content.arguments as {
@@ -6085,13 +6636,16 @@ export class InteractiveMode {
 							});
 							continue;
 						}
-						const component = new ToolExecutionComponent(
-							content.name,
-							content.arguments,
-							{ showImages: this.settingsManager.getShowImages() },
-							this.getRegisteredToolDefinition(content.name),
-							this.ui,
-						);
+							const component = new ToolExecutionComponent(
+								content.name,
+								content.arguments,
+								{
+									showImages: this.settingsManager.getShowImages(),
+									actorLabel: replayRuntimeAgentLabel,
+								},
+								this.getRegisteredToolDefinition(content.name),
+								this.ui,
+							);
 						component.setExpanded(this.toolOutputExpanded);
 						this.chatContainer.addChild(component);
 
@@ -6116,6 +6670,8 @@ export class InteractiveMode {
 				const subagent = pendingSubagentHistory.get(message.toolCallId);
 				if (subagent) {
 					const details = message.details as Record<string, unknown> | undefined;
+					const resolvedAgent =
+						typeof details?.agent === "string" && details.agent.trim().length > 0 ? details.agent.trim() : subagent.agent;
 						this.pushOrchestrationCompletedSubagent({
 							toolCallId: message.toolCallId,
 							finishedAt: Date.now(),
@@ -6133,7 +6689,7 @@ export class InteractiveMode {
 								? Math.max(0, Math.floor(details.durationMs))
 								: 0,
 						cwd: subagent.cwd,
-						agent: subagent.agent,
+						agent: resolvedAgent,
 						lockKey: subagent.lockKey,
 						isolation: subagent.isolation,
 						outputLength: typeof details?.outputLength === "number" ? details.outputLength : undefined,
@@ -12393,10 +12949,10 @@ export class InteractiveMode {
 				});
 				return;
 			}
-		if (this.activeProfileName === "meta") {
-			await promptMetaWithParallelismGuard({
-				session: this.session,
-				userInput,
+			if (this.activeProfileName === "meta") {
+				await promptMetaWithParallelismGuard({
+					session: this.session,
+					userInput,
 				onPersistentNonCompliance: async (details) => {
 					if (typeof this.runSwarmFromTask !== "function") return;
 					if (this.session.isStreaming || this.iosmAutomationRun || this.iosmVerificationSession) return;
@@ -12421,11 +12977,62 @@ export class InteractiveMode {
 					);
 					await this.runSwarmFromTask(userInput, { maxParallel: fallbackParallel });
 				},
-			});
-			return;
+				});
+				return;
+			}
+			const resolveRuntimeOverlay = (
+				this as unknown as {
+					resolveRuntimeSpecialistOverlay?: (
+						input: string,
+					) => Promise<{ agent: CustomSubagentEntry; prompt: string } | undefined>;
+				}
+			).resolveRuntimeSpecialistOverlay;
+			const runtimeOverlay = typeof resolveRuntimeOverlay === "function"
+				? await resolveRuntimeOverlay.call(this, userInput)
+				: undefined;
+			if (runtimeOverlay) {
+				const sendCustomMessage = (
+					this.session as unknown as {
+						sendCustomMessage?: (
+							message: {
+								customType: string;
+								content: string;
+								display: boolean;
+								details: Record<string, unknown>;
+							},
+							options?: { deliverAs?: "steer" | "followUp" | "meta" | "nextTurn"; triggerTurn?: boolean },
+						) => Promise<void>;
+					}
+				).sendCustomMessage;
+				if (typeof sendCustomMessage === "function") {
+					await sendCustomMessage.call(this.session, {
+						customType: INTERNAL_UI_META_CUSTOM_TYPE,
+						content: "",
+						display: false,
+						details: {
+							kind: "runtime_agent_context",
+							agentName: runtimeOverlay.agent.name,
+							agentProfile: runtimeOverlay.agent.profile ?? "full",
+							rawPrompt: runtimeOverlay.prompt,
+							displayText: userInput,
+						},
+					});
+				}
+				const showStatus = (this as unknown as { showStatus?: (message: string) => void }).showStatus;
+				if (typeof showStatus === "function") {
+					showStatus.call(
+						this,
+						`Runtime specialist overlay: ${runtimeOverlay.agent.name} (${runtimeOverlay.agent.profile ?? "full"})`,
+					);
+				}
+				await runPromptWithProtocolRecovery(runtimeOverlay.prompt, {
+					expandPromptTemplates: false,
+					source: "interactive",
+				});
+				return;
+			}
+			await runPromptWithProtocolRecovery(userInput);
 		}
-		await runPromptWithProtocolRecovery(userInput);
-	}
 
 	private createIosmVerificationEventBridge(options?: {
 		loaderMessage?: string;
@@ -13274,6 +13881,8 @@ export class InteractiveMode {
 		task: SwarmTaskPlan;
 		runtime: SwarmTaskRuntimeState;
 		contract: EngineeringContract;
+		resolvedWorker?: { agentName?: string; profile: AgentProfileName };
+		routingCatalog?: OrchestrationAgentCatalog;
 		onProgress?: (progress: SwarmSubagentProgress) => void;
 		stopSignal?: AbortSignal;
 	}): Promise<SwarmDispatchResult> {
@@ -13287,7 +13896,22 @@ export class InteractiveMode {
 			};
 		}
 
-		const profile = this.resolveSwarmTaskProfile(input.task);
+		const fallbackProfile = this.resolveSwarmTaskProfile(input.task);
+		const routedAgent =
+			input.resolvedWorker ??
+			resolveOrchestrationAgentSelection({
+				workstream: `${input.task.brief}\n${input.meta.request}`,
+				fallbackProfile,
+				catalog:
+					input.routingCatalog ??
+					buildOrchestrationAgentCatalog({
+						cwd: this.sessionManager.getCwd(),
+						agentDir: getAgentDir(),
+						knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+					}),
+			});
+		const profile = routedAgent.profile;
+		const selectedAgentName = routedAgent.agentName;
 		const delegateParallelHint = this.deriveSwarmTaskDelegateParallelHint(input.task);
 		const requiresStrongDelegation =
 			input.task.concurrency_class !== "analysis" &&
@@ -13305,13 +13929,14 @@ export class InteractiveMode {
 			`<swarm_task run_id="${input.meta.runId}" task_id="${input.task.id}" profile_hint="${profile}">`,
 			`request: ${input.meta.request}`,
 			`task_brief: ${input.task.brief}`,
+			`selected_agent: ${selectedAgentName ?? "(fallback profile)"}`,
 			`touches: ${input.runtime.touches.join(", ") || "(none)"}`,
 			`scopes: ${input.runtime.scopes.join(", ") || "(none)"}`,
 			`constraints: ${(input.contract.constraints ?? []).join("; ") || "(none)"}`,
 			`quality_gates: ${(input.contract.quality_gates ?? []).join("; ") || "(none)"}`,
 			"",
 			"Execution requirements:",
-			`- Use the task tool exactly once with description="${safeDescription || input.task.id}", profile="${profile}", delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
+			`- Use the task tool exactly once with description="${safeDescription || input.task.id}", profile="${profile}"${selectedAgentName ? `, agent="${selectedAgentName}"` : ""}, delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
 			minDelegatesRequired > 0
 				? `- Inside this single task call, emit at least ${minDelegatesRequired} independent <delegate_task> subtasks (target parallel fan-out up to ${delegateParallelHint}).`
 				: "- Delegation is optional for this task; keep execution focused.",
@@ -13394,6 +14019,7 @@ export class InteractiveMode {
 		};
 		const emitProgress = (progress: SwarmSubagentProgress): void => {
 			input.onProgress?.({
+				agent: selectedAgentName,
 				activeTool,
 				toolCallsStarted,
 				toolCallsCompleted,
@@ -13523,7 +14149,7 @@ export class InteractiveMode {
 			"[SWARM_PROTOCOL_CORRECTION]",
 			`Previous response for run_id="${input.meta.runId}" task_id="${input.task.id}" executed zero task tool calls.`,
 			"Execute the required task tool call now. Do not return prose-only output.",
-			`Required task call args: description="${safeDescription || input.task.id}", profile="${profile}", delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
+			`Required task call args: description="${safeDescription || input.task.id}", profile="${profile}"${selectedAgentName ? `, agent="${selectedAgentName}"` : ""}, delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
 			minDelegatesRequired > 0
 				? `Inside this single task call, emit at least ${minDelegatesRequired} independent <delegate_task> subtasks (target parallel fan-out up to ${delegateParallelHint}).`
 				: "Keep execution focused in a single task call unless decomposition is clearly beneficial.",
@@ -13715,6 +14341,12 @@ export class InteractiveMode {
 			store.init(input.meta, input.plan, initialState);
 		}
 		const swarmTaskById = new Map(input.plan.tasks.map((task) => [task.id, task]));
+		const routingCatalog = buildOrchestrationAgentCatalog({
+			cwd,
+			agentDir: getAgentDir(),
+			knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+		});
+		const taskWorkerById = new Map<string, { profile: AgentProfileName; agentName?: string }>();
 		let rollingIndex = input.projectIndex;
 		let localStopRequested = false;
 		const refreshIncrementalIndex = (): void => {
@@ -13738,31 +14370,45 @@ export class InteractiveMode {
 		this.showStatus(`Swarm run started: ${input.runId}`);
 		let schedulerResult: Awaited<ReturnType<typeof runSwarmScheduler>>;
 		try {
-			schedulerResult = await runSwarmScheduler({
-				runId: input.runId,
-				plan: input.plan,
-				contract: input.contract,
-				maxParallel: input.meta.maxParallel,
-				budgetUsd: input.budgetUsd,
-				existingState: initialState,
-				dispatchTask: async ({ task, runtime }) =>
-					this.dispatchSwarmTaskWithAgent({
-						meta: input.meta,
-						task,
-						runtime,
-						contract: input.contract,
-						stopSignal: this.swarmAbortController?.signal,
-						onProgress: (progress) => {
-							this.updateSwarmSubagentProgress({
-								runId: input.runId,
-								taskId: task.id,
-								task,
-								profile: this.resolveSwarmTaskProfile(task),
-								progress,
-							});
-						},
-					}),
-				confirmSpawn: async ({ candidate, parentTask }) => {
+				schedulerResult = await runSwarmScheduler({
+					runId: input.runId,
+					plan: input.plan,
+					contract: input.contract,
+					maxParallel: input.meta.maxParallel,
+					budgetUsd: input.budgetUsd,
+					existingState: initialState,
+					dispatchTask: async ({ task, runtime }) => {
+						const resolvedWorker = resolveOrchestrationAgentSelection({
+							workstream: `${task.brief}\n${input.meta.request}`,
+							fallbackProfile: this.resolveSwarmTaskProfile(task),
+							catalog: routingCatalog,
+						});
+						taskWorkerById.set(task.id, {
+							profile: resolvedWorker.profile,
+							agentName: resolvedWorker.agentName,
+						});
+						return this.dispatchSwarmTaskWithAgent({
+							meta: input.meta,
+							task,
+							runtime,
+							contract: input.contract,
+							resolvedWorker,
+							routingCatalog,
+							stopSignal: this.swarmAbortController?.signal,
+							onProgress: (progress) => {
+								const routed = taskWorkerById.get(task.id);
+								this.updateSwarmSubagentProgress({
+									runId: input.runId,
+									taskId: task.id,
+									task,
+									profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
+									agent: progress.agent ?? routed?.agentName,
+									progress,
+								});
+							},
+						});
+					},
+					confirmSpawn: async ({ candidate, parentTask }) => {
 					const requiresConfirmation = candidate.severity === "high" || parentTask.spawn_policy === "manual_high_risk";
 					if (!requiresConfirmation) return true;
 					const choice = await this.showExtensionSelector(
@@ -13786,21 +14432,23 @@ export class InteractiveMode {
 					return true;
 					},
 				dispatchTimeoutMs: Math.min(1_800_000, this.resolveSwarmDispatchTimeoutMs() + 5_000),
-				onEvent: (event) => {
-					store.appendEvent(event);
-					if (event.type === "task_running" && event.taskId) {
-						const task = swarmTaskById.get(event.taskId);
-						if (task) {
-							this.updateSwarmSubagentProgress({
-								runId: input.runId,
-								taskId: task.id,
-								task,
-								profile: this.resolveSwarmTaskProfile(task),
-								progress: {
-									phase: "starting subagent",
-									phaseState: "starting",
-								},
-							});
+					onEvent: (event) => {
+						store.appendEvent(event);
+						if (event.type === "task_running" && event.taskId) {
+							const task = swarmTaskById.get(event.taskId);
+							const routed = taskWorkerById.get(event.taskId);
+							if (task) {
+								this.updateSwarmSubagentProgress({
+									runId: input.runId,
+									taskId: task.id,
+									task,
+									profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
+									agent: routed?.agentName,
+									progress: {
+										phase: "starting subagent",
+										phaseState: "starting",
+									},
+								});
 						}
 						this.showStatus(`Swarm ${event.taskId}: running`);
 					}
@@ -13812,17 +14460,19 @@ export class InteractiveMode {
 						});
 						this.showStatus(`Swarm ${event.taskId}: done`);
 					}
-					if (event.type === "task_retry" && event.taskId) {
-						const task = swarmTaskById.get(event.taskId);
-						if (task) {
-							this.updateSwarmSubagentProgress({
-								runId: input.runId,
-								taskId: event.taskId,
-								task,
-								profile: this.resolveSwarmTaskProfile(task),
-								progress: {
-									phase: event.message,
-									phaseState: "running",
+						if (event.type === "task_retry" && event.taskId) {
+							const task = swarmTaskById.get(event.taskId);
+							const routed = taskWorkerById.get(event.taskId);
+							if (task) {
+								this.updateSwarmSubagentProgress({
+									runId: input.runId,
+									taskId: event.taskId,
+									task,
+									profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
+									agent: routed?.agentName,
+									progress: {
+										phase: event.message,
+										phaseState: "running",
 								},
 							});
 						}
@@ -14639,14 +15289,44 @@ export class InteractiveMode {
 		}
 
 		const currentCwd = this.sessionManager.getCwd();
+		const routingCatalog = buildOrchestrationAgentCatalog({
+			cwd: currentCwd,
+			agentDir: getAgentDir(),
+			knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+		});
 		const assignments: string[] = [];
-		const assignmentRecords: Array<{ profile: string; cwd: string; lockKey?: string; dependsOn: number[] }> = [];
+		const assignmentRecords: Array<{
+			profile: AgentProfileName;
+			agent?: string;
+			cwd: string;
+			lockKey?: string;
+			dependsOn: number[];
+		}> = [];
 		const dependencyEdges = parsed.dependencies?.reduce((sum, entry) => sum + entry.dependsOn.length, 0) ?? 0;
 		const defaultAssignmentProfile = this.resolveOrchestrateDefaultAssignmentProfile(parsed);
 		const delegateParallelHints: number[] = [];
+		let specializedAgentSelections = 0;
 		for (let index = 0; index < parsed.agents; index++) {
-			const assignmentProfile =
-				parsed.profiles?.[index] ?? parsed.profile ?? defaultAssignmentProfile;
+			const explicitProfile = parsed.profiles?.[index] ?? parsed.profile;
+			let assignmentProfile = explicitProfile ?? defaultAssignmentProfile;
+			let assignmentAgent: string | undefined;
+			if (!explicitProfile) {
+				const workstreamHint = buildOrchestrateAssignmentWorkstreamHint({
+					task: parsed.task,
+					index,
+					total: parsed.agents,
+				});
+				const routed = resolveOrchestrationAgentSelection({
+					workstream: workstreamHint,
+					fallbackProfile: defaultAssignmentProfile,
+					catalog: routingCatalog,
+				});
+				if (routed.agentName) {
+					assignmentAgent = routed.agentName;
+					assignmentProfile = routed.profile;
+					specializedAgentSelections += 1;
+				}
+			}
 			const assignmentCwd = parsed.cwds?.[index] ?? ".";
 			const assignmentLock = parsed.locks?.[index];
 			const dependsOn = parsed.dependencies?.find((entry) => entry.agent === index + 1)?.dependsOn ?? [];
@@ -14663,12 +15343,14 @@ export class InteractiveMode {
 			const resolvedCwd = path.resolve(currentCwd, assignmentCwd);
 			assignmentRecords.push({
 				profile: assignmentProfile,
+				agent: assignmentAgent,
 				cwd: resolvedCwd,
 				lockKey: assignmentLock,
 				dependsOn,
 			});
 			assignments.push(
 				`- agent ${index + 1}: profile=${assignmentProfile} cwd=${resolvedCwd}${assignmentLock ? ` lock_key=${assignmentLock}` : ""
+				}${assignmentAgent ? ` agent=${assignmentAgent}` : ""
 				}${parsed.isolation === "worktree" ? " isolation=worktree" : ""}${dependsOn.length > 0 ? ` depends_on=${dependsOn.join("|")}` : ""
 				} delegate_parallel_hint=${delegateParallelHint}
 				}`,
@@ -14689,7 +15371,7 @@ export class InteractiveMode {
 			const assignment = assignmentRecords[index];
 			const hint = delegateParallelHints[index] ?? 1;
 			return `- task_call_${index + 1}: description="agent ${index + 1} execution" profile="${assignment.profile}" cwd="${assignment.cwd}" run_id="${teamRun.runId}" task_id="${task.id}"${assignment.lockKey ? ` lock_key="${assignment.lockKey}"` : ""
-				}${parsed.isolation === "worktree" ? ' isolation="worktree"' : ""} delegate_parallel_hint=${hint}`;
+				}${assignment.agent ? ` agent="${assignment.agent}"` : ""}${parsed.isolation === "worktree" ? ' isolation="worktree"' : ""} delegate_parallel_hint=${hint}`;
 		});
 
 		if (
@@ -14700,6 +15382,15 @@ export class InteractiveMode {
 			this.activeProfileName !== "meta"
 		) {
 			this.showStatus("Orchestrate auto-profile: using `meta` workers for stronger fan-out and nested delegation.");
+		}
+		if (!parsed.profile && !(parsed.profiles && parsed.profiles.length > 0)) {
+			if (specializedAgentSelections > 0) {
+				this.showStatus(
+					`Orchestrate auto-agent routing: ${specializedAgentSelections}/${parsed.agents} assignments mapped to core/custom agents.`,
+				);
+			} else {
+				this.showStatus("Orchestrate fallback: no matching core/custom agent found; using profile workers.");
+			}
 		}
 
 		this.chatContainer.addChild(new Spacer(1));
@@ -14724,6 +15415,7 @@ export class InteractiveMode {
 				"- for parallel mode, emit all independent task calls in one assistant response",
 				"- in parallel mode, use parallel tool-call style (<use_parallel_tool_calls>)",
 				"- when assignment lines include depends_on, still emit one task call per assignment; runtime enforces dependency gating",
+				"- when assignment lines include agent=<name>, propagate the same agent argument in corresponding task calls",
 				"- include delegate_parallel_hint from each assignment/task_call hint in every corresponding task tool call",
 				"- for delegate_parallel_hint >= 2, split child work into nested <delegate_task> streams unless impossible",
 				"- treat delegates strictly as child task calls; do not count plain tool invocations as delegated agents",
@@ -15137,6 +15829,28 @@ export class InteractiveMode {
 			"- iosm_postchange_verifier",
 			"- qa_test_engineer",
 			"- test_failure_triager",
+			"- security_auditor",
+			"- api_test_engineer",
+			"- performance_benchmarker",
+			"- devops_automator",
+			"- technical_writer",
+			"- ui_designer",
+			"- ux_architect",
+			"- ux_researcher",
+			"- accessibility_auditor",
+			"- database_optimizer",
+			"- incident_response_commander",
+			"- code_reviewer",
+			"- software_architect",
+			"- sre_engineer",
+			"- frontend_developer",
+			"- backend_architect",
+			"- test_results_analyzer",
+			"- data_engineer",
+			"- brand_guardian",
+			"- workflow_optimizer",
+			"- tool_evaluator",
+			"- reality_checker",
 			"- meta_orchestrator",
 			"",
 			`User request: ${userSpec.trim()}`,

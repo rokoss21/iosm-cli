@@ -359,8 +359,8 @@ Profiles change the agent's behavior, available tools, and system prompt:
 
 | Profile | Tools | Use Case |
 |---------|-------|----------|
-| `full` | All built-ins (read, bash, edit, write, git_write, fs_ops, test_run, lint_run, typecheck_run, db_run, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read) | Default development work |
-| `plan` | Read-only bundle (read, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, fetch, web_search, git_read) | Architecture planning, code review |
+| `full` | All built-ins (read, bash, edit, write, git_write, fs_ops, test_run, lint_run, typecheck_run, db_run, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, lsp, fetch, web_search, git_read) | Default development work |
+| `plan` | Read-only bundle (read, grep, find, ls, rg, fd, ast_grep, comby, jq, yq, semgrep, sed, semantic_search, lsp, fetch, web_search, git_read) | Architecture planning, code review |
 | `iosm` | All + IOSM context | IOSM cycle execution with artifact sync |
 | `meta` | Full toolset + orchestration-first contract | Adaptive multi-agent/delegate execution with verification closure |
 

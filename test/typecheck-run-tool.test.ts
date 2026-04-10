@@ -102,6 +102,28 @@ exit "\${TYPECHECK_PYRIGHT_EXIT_CODE:-0}"
 		expect(output).toContain("pyright-check");
 	});
 
+	it("enables bounded parallel batch mode only for auto-detected runners", async () => {
+		const tool = createTypecheckRunTool(testDir, {
+			resolveBatchMode: () => "parallel",
+			resolveMaxParallel: () => 2,
+		});
+		const result = await tool.execute("typecheck-run-batch-auto", { runner: "auto" });
+		expect(result.details?.batchMode).toBe("parallel");
+		expect(result.details?.maxParallel).toBe(2);
+		expect(result.details?.runs).toHaveLength(3);
+	});
+
+	it("keeps explicit single-runner execution sequential even when parallel mode is configured", async () => {
+		const tool = createTypecheckRunTool(testDir, {
+			resolveBatchMode: () => "parallel",
+			resolveMaxParallel: () => 4,
+		});
+		const result = await tool.execute("typecheck-run-batch-single", { runner: "tsc" });
+		expect(result.details?.batchMode).toBe("sequential");
+		expect(result.details?.maxParallel).toBeUndefined();
+		expect(result.details?.runs).toHaveLength(1);
+	});
+
 	it("does not throw when one auto-detected runner fails and returns aggregate failed status", async () => {
 		process.env.TYPECHECK_TSC_EXIT_CODE = "1";
 

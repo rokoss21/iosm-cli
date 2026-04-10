@@ -48,7 +48,7 @@ describe("createAgentSession ask_user integration", () => {
 		expect(session.getActiveToolNames()).toContain("ask_user");
 		expect(session.systemPrompt).toContain("- ask_user: Ask the user a targeted clarification question");
 		expect(session.systemPrompt).toContain(
-			"- Use ask_user when a material product or architecture ambiguity would change the implementation.",
+			"- Use ask_user only for blocking product or architecture ambiguities that would materially change implementation.",
 		);
 
 		session.dispose();

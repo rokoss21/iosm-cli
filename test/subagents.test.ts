@@ -96,6 +96,28 @@ describe("loadCustomSubagents", () => {
 		expect(names.has("iosm_postchange_verifier")).toBe(true);
 		expect(names.has("qa_test_engineer")).toBe(true);
 		expect(names.has("test_failure_triager")).toBe(true);
+		expect(names.has("security_auditor")).toBe(true);
+		expect(names.has("api_test_engineer")).toBe(true);
+		expect(names.has("performance_benchmarker")).toBe(true);
+		expect(names.has("devops_automator")).toBe(true);
+		expect(names.has("technical_writer")).toBe(true);
+		expect(names.has("ui_designer")).toBe(true);
+		expect(names.has("ux_architect")).toBe(true);
+		expect(names.has("ux_researcher")).toBe(true);
+		expect(names.has("accessibility_auditor")).toBe(true);
+		expect(names.has("database_optimizer")).toBe(true);
+		expect(names.has("incident_response_commander")).toBe(true);
+		expect(names.has("code_reviewer")).toBe(true);
+		expect(names.has("software_architect")).toBe(true);
+		expect(names.has("sre_engineer")).toBe(true);
+		expect(names.has("frontend_developer")).toBe(true);
+		expect(names.has("backend_architect")).toBe(true);
+		expect(names.has("test_results_analyzer")).toBe(true);
+		expect(names.has("data_engineer")).toBe(true);
+		expect(names.has("brand_guardian")).toBe(true);
+		expect(names.has("workflow_optimizer")).toBe(true);
+		expect(names.has("tool_evaluator")).toBe(true);
+		expect(names.has("reality_checker")).toBe(true);
 		expect(names.has("meta_orchestrator")).toBe(true);
 		expect(loaded.agents.find((agent) => agent.name === "meta_orchestrator")?.profile).toBe("meta");
 		expect(loaded.agents.find((agent) => agent.name === "meta_orchestrator")?.instructions).toContain(

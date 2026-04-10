@@ -61,6 +61,7 @@ export interface TaskToolProgress {
 	phase: TaskToolProgressPhase;
 	message: string;
 	cwd?: string;
+	agent?: string;
 	activeTool?: string;
 	toolCallsStarted?: number;
 	toolCallsCompleted?: number;
@@ -211,6 +212,12 @@ export interface TaskToolDetails {
 		claimCollisions?: number;
 	};
 	sharedMemorySummaryKey?: string;
+	cleanup?: {
+		retries: number;
+		failures: number;
+		lastErrorCode?: string;
+		lastErrorMessage?: string;
+	};
 }
 
 export interface TaskToolOptions {
@@ -824,7 +831,18 @@ function deriveAutoDelegateProfile(baseProfile: AgentProfileName, description: s
 	return "explore";
 }
 
-function pickAutoDelegateAgent(workstream: string, availableCustomNames: readonly string[]): string | undefined {
+export type AutoDelegateAgentHint = {
+	name: string;
+	description?: string;
+	instructions?: string;
+	profile?: string;
+};
+
+export function pickAutoDelegateAgent(
+	workstream: string,
+	availableCustomNames: readonly string[],
+	_candidateHints?: readonly AutoDelegateAgentHint[],
+): string | undefined {
 	if (availableCustomNames.length === 0) return undefined;
 	const normalizedWorkstream = workstream.toLowerCase();
 	const names = availableCustomNames.map((name) => ({ raw: name, normalized: name.toLowerCase() }));
@@ -838,14 +856,151 @@ function pickAutoDelegateAgent(workstream: string, availableCustomNames: readonl
 		return undefined;
 	};
 
+	if (/\b(?:performance|latency|throughput|benchmark|profil|load test|stress test|p95|p99)\b/.test(normalizedWorkstream)) {
+		return findByHint(["performance_benchmarker", "performance", "benchmark"]);
+	}
+	if (/\b(?:code review|review pr|pr review|pull request|merge readiness|diff review)\b/.test(normalizedWorkstream)) {
+		return findByHint(["code_reviewer", "code reviewer", "reviewer"]);
+	}
+	if (
+		/\b(?:workflow optimization|process optimization|workflow bottleneck|cycle time|handoff|process handoff|process automation|streamline workflow)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["workflow_optimizer", "devops_automator", "technical_writer", "workflow", "process"]);
+	}
+	if (
+		/\b(?:tool evaluation|evaluate tools?|tooling assessment|tool comparison|vendor evaluation|selection matrix|tco|roi|proof of concept|poc)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["tool_evaluator", "workflow_optimizer", "technical_writer", "tool"]);
+	}
+	if (
+		/\b(?:reality check|sanity check|claim validation|evidence validation|readiness gate|production readiness audit|cross-validate|verify claims)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["reality_checker", "test_results_analyzer", "code_reviewer", "qa_test_engineer", "checker"]);
+	}
+	if (/\b(?:incident|outage|sev[0-9]?|postmortem|post-mortem|rca|root cause|rollback|mitigation)\b/.test(normalizedWorkstream)) {
+		return findByHint(["incident_response_commander", "incident", "commander", "system_error_analyst"]);
+	}
+	if (/\b(?:api|endpoint|contract|openapi|swagger|http|rest|graphql|webhook)\b/.test(normalizedWorkstream)) {
+		return findByHint(["api_test_engineer", "backend_architect", "api_tester", "api tester", "api"]);
+	}
+	if (
+		/\b(?:data pipeline|etl|elt|ingest|ingestion|warehouse|lakehouse|data mart|dbt|spark|kafka|airflow|lineage|freshness)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["data_engineer", "database_optimizer", "backend_architect", "data"]);
+	}
+	if (/\b(?:database|db |sql|query plan|explain|index|migration|postgres|mysql|sqlite)\b/.test(normalizedWorkstream)) {
+		return findByHint(["database_optimizer", "database", "db", "sql", "backend"]);
+	}
+	if (
+		/\b(?:backend|back-end|service layer|microservice|grpc|repository pattern|domain model|bounded context|event-driven)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["backend_architect", "software_architect", "backend", "database_optimizer"]);
+	}
+	if (
+		/\b(?:test results|quality metrics|failure trend|defect density|release readiness|go\/no-go|flaky trend|quality report)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["test_results_analyzer", "qa_test_engineer", "tester", "qa"]);
+	}
 	if (/\b(?:test|qa|coverage|verification|regression)\b/.test(normalizedWorkstream)) {
-		return findByHint(["qa_test_engineer", "qa", "tester", "verification"]);
+		return findByHint([
+			"test_results_analyzer",
+			"qa_test_engineer",
+			"api_test_engineer",
+			"performance_benchmarker",
+			"accessibility_auditor",
+			"qa",
+			"tester",
+			"verification",
+		]);
+	}
+	if (/\b(?:devops|ci|cd|pipeline|deploy|release|kubernetes|terraform|helm|infra|infrastructure)\b/.test(normalizedWorkstream)) {
+		return findByHint(["devops_automator", "sre_engineer", "devops", "sre"]);
+	}
+	if (
+		/\b(?:sre|reliability|availability|error budget|slo|sli|burn rate|observability|golden signals|on-call|oncall|runbook)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["sre_engineer", "incident_response_commander", "devops_automator", "sre"]);
+	}
+	if (/\b(?:docs?|documentation|readme|guide|migration|changelog|api reference)\b/.test(normalizedWorkstream)) {
+		return findByHint(["technical_writer", "technical writer", "writer", "docs"]);
+	}
+	if (
+		/\b(?:brand|branding|voice and tone|tone of voice|messaging|positioning|brand guideline|style guide|brand consistency)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["brand_guardian", "technical_writer", "ui_designer", "brand"]);
+	}
+	if (
+		/\b(?:css|scss|sass|less|stylesheet|styling|style bug|html|dom|javascript|typescript|frontend bug|frontend fix|mobile menu|responsive)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["frontend_developer", "ui_designer", "frontend", "ui"]);
+	}
+	if (
+		/\b(?:svg|icon|icons|illustration|illustrations|image asset|image assets|assets|sprite|logo|figma|visual polish|visual cleanup)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["ui_designer", "frontend_developer", "design", "ui"]);
+	}
+	if (
+		/\b(?:frontend|front-end|client side|client-side|react|vue|angular|svelte|jsx|tsx|tailwind|browser ui)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["frontend_developer", "ui_designer", "frontend", "ui"]);
+	}
+	if (/\b(?:usability|user research|interview|persona|journey|heuristic|research)\b/.test(normalizedWorkstream)) {
+		return findByHint(["ux_researcher", "ux researcher", "researcher", "ux"]);
+	}
+	if (/\b(?:design system|design token|component|visual|wireframe|mockup|ui)\b/.test(normalizedWorkstream)) {
+		return findByHint(["ui_designer", "frontend_developer", "ui designer", "design", "ui"]);
+	}
+	if (/\b(?:information architecture|interaction flow|user flow|navigation|ux architecture|ux)\b/.test(normalizedWorkstream)) {
+		return findByHint(["ux_architect", "ux architect", "ux", "architect"]);
 	}
 	if (/\b(?:ui|ux|design|layout|accessibility)\b/.test(normalizedWorkstream)) {
-		return findByHint(["uiux_top_senior", "uiux", "ui", "ux", "design"]);
+		return findByHint([
+			"accessibility_auditor",
+			"ux_architect",
+			"ui_designer",
+			"ux_researcher",
+			"uiux_top_senior",
+			"uiux",
+			"ui",
+			"ux",
+			"design",
+		]);
 	}
 	if (/\b(?:architecture|codebase|refactor|security|rbac|auth|database|api)\b/.test(normalizedWorkstream)) {
-		return findByHint(["codebase_auditor", "architect", "security", "backend"]);
+		return findByHint([
+			"software_architect",
+			"backend_architect",
+			"code_reviewer",
+			"data_engineer",
+			"database_optimizer",
+			"security_auditor",
+			"codebase_auditor",
+			"architect",
+			"security",
+			"backend",
+		]);
 	}
 
 	return undefined;
@@ -1367,7 +1522,7 @@ function persistSubagentTranscript(input: {
 	}
 }
 
-function gitResult(args: string[], cwd: string): { ok: boolean; stdout: string } {
+function gitResult(args: string[], cwd: string): { ok: boolean; stdout: string; stderr: string; status: number | null } {
 	const result = spawnSync("git", args, {
 		cwd,
 		encoding: "utf8",
@@ -1376,52 +1531,178 @@ function gitResult(args: string[], cwd: string): { ok: boolean; stdout: string }
 	return {
 		ok: result.status === 0,
 		stdout: (result.stdout ?? "").trim(),
+		stderr: (result.stderr ?? "").trim(),
+		status: result.status,
 	};
+}
+
+interface WorktreeCleanupTelemetryEvent {
+	type: "retry" | "failure";
+	stage: "git_remove" | "fs_remove";
+	attempt: number;
+	errorCode?: string;
+	errorMessage?: string;
+}
+
+type WorktreeCleanupTelemetryHook = (event: WorktreeCleanupTelemetryEvent) => void;
+
+interface WorktreeCleanupState {
+	retries: number;
+	failures: number;
+	lastErrorCode?: string;
+	lastErrorMessage?: string;
+}
+
+const WORKTREE_CLEANUP_MAX_ATTEMPTS = 4;
+const WORKTREE_CLEANUP_BASE_DELAY_MS = 40;
+const WORKTREE_CLEANUP_RETRYABLE_CODES = new Set(["ENOTEMPTY", "EBUSY", "EPERM", "EACCES"]);
+
+function parseErrorCode(error: unknown): string | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const record = error as Record<string, unknown>;
+	return typeof record.code === "string" ? record.code : undefined;
+}
+
+function parseErrorMessage(error: unknown): string | undefined {
+	if (error instanceof Error) return error.message;
+	if (typeof error === "string") return error;
+	return undefined;
+}
+
+function isRetryableWorktreeCleanupError(errorCode: string | undefined, errorMessage: string | undefined): boolean {
+	if (errorCode && WORKTREE_CLEANUP_RETRYABLE_CODES.has(errorCode)) return true;
+	const message = (errorMessage ?? "").toLowerCase();
+	return (
+		message.includes("not empty") ||
+		message.includes("resource busy") ||
+		message.includes("device or resource busy") ||
+		message.includes("locked")
+	);
+}
+
+function createWorktreeCleanupState(): WorktreeCleanupState {
+	return {
+		retries: 0,
+		failures: 0,
+		lastErrorCode: undefined,
+		lastErrorMessage: undefined,
+	};
+}
+
+function pauseCleanupRetry(delayMs: number): Promise<void> {
+	if (delayMs <= 0) return Promise.resolve();
+	return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function runCleanupStageWithRetry(input: {
+	stage: "git_remove" | "fs_remove";
+	maxAttempts?: number;
+	baseDelayMs?: number;
+	onTelemetry?: WorktreeCleanupTelemetryHook;
+	run: () => { ok: true } | { ok: false; errorCode?: string; errorMessage?: string };
+}): Promise<boolean> {
+	const attempts = Math.max(1, input.maxAttempts ?? WORKTREE_CLEANUP_MAX_ATTEMPTS);
+	let delayMs = Math.max(1, input.baseDelayMs ?? WORKTREE_CLEANUP_BASE_DELAY_MS);
+	for (let attempt = 1; attempt <= attempts; attempt += 1) {
+		const outcome = input.run();
+		if (outcome.ok) {
+			return true;
+		}
+		const canRetry =
+			attempt < attempts &&
+			isRetryableWorktreeCleanupError(outcome.errorCode, outcome.errorMessage);
+		if (canRetry) {
+			input.onTelemetry?.({
+				type: "retry",
+				stage: input.stage,
+				attempt,
+				errorCode: outcome.errorCode,
+				errorMessage: outcome.errorMessage,
+			});
+			await pauseCleanupRetry(delayMs);
+			delayMs = Math.min(delayMs * 2, 1_000);
+			continue;
+		}
+		input.onTelemetry?.({
+			type: "failure",
+			stage: input.stage,
+			attempt,
+			errorCode: outcome.errorCode,
+			errorMessage: outcome.errorMessage,
+		});
+		return false;
+	}
+	return false;
 }
 
 function provisionWorktree(
 	rootCwd: string,
 	targetCwd: string,
 	runId: string,
-): { runCwd: string; worktreePath?: string; cleanup: () => void } {
+	onCleanupTelemetry?: WorktreeCleanupTelemetryHook,
+): { runCwd: string; worktreePath?: string; cleanup: () => Promise<void> } {
 	const insideRepo = gitResult(["rev-parse", "--is-inside-work-tree"], rootCwd);
 	if (!insideRepo.ok || insideRepo.stdout !== "true") {
-		return { runCwd: targetCwd, cleanup: () => {} };
+		return { runCwd: targetCwd, cleanup: async () => {} };
 	}
 	const repoRootResult = gitResult(["rev-parse", "--show-toplevel"], rootCwd);
 	if (!repoRootResult.ok || !repoRootResult.stdout) {
-		return { runCwd: targetCwd, cleanup: () => {} };
+		return { runCwd: targetCwd, cleanup: async () => {} };
 	}
 
 	const repoRoot = repoRootResult.stdout;
 	const relative = path.relative(repoRoot, targetCwd);
 	if (relative.startsWith("..")) {
-		return { runCwd: targetCwd, cleanup: () => {} };
+		return { runCwd: targetCwd, cleanup: async () => {} };
 	}
 
 	const worktreePath = path.join(rootCwd, ".iosm", "subagents", "worktrees", runId);
 	mkdirSync(path.dirname(worktreePath), { recursive: true });
 	const added = gitResult(["worktree", "add", "--detach", worktreePath], repoRoot);
 	if (!added.ok) {
-		return { runCwd: targetCwd, cleanup: () => {} };
+		return { runCwd: targetCwd, cleanup: async () => {} };
 	}
 
 	const runCwd = path.resolve(worktreePath, relative);
-	const cleanup = (): void => {
-		try {
-			gitResult(["worktree", "remove", "--force", worktreePath], repoRoot);
-		} catch {
-			// best effort
-		}
-		try {
-			rmSync(worktreePath, { recursive: true, force: true });
-		} catch {
-			// best effort
-		}
+	const cleanup = async (): Promise<void> => {
+		await runCleanupStageWithRetry({
+			stage: "git_remove",
+			onTelemetry: onCleanupTelemetry,
+			run: () => {
+				const removed = gitResult(["worktree", "remove", "--force", worktreePath], repoRoot);
+				if (removed.ok) return { ok: true };
+				return {
+					ok: false,
+					errorCode: removed.status === null ? undefined : `git_exit_${removed.status}`,
+					errorMessage: removed.stderr || "git worktree remove failed",
+				};
+			},
+		});
+		await runCleanupStageWithRetry({
+			stage: "fs_remove",
+			onTelemetry: onCleanupTelemetry,
+			run: () => {
+				try {
+					rmSync(worktreePath, { recursive: true, force: true, maxRetries: 2, retryDelay: 25 });
+					return { ok: true };
+				} catch (error) {
+					return {
+						ok: false,
+						errorCode: parseErrorCode(error),
+						errorMessage: parseErrorMessage(error),
+					};
+				}
+			},
+		});
 	};
 
 	return { runCwd, worktreePath, cleanup };
 }
+
+export const __taskToolTestUtils = {
+	runCleanupStageWithRetry,
+	isRetryableWorktreeCleanupError,
+};
 
 /**
  * Create the Task tool using the factory pattern.
@@ -1525,10 +1806,38 @@ export function createTaskTool(
 						options?.getHostProfileName?.()?.trim().toLowerCase() ?? options?.hostProfileName?.trim().toLowerCase();
 					const hostProfileFallback =
 						normalizedHostProfile && isValidProfileName(normalizedHostProfile) ? normalizedHostProfile : "full";
-					let normalizedProfile =
-						requestedProfileRaw?.toLowerCase() ||
-						customSubagent?.profile?.trim().toLowerCase() ||
-						hostProfileFallback;
+				let normalizedProfile =
+					requestedProfileRaw?.toLowerCase() ||
+					customSubagent?.profile?.trim().toLowerCase() ||
+					hostProfileFallback;
+				const autoRoutingEligibleProfiles = new Set<AgentProfileName>(["full", "plan", "explore"]);
+
+				const canAutoSelectSpecializedAgent =
+					!normalizedAgentName &&
+					!customSubagent &&
+					availableCustomNames.length > 0 &&
+					autoRoutingEligibleProfiles.has((normalizedProfile as AgentProfileName) ?? "full") &&
+					(!!(orchestrationRunId?.trim() || orchestrationTaskId?.trim()) ||
+						hostProfileFallback === "meta" ||
+						(delegateParallelHint ?? 1) >= 2);
+				if (canAutoSelectSpecializedAgent) {
+					const inferredAgentName = pickAutoDelegateAgent(
+						`${description}\n${prompt}`,
+						availableCustomNames,
+						options?.availableCustomSubagentHints,
+					);
+					if (inferredAgentName) {
+						const inferredSubagent = resolveCustom(inferredAgentName);
+						if (inferredSubagent) {
+							customSubagent = inferredSubagent;
+							normalizedAgentName = inferredSubagent.name;
+							const inferredProfile = inferredSubagent.profile?.trim().toLowerCase();
+							if (inferredProfile && isValidProfileName(inferredProfile)) {
+								normalizedProfile = inferredProfile;
+							}
+						}
+					}
+				}
 
 				if (normalizedAgentName && !customSubagent) {
 					const available =
@@ -1704,6 +2013,7 @@ export function createTaskTool(
 			let latestProgress: TaskToolProgress | undefined;
 			const emitProgress = (incoming: TaskToolProgress): void => {
 				const activeTool = "activeTool" in incoming ? incoming.activeTool : latestProgress?.activeTool;
+				const agent = "agent" in incoming ? incoming.agent : latestProgress?.agent ?? customSubagent?.name;
 				const delegateIndex = "delegateIndex" in incoming ? incoming.delegateIndex : latestProgress?.delegateIndex;
 				const delegateTotal = "delegateTotal" in incoming ? incoming.delegateTotal : latestProgress?.delegateTotal;
 				const delegateDescription =
@@ -1719,6 +2029,7 @@ export function createTaskTool(
 					phase: incoming.phase,
 					message: incoming.message,
 					cwd: incoming.cwd ?? latestProgress?.cwd ?? requestedSubagentCwd,
+					agent,
 					activeTool,
 					toolCallsStarted: incoming.toolCallsStarted ?? latestProgress?.toolCallsStarted,
 					toolCallsCompleted: incoming.toolCallsCompleted ?? latestProgress?.toolCallsCompleted,
@@ -1751,11 +2062,22 @@ export function createTaskTool(
 					let releaseRunSlot: (() => void) | undefined;
 					let releaseSlot: (() => void) | undefined;
 					let releaseWriteLock: (() => void) | undefined;
-					let releaseIsolation: (() => void) | undefined;
+					let releaseIsolation: (() => Promise<void>) | undefined;
 					const explicitRootLockKey = lockKey?.trim();
 					let subagentCwd = requestedSubagentCwd;
 					let worktreePath: string | undefined;
 					let runStats: SubagentRunResult["stats"] | undefined;
+					const cleanupState = createWorktreeCleanupState();
+					const onCleanupTelemetry: WorktreeCleanupTelemetryHook = (event) => {
+						if (event.type === "retry") {
+							cleanupState.retries += 1;
+							return;
+						}
+						cleanupState.failures += 1;
+						cleanupState.lastErrorCode = event.errorCode;
+						cleanupState.lastErrorMessage =
+							event.errorMessage ?? `${event.stage} failed at attempt ${event.attempt}`;
+					};
 					const heldWriteLocks = new Map<string, { count: number; release: () => void }>();
 					const acquireLocalWriteLock = async (rawLockKey: string | undefined): Promise<(() => void) | undefined> => {
 						const trimmed = rawLockKey?.trim();
@@ -1854,7 +2176,7 @@ export function createTaskTool(
 							}
 						}
 					if (useWorktree) {
-						const isolated = provisionWorktree(cwd, requestedSubagentCwd, runId);
+						const isolated = provisionWorktree(cwd, requestedSubagentCwd, runId, onCleanupTelemetry);
 						subagentCwd = isolated.runCwd;
 						worktreePath = isolated.worktreePath;
 						releaseIsolation = isolated.cleanup;
@@ -2453,7 +2775,7 @@ export function createTaskTool(
 									}
 
 										let nestedReleaseLock: (() => void) | undefined;
-										let nestedReleaseIsolation: (() => void) | undefined;
+										let nestedReleaseIsolation: (() => Promise<void>) | undefined;
 										let nestedCwd = requestedNestedCwd;
 										try {
 											if (writeCapableProfiles.has(nestedProfile) && nestedRequest.lockKey?.trim()) {
@@ -2464,6 +2786,7 @@ export function createTaskTool(
 												cwd,
 												requestedNestedCwd,
 												`${runId}_nested_${requestLabel.replace(/\./g, "_")}`,
+												onCleanupTelemetry,
 											);
 											nestedCwd = isolated.runCwd;
 											nestedReleaseIsolation = isolated.cleanup;
@@ -2573,7 +2896,9 @@ export function createTaskTool(
 											cause,
 										);
 										} finally {
-											nestedReleaseIsolation?.();
+											if (nestedReleaseIsolation) {
+												await nestedReleaseIsolation();
+											}
 											nestedReleaseLock?.();
 										}
 									};
@@ -2761,7 +3086,7 @@ export function createTaskTool(
 								}
 
 								let childReleaseLock: (() => void) | undefined;
-								let childReleaseIsolation: (() => void) | undefined;
+								let childReleaseIsolation: (() => Promise<void>) | undefined;
 								const explicitChildLock = request.lockKey?.trim();
 								let childCwd = requestedChildCwd;
 								try {
@@ -2771,7 +3096,12 @@ export function createTaskTool(
 										throwIfAborted();
 									}
 								if (request.isolation === "worktree") {
-									const isolated = provisionWorktree(cwd, requestedChildCwd, `${runId}_delegate_${index + 1}`);
+									const isolated = provisionWorktree(
+										cwd,
+										requestedChildCwd,
+										`${runId}_delegate_${index + 1}`,
+										onCleanupTelemetry,
+									);
 									childCwd = isolated.runCwd;
 									childReleaseIsolation = isolated.cleanup;
 								}
@@ -3080,7 +3410,9 @@ export function createTaskTool(
 										classified,
 									);
 									} finally {
-									childReleaseIsolation?.();
+									if (childReleaseIsolation) {
+										await childReleaseIsolation();
+									}
 									childReleaseLock?.();
 								}
 							};
@@ -3566,11 +3898,22 @@ export function createTaskTool(
 							failureCauses: hasFailureCauses ? { ...failureCauses } : undefined,
 							coordination: coordinationSummary,
 							sharedMemorySummaryKey,
+							cleanup:
+								cleanupState.retries > 0 || cleanupState.failures > 0
+									? {
+											retries: cleanupState.retries,
+											failures: cleanupState.failures,
+											lastErrorCode: cleanupState.lastErrorCode,
+											lastErrorMessage: cleanupState.lastErrorMessage,
+										}
+									: undefined,
 						};
 						updateTrackedTaskStatus("done");
 						return { text, details };
 					} finally {
-						releaseIsolation?.();
+						if (releaseIsolation) {
+							await releaseIsolation();
+						}
 						releaseWriteLock?.();
 						releaseSlot?.();
 						releaseRunSlot?.();

@@ -96,9 +96,12 @@ describe("iosm agent verification helpers", () => {
 	it("builds verification prompt and extracts assistant text", () => {
 		const initResult = createInitFixture();
 		const prompt = buildIosmAgentVerificationPrompt(initResult);
-		expect(prompt).toContain("Repository root: /tmp/iosm-project");
-		expect(prompt).toContain("Cycle id: iosm-2026-03-06-001");
-		expect(prompt).toContain("metrics: semantic=0.800, logic=0.700");
+			expect(prompt).toContain("Repository root: /tmp/iosm-project");
+			expect(prompt).toContain("Cycle id: iosm-2026-03-06-001");
+			expect(prompt).toContain("metrics: semantic=0.800, logic=0.700");
+			expect(prompt).toContain("IOSM Execution Contract: keep modifications surgical");
+			expect(prompt).toContain("overwriteExisting=true + rewriteReason");
+			expect(prompt).toContain("IOSM Execution Contract: preserve unrelated repository changes");
 
 		const summary = extractAssistantText({
 			role: "assistant",

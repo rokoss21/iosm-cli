@@ -634,4 +634,111 @@ describe("SettingsManager", () => {
 			});
 		});
 	});
+
+	describe("verification settings", () => {
+		it("uses conservative defaults when verification block is absent", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getVerificationBatchMode()).toBe("sequential");
+			expect(manager.getVerificationMaxParallel()).toBe(4);
+		});
+
+		it("normalizes verification batch mode and parallel bounds", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					verification: {
+						batchMode: "parallel",
+						maxParallel: 999,
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getVerificationBatchMode()).toBe("parallel");
+			expect(manager.getVerificationMaxParallel()).toBe(16);
+		});
+
+		it("falls back to sequential mode on invalid values", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					verification: {
+						batchMode: "invalid",
+						maxParallel: 0,
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getVerificationBatchMode()).toBe("sequential");
+			expect(manager.getVerificationMaxParallel()).toBe(1);
+		});
+	});
+
+	describe("execution guard settings", () => {
+		it("uses conservative defaults when executionGuards block is absent", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getExecutionGuardReadBeforeMutateMode()).toBe("warn");
+			expect(manager.getExecutionGuardRepeatedFailureMode()).toBe("warn");
+			expect(manager.getExecutionGuardRepeatedFailureLimit()).toBe(2);
+			expect(manager.getExecutionGuardMisrouteMode()).toBe("warn");
+		});
+
+		it("normalizes execution guard modes and limits", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					executionGuards: {
+						readBeforeMutateMode: "enforce",
+						repeatedFailureMode: "off",
+						repeatedFailureLimit: 999,
+						misrouteMode: "off",
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getExecutionGuardReadBeforeMutateMode()).toBe("enforce");
+			expect(manager.getExecutionGuardRepeatedFailureMode()).toBe("off");
+			expect(manager.getExecutionGuardRepeatedFailureLimit()).toBe(5);
+			expect(manager.getExecutionGuardMisrouteMode()).toBe("off");
+		});
+
+		it("falls back to safe defaults when execution guard schema is invalid", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					executionGuards: {
+						readBeforeMutateMode: "invalid",
+						repeatedFailureMode: "invalid",
+						repeatedFailureLimit: 0,
+						misrouteMode: "invalid",
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getExecutionGuardReadBeforeMutateMode()).toBe("warn");
+			expect(manager.getExecutionGuardRepeatedFailureMode()).toBe("warn");
+			expect(manager.getExecutionGuardRepeatedFailureLimit()).toBe(2);
+			expect(manager.getExecutionGuardMisrouteMode()).toBe("warn");
+		});
+
+		it("clamps repeated failure limit bounds", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					executionGuards: {
+						readBeforeMutateMode: "warn",
+						repeatedFailureMode: "warn",
+						repeatedFailureLimit: 0,
+						misrouteMode: "warn",
+					},
+				}),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getExecutionGuardRepeatedFailureLimit()).toBe(1);
+		});
+	});
 });

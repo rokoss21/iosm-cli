@@ -104,6 +104,14 @@ describe("AssistantMessageComponent", () => {
 		expect(rendered).toContain("│");
 	});
 
+	it("renders custom assistant label when provided", () => {
+		const component = new AssistantMessageComponent(createAssistantMessage(), false, undefined, "ui_designer");
+		const rendered = stripAnsi(component.render(120).join("\n"));
+
+		expect(rendered).toContain("ui_designer");
+		expect(rendered).not.toContain("IOSM Agent");
+	});
+
 	it("does not render empty assistant frame for tool-only messages", () => {
 		const component = new AssistantMessageComponent(createToolOnlyAssistantMessage(), false);
 		const rendered = stripAnsi(component.render(120).join("\n"));

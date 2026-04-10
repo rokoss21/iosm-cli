@@ -41,6 +41,7 @@ const READ_EXPLORATION_TOOLS = [
 	"semgrep",
 	"sed",
 	"semantic_search",
+	"lsp",
 	"fetch",
 	"web_search",
 	"git_read",

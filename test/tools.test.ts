@@ -214,6 +214,43 @@ describe("Coding Agent Tools", () => {
 
 			expect(getTextOutput(result)).toContain("Successfully wrote");
 		});
+
+		it("should reject overwriting an existing file without explicit opt-in", async () => {
+			const testFile = join(testDir, "existing.txt");
+			writeFileSync(testFile, "Original content");
+
+			await expect(
+				writeTool.execute("test-call-4a", { path: testFile, content: "Replacement content" }),
+			).rejects.toThrow(/Refusing to overwrite existing file/);
+		});
+
+		it("should require rewriteReason when overwriteExisting=true", async () => {
+			const testFile = join(testDir, "existing-with-flag.txt");
+			writeFileSync(testFile, "Original content");
+
+			await expect(
+				writeTool.execute("test-call-4b", {
+					path: testFile,
+					content: "Replacement content",
+					overwriteExisting: true,
+				}),
+			).rejects.toThrow(/requires rewriteReason/);
+		});
+
+		it("should allow intentional full rewrite with explicit reason", async () => {
+			const testFile = join(testDir, "existing-intentional.txt");
+			writeFileSync(testFile, "Original content");
+
+			const result = await writeTool.execute("test-call-4c", {
+				path: testFile,
+				content: "Replacement content",
+				overwriteExisting: true,
+				rewriteReason: "Intentional full-file rewrite for regeneration.",
+			});
+
+			expect(getTextOutput(result)).toContain("Successfully overwrote");
+			expect(readFileSync(testFile, "utf8")).toBe("Replacement content");
+		});
 	});
 
 	describe("edit tool", () => {

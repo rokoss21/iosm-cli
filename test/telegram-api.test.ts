@@ -1,5 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelegramBotApi } from "../src/modes/telegram/telegram-api.js";
+import { TelegramOutboxStore } from "../src/modes/telegram/outbox-store.js";
 
 function okResponse<T>(result: T): Response {
 	return new Response(JSON.stringify({ ok: true, result }), {
@@ -23,6 +27,14 @@ function failResponse(status: number, description: string): Response {
 }
 
 describe("TelegramBotApi", () => {
+	const dirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of dirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("retries rate-limited responses using retry_after", async () => {
 		const sleep = vi.fn(async (_ms: number) => {});
 		const fetchImpl = vi
@@ -116,5 +128,49 @@ describe("TelegramBotApi", () => {
 		await expect(p1).resolves.toMatchObject({ message_id: 101 });
 		await expect(p2).resolves.toMatchObject({ message_id: 102 });
 		expect(callCount).toBe(2);
+	});
+
+	it("replays pending outbox entries on startup", async () => {
+		const root = mkdtempSync(join(tmpdir(), "iosm-telegram-outbox-"));
+		dirs.push(root);
+		const outboxStore = new TelegramOutboxStore(root);
+		outboxStore.enqueueMessage({
+			chatId: 77,
+			text: "recover-me",
+		});
+
+		const sleep = vi.fn(async (_ms: number) => {});
+		const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+			okResponse({
+				message_id: 501,
+				chat: { id: 77, type: "private" },
+				date: 1,
+				text: "recover-me",
+			}),
+		);
+		const api = new TelegramBotApi("test-token", { fetchImpl, sleep, outboxStore });
+
+		const replay = await api.replayOutbox();
+		expect(replay.replayed).toBe(1);
+		expect(replay.failed).toBe(0);
+		expect(replay.remaining).toBe(0);
+		expect(outboxStore.listPending()).toHaveLength(0);
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps outbox entry when outbound send fails", async () => {
+		const root = mkdtempSync(join(tmpdir(), "iosm-telegram-outbox-"));
+		dirs.push(root);
+		const outboxStore = new TelegramOutboxStore(root);
+
+		const sleep = vi.fn(async (_ms: number) => {});
+		const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(new Error("fetch failed"));
+		const api = new TelegramBotApi("test-token", { fetchImpl, sleep, outboxStore });
+
+		await expect(api.sendMessage(10, "will-fail")).rejects.toThrow(/request failed/i);
+		const pending = outboxStore.listPending();
+		expect(pending).toHaveLength(1);
+		expect(pending[0]?.operation).toBe("sendMessage");
+		expect(pending[0]?.attempts).toBeGreaterThanOrEqual(1);
 	});
 });
