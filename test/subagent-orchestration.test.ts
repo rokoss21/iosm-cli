@@ -620,6 +620,50 @@ describe("subagent orchestration", () => {
 		expect(result.details?.profile).toBe("full");
 	});
 
+	it("uses semantic routing callback when heuristic auto-routing cannot infer non-English request", async () => {
+		const cwd = makeTempDir();
+		const observedAgents: string[] = [];
+		const tool = createTaskTool(
+			cwd,
+			async (options) => {
+				observedAgents.push(options.systemPrompt);
+				return { output: "ok" };
+			},
+			{
+				resolveCustomSubagent: (name) =>
+					name === "software_architect"
+						? {
+								name: "software_architect",
+								description: "System design specialist for architecture options",
+								sourcePath: "fixture",
+								profile: "plan",
+								instructions: "Produce architecture options and migration steps.",
+							}
+						: undefined,
+				availableCustomSubagents: ["software_architect"],
+				availableCustomSubagentHints: [
+					{
+						name: "software_architect",
+						description: "System design specialist for architecture options",
+						profile: "plan",
+					},
+				],
+				routeAgentSemantically: async () => "software_architect",
+			},
+		);
+
+		const result = await tool.execute("call_semantic_route_non_english", {
+			description: "请梳理系统架构并给出改进方案",
+			prompt: "请梳理系统架构并给出改进方案",
+			profile: "full",
+		});
+
+		expect((result.content[0] as { type: "text"; text: string }).text).toContain("ok");
+		expect(result.details?.agent).toBe("software_architect");
+		expect(result.details?.profile).toBe("plan");
+		expect(observedAgents[0]).toContain("Produce architecture options");
+	});
+
 	it("uses full-capability tools for meta profile", async () => {
 		const cwd = makeTempDir();
 		let observedTools: string[] = [];

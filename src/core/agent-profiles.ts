@@ -144,7 +144,13 @@ export const AGENT_PROFILES: Record<AgentProfileName, AgentProfile> = {
 		description: "Full access. All tools enabled. Default engineering agent.",
 		tools: [...WRITE_ENGINEERING_TOOLS],
 		thinkingLevel: "medium",
-		systemPromptAppend: "",
+		systemPromptAppend:
+			"NEVER call task() for: greetings, capability questions, general questions, explanations, opinions, or any message that does not require code changes or repository work — answer those directly. " +
+			"Only call task() when the user explicitly requests actionable engineering work (implement, fix, refactor, test, deploy, review code, etc.). " +
+			"When actionable work does involve a distinct engineering domain, delegate to the appropriate specialist via task(agent=NAME): " +
+			"security review → security_auditor, writing tests → qa_test_engineer, CI/CD → devops_automator, database → database_optimizer, " +
+			"frontend → frontend_developer, backend → backend_architect, docs → technical_writer, architecture → software_architect, and so on. " +
+			"Run independent workstreams in parallel. Always prefer task(agent=NAME) over task(profile=) when a specialist exists.",
 		mainMode: true,
 	},
 };

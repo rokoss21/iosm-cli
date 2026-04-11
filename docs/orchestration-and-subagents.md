@@ -150,6 +150,10 @@ Legacy orchestration remains available for existing workflows:
 - if `--max-parallel` is omitted, it defaults to `--agents` (bounded by runtime limit)
 - if worker profiles are omitted, parallel assignments default to `meta` in non-read-only host contexts
 - assignments include `delegate_parallel_hint`; when hint is high, child tasks are expected to fan out with nested delegates (or emit explicit `DELEGATION_IMPOSSIBLE: <reason>`)
+- worker identity is rendered as `agent@profile` when specialist routing selects a concrete custom/system agent
+- status header shows total orchestration `TIME` elapsed (stopwatch), not speculative ETA
+- empty `QUEUED` / `COMPLETED` / `FAILED` sections are hidden from the panel until they contain entries
+- when all orchestration tasks finish, the panel snapshot is archived in chat before normal root-agent rendering continues
 
 Use legacy mode when you explicitly need old team-run semantics.
 

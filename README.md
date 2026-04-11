@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.11</h1>
+<h1>IOSM CLI 0.3.12</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,16 +32,24 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.11
+## ✦ What's New in 0.3.12
 
-- Runtime specialist instruction overlays in `full` profile:
-  - root session can dynamically activate specialist instructions from custom/core agents per task context
-  - specialist identity is now visible in assistant/tool labels when overlay is active
-- Better specialist routing for live tasks:
-  - semantic routing path now prioritizes agent descriptions/instructions (with embedding-backed selection when available)
-  - improved fallback behavior for requests that are not phrased as imperative commands
-- Orchestration visibility improvements:
-  - orchestration worker status now surfaces explicit specialist identity using `agent@profile` labels
+- Runtime specialist overlays are now applied as a true per-turn system layer in `full` profile:
+  - selected specialist instructions are injected for the whole root run
+  - the overlay is preserved across protocol auto-repair retries
+  - overlay instructions are not leaked into the next user turn
+- Specialist routing was hardened for multilingual prompts:
+  - routing now uses semantic model classification plus deterministic heuristic fallback
+  - embedding-only dependency was removed from the runtime path
+  - conversational/small-talk turns are filtered to avoid accidental specialist activation
+- Orchestration UI/UX updates:
+  - worker labels show explicit `agent@profile` identity with routing source
+  - header now shows total orchestration `TIME` stopwatch instead of speculative ETA
+  - empty `QUEUED`/`COMPLETED`/`FAILED` sections are hidden
+  - completed orchestration panel is archived into chat before root response continues
+- Delegation guidance improved:
+  - `full` profile and `task` tool prompts now prefer `task(agent=NAME)` for domain work
+  - specialist catalog and routing metadata were expanded for stronger auto-selection
 
 ## ✦ Major Additions in 0.2.16
 

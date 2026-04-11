@@ -56,6 +56,8 @@ export interface CustomMessage<T = unknown> {
 
 export const INTERNAL_UI_META_CUSTOM_TYPE = "internal-ui-meta";
 
+export type RuntimeAgentRoutingSource = "embedding" | "model_semantic" | "heuristic";
+
 export type InternalUiMetaDetails =
 	| {
 			kind: "orchestration_context";
@@ -66,6 +68,7 @@ export type InternalUiMetaDetails =
 			kind: "runtime_agent_context";
 			agentName: string;
 			agentProfile?: string;
+			routingSource?: RuntimeAgentRoutingSource;
 			rawPrompt?: string;
 			displayText?: string;
 	  };
@@ -81,6 +84,14 @@ export function isInternalUiMetaDetails(value: unknown): value is InternalUiMeta
 	if (candidate.kind === "runtime_agent_context") {
 		if (typeof candidate.agentName !== "string" || candidate.agentName.trim().length === 0) return false;
 		if (candidate.agentProfile !== undefined && typeof candidate.agentProfile !== "string") return false;
+		if (
+			candidate.routingSource !== undefined &&
+			candidate.routingSource !== "embedding" &&
+			candidate.routingSource !== "model_semantic" &&
+			candidate.routingSource !== "heuristic"
+		) {
+			return false;
+		}
 		if (candidate.rawPrompt !== undefined && typeof candidate.rawPrompt !== "string") return false;
 		if (candidate.displayText !== undefined && typeof candidate.displayText !== "string") return false;
 		return true;

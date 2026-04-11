@@ -3,11 +3,19 @@ import { join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
 
 export type TeamTaskStatus = "pending" | "running" | "done" | "error" | "cancelled";
+export type TeamTaskRoutingSource =
+	| "embedding"
+	| "model_semantic"
+	| "heuristic"
+	| "explicit_profile"
+	| "fallback_profile";
 
 export interface TeamTaskRecord {
 	id: string;
 	agentIndex: number;
 	profile: string;
+	agent?: string;
+	routingSource?: TeamTaskRoutingSource;
 	cwd: string;
 	lockKey?: string;
 	dependsOn: string[];
@@ -125,7 +133,14 @@ export function createTeamRun(input: {
 	agents: number;
 	maxParallel?: number;
 	task: string;
-	assignments: Array<{ profile: string; cwd: string; lockKey?: string; dependsOn: number[] }>;
+	assignments: Array<{
+		profile: string;
+		agent?: string;
+		routingSource?: TeamTaskRoutingSource;
+		cwd: string;
+		lockKey?: string;
+		dependsOn: number[];
+	}>;
 }): TeamRunRecord {
 	const runId = `team_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 	const tasks: TeamTaskRecord[] = input.assignments.map((assignment, index) => {
@@ -135,6 +150,8 @@ export function createTeamRun(input: {
 			id,
 			agentIndex: index + 1,
 			profile: assignment.profile,
+			agent: assignment.agent,
+			routingSource: assignment.routingSource,
 			cwd: assignment.cwd,
 			lockKey: assignment.lockKey,
 			dependsOn,

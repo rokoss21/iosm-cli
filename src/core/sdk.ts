@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Api, Message, Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Api, type Message, type Model } from "@mariozechner/pi-ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { createAskUserTool } from "./ask-user-tool.js";
 import { AgentSession } from "./agent-session.js";
@@ -776,6 +776,119 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		: undefined;
 
 	let sessionRef: AgentSession | undefined;
+	const parseAgentRouterJson = (raw: string): Record<string, unknown> | undefined => {
+		const parseObject = (value: string): Record<string, unknown> | undefined => {
+			try {
+				const parsed = JSON.parse(value);
+				return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+			} catch {
+				return undefined;
+			}
+		};
+		const trimmed = raw.trim();
+		if (!trimmed) return undefined;
+		const direct = parseObject(trimmed);
+		if (direct) return direct;
+		const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+		if (fenced) {
+			const parsedFence = parseObject(fenced.trim());
+			if (parsedFence) return parsedFence;
+		}
+		const objectStart = trimmed.indexOf("{");
+		const objectEnd = trimmed.lastIndexOf("}");
+		if (objectStart !== -1 && objectEnd > objectStart) {
+			return parseObject(trimmed.slice(objectStart, objectEnd + 1));
+		}
+		return undefined;
+	};
+	const routeAgentSemanticallyByModel = async (input: {
+		workstream: string;
+		candidates: ReadonlyArray<{ name: string; description?: string; profile?: string; instructions?: string }>;
+	}): Promise<string | undefined> => {
+		const mode = (process.env.IOSM_RUNTIME_AGENT_MODEL_ROUTING ?? "auto").trim().toLowerCase();
+		if (mode === "off" || mode === "disabled" || mode === "none" || mode === "never") {
+			return undefined;
+		}
+		const workstream = input.workstream.trim();
+		if (!workstream) return undefined;
+		const candidates = input.candidates.filter((candidate) => candidate.name.trim().length > 0).slice(0, 32);
+		if (candidates.length === 0) return undefined;
+		const routingModel = sessionRef?.model ?? model;
+		if (!routingModel) return undefined;
+		let apiKey: string | undefined;
+		try {
+			apiKey = await modelRegistry.getApiKey(routingModel);
+		} catch {
+			apiKey = undefined;
+		}
+		if (!apiKey) return undefined;
+		const catalog = candidates
+			.map((candidate, index) => {
+				const snippet = (candidate.instructions ?? "").replace(/\s+/g, " ").trim().slice(0, 220);
+				return [
+					`${index + 1}. name=${candidate.name}`,
+					`profile=${candidate.profile ?? "full"}`,
+					`description=${candidate.description ?? ""}`,
+					`instructions_snippet=${snippet}`,
+				].join(" | ");
+			})
+			.join("\n");
+		const routingPrompt = [
+			"Task request:",
+			workstream,
+			"",
+			"Candidate specialists:",
+			catalog,
+			"",
+			"Return strict JSON only:",
+			'{ "agent": "<exact name or none>", "confidence": 0.0 }',
+			"Rules:",
+			"- Choose by semantic intent, not keyword overlap.",
+			"- Input can be any language; map it to best specialist capability.",
+			"- If uncertain, return agent as none.",
+		].join("\n");
+		try {
+			const response = await completeSimple(
+				routingModel,
+				{
+					systemPrompt:
+						"You are a routing classifier for engineering specialists. Output JSON only with no markdown.",
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "text", text: routingPrompt }],
+							timestamp: Date.now(),
+						},
+					],
+				},
+				routingModel.reasoning
+					? { apiKey, maxTokens: 220, reasoning: "low" as const }
+					: { apiKey, maxTokens: 220 },
+			);
+			if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
+			const text = response.content
+				.filter((part): part is { type: "text"; text: string } => part.type === "text")
+				.map((part) => part.text)
+				.join("\n")
+				.trim();
+			if (!text) return undefined;
+			const parsed = parseAgentRouterJson(text);
+			if (!parsed) return undefined;
+			const confidence = typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence) ? parsed.confidence : undefined;
+			if (confidence !== undefined && confidence < 0.22) return undefined;
+			const rawAgent =
+				typeof parsed.agent === "string"
+					? parsed.agent.trim()
+					: typeof parsed.agentName === "string"
+						? parsed.agentName.trim()
+						: "";
+			if (!rawAgent || rawAgent.toLowerCase() === "none") return undefined;
+			const byLower = new Map(candidates.map((candidate) => [candidate.name.trim().toLowerCase(), candidate.name]));
+			return byLower.get(rawAgent.toLowerCase());
+		} catch {
+			return undefined;
+		}
+	};
 	const getKnownSubagentToolNames = (): string[] => {
 		const known = new Set<string>(Object.keys(allTools));
 		for (const extension of resourceLoader.getExtensions().extensions) {
@@ -820,7 +933,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				availableCustomSubagentHints: initialCustomSubagents.agents.map((agent) => ({
 					name: agent.name,
 					description: agent.description,
+					profile: agent.profile,
+					instructions: agent.instructions.slice(0, 1000),
 				})),
+				routeAgentSemantically: routeAgentSemanticallyByModel,
 				getAvailableToolNames: () =>
 					sessionRef ? sessionRef.getAllTools().map((tool) => tool.name) : getKnownSubagentToolNames(),
 				getMetaMessages: () => sessionRef?.getMetaMessages() ?? [],

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12] - 2026-04-11
+
+### Added
+
+- **Per-turn specialist system overlay** — runtime-selected specialist instructions are now injected as an additive system layer for the active root run, including protocol auto-repair retries.
+- **Routing provenance metadata** — orchestration/task assignment records now persist selected specialist (`agent`) and routing source for traceable worker labeling.
+- **Model-semantic specialist router hooks** — SDK/task pipeline now exposes semantic specialist routing callback support with richer candidate hints (`name/description/profile/instructions`).
+
+### Changed
+
+- **Runtime specialist routing strategy** — removed embedding dependency from the interactive runtime path; routing now uses model-semantic selection with deterministic heuristic fallback and strict time/confidence budgets.
+- **`full` profile delegation policy** — root `full` profile prompt now explicitly prefers specialist delegation via `task(agent=NAME)` for actionable domain work and avoids `task()` for non-actionable chat/capability queries.
+- **Task tool guidance quality** — `task` schema/tool descriptions now prioritize `agent=` routing, include expanded built-in specialist catalog, and clarify profile semantics.
+- **Orchestration panel UX** — header now renders elapsed `TIME` stopwatch instead of ETA; worker rows include `agent@profile` and routing source label; empty `QUEUED`/`COMPLETED`/`FAILED` sections are omitted.
+
+### Fixed
+
+- **Dynamic instruction application reliability** — specialist instructions no longer rely on fragile custom-message layering; they now apply deterministically for the whole run and do not leak into subsequent turns.
+- **Retry-path context loss** — protocol auto-repair retries now preserve runtime specialist instruction context.
+- **Small-talk misrouting regressions** — short conversational turns are guarded from accidental specialist auto-selection.
+- **Orchestration completion flow** — completed orchestration panel now archives cleanly before continuing root-agent response rendering.
+
 ## [0.3.11] - 2026-04-10
 
 ### Added

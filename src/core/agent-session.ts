@@ -484,6 +484,8 @@ export interface PromptOptions {
 	skipProtocolAutoRepair?: boolean;
 	/** Internal safety valve: skip /ultrathink command interception for internal prompts. */
 	skipUltrathinkCommand?: boolean;
+	/** One-turn additive system instructions layered on top of the base system prompt. */
+	additiveSystemPrompt?: string;
 }
 
 /** Result from cycleModel() */
@@ -2277,6 +2279,17 @@ export class AgentSession {
 		const orchestrationDisplayText = orchestrationDirective
 			? deriveOrchestrationDisplayText(expandedText) ?? expandedText
 			: undefined;
+		const additiveSystemPrompt = options?.additiveSystemPrompt?.trim();
+		const withAdditiveSystemOverlay = (systemPrompt: string): string => {
+			if (!additiveSystemPrompt || additiveSystemPrompt.length === 0) {
+				return systemPrompt;
+			}
+			if (systemPrompt.includes(additiveSystemPrompt)) {
+				return systemPrompt;
+			}
+			return `${systemPrompt}\n\n${additiveSystemPrompt}`;
+		};
+		const effectiveBaseSystemPrompt = withAdditiveSystemOverlay(this._baseSystemPrompt);
 		this._appendSessionTrace({
 			type: "prompt_expanded",
 			text: promptText,
@@ -2388,7 +2401,7 @@ export class AgentSession {
 			const result = await this._extensionRunner.emitBeforeAgentStart(
 				promptText,
 				currentImages,
-				this._baseSystemPrompt,
+				effectiveBaseSystemPrompt,
 			);
 			// Add all custom messages from extensions
 			if (result?.messages) {
@@ -2405,11 +2418,14 @@ export class AgentSession {
 			}
 			// Apply extension-modified system prompt, or reset to base
 			if (result?.systemPrompt) {
-				this.agent.setSystemPrompt(result.systemPrompt);
+				this.agent.setSystemPrompt(withAdditiveSystemOverlay(result.systemPrompt));
 			} else {
 				// Ensure we're using the base prompt (in case previous turn had modifications)
-				this.agent.setSystemPrompt(this._baseSystemPrompt);
+				this.agent.setSystemPrompt(effectiveBaseSystemPrompt);
 			}
+		} else {
+			// Ensure one-turn additive overlays are applied even without extension hooks.
+			this.agent.setSystemPrompt(effectiveBaseSystemPrompt);
 		}
 
 		const enableProtocolAutoRepair = !options?.skipProtocolAutoRepair && !this._protocolAutoRepairActive;

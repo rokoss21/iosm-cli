@@ -400,4 +400,78 @@ describe("AgentSession prompt protocol auto-repair", () => {
 
 		expect(streamCalls).toBe(1);
 	});
+
+	it("applies additive system prompt per turn without leaking into the next prompt", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const seenSystemPrompts: string[] = [];
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: "Test prompt",
+				tools: [],
+			},
+			convertToLlm,
+			streamFn: async () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "start", partial: createAssistantMessage([]) });
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "ok" }]),
+					});
+				});
+				return stream;
+			},
+		});
+
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, tempDir);
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const sessionWithRunner = session as unknown as {
+			_extensionRunner?: {
+				hasHandlers: (eventType: string) => boolean;
+				emit: (event: { type: string }) => Promise<void>;
+				emitInput: (
+					text: string,
+					images: unknown,
+					source: "interactive" | "rpc" | "extension",
+				) => Promise<{ action: "continue" }>;
+				emitBeforeAgentStart: (prompt: string, images: unknown, systemPrompt: string) => Promise<undefined>;
+			};
+		};
+		sessionWithRunner._extensionRunner = {
+			hasHandlers: () => false,
+			emit: async () => {},
+			emitInput: async () => ({ action: "continue" }),
+			emitBeforeAgentStart: async (_prompt, _images, systemPrompt) => {
+				seenSystemPrompts.push(systemPrompt);
+				return undefined;
+			},
+		};
+
+		await session.prompt("turn 1", {
+			skipIosmAutopilot: true,
+			additiveSystemPrompt: "<runtime_agent_context agent=\"security_auditor\">Overlay</runtime_agent_context>",
+		});
+		await session.prompt("turn 2", { skipIosmAutopilot: true });
+
+		expect(seenSystemPrompts).toHaveLength(2);
+		expect(seenSystemPrompts[0]).toContain("<runtime_agent_context agent=\"security_auditor\">");
+		expect(seenSystemPrompts[1]).not.toContain("<runtime_agent_context agent=\"security_auditor\">");
+	});
 });

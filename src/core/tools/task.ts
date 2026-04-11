@@ -112,13 +112,27 @@ const taskSchema = Type.Object({
 	),
 	agent: Type.Optional(
 		Type.String({
-			description: "Optional custom subagent name loaded from .iosm/agents or global agents directory.",
+			description:
+				"Name of a specialist agent to invoke. Prefer agent= over profile= whenever a domain expert exists. " +
+				"Built-in specialists: code_reviewer, codebase_auditor, security_auditor, accessibility_auditor, " +
+				"system_error_analyst, software_architect, test_failure_triager, incident_response_commander, test_results_analyzer, " +
+				"qa_test_engineer, api_test_engineer, backend_architect, frontend_developer, database_optimizer, " +
+				"devops_automator, sre_engineer, performance_benchmarker, data_engineer, iosm_change_executor, " +
+				"iosm_postchange_verifier, technical_writer, ui_designer, ux_architect, ux_researcher, workflow_optimizer, brand_guardian. " +
+				"Custom agents from .iosm/agents/ are also supported.",
 		}),
 	),
 	profile: Type.Optional(
 		Type.String({
 			description:
-				"Optional subagent capability profile. Defaults to the current host profile when omitted (or full if host profile is unavailable). Recommended values: explore, plan, iosm, meta, iosm_analyst, iosm_verifier, cycle_planner, full. For custom agents, pass the agent name via `agent`, not `profile`.",
+				"Capability profile to use when no specialist agent is needed. " +
+				"explore = read-only exploration (grep/find/read only). " +
+				"plan = architectural analysis, no file writes. " +
+				"iosm = IOSM methodology with full write access. " +
+				"meta = orchestration-first: decomposes work and fans out delegates. " +
+				"full = end-to-end engineering, all tools (default). " +
+				"iosm_analyst/iosm_verifier/cycle_planner = IOSM-specific analysis roles. " +
+				"Use agent= instead of profile= whenever a named specialist fits the task.",
 		}),
 	),
 	cwd: Type.Optional(
@@ -223,7 +237,15 @@ export interface TaskToolDetails {
 export interface TaskToolOptions {
 	resolveCustomSubagent?: (name: string) => CustomSubagentDefinition | undefined;
 	availableCustomSubagents?: string[];
-	availableCustomSubagentHints?: Array<{ name: string; description: string }>;
+	availableCustomSubagentHints?: Array<{ name: string; description: string; profile?: string; instructions?: string }>;
+	/**
+	 * Optional semantic router callback used when heuristic auto-routing cannot pick
+	 * a specialist. Should return an exact candidate agent name when a strong match exists.
+	 */
+	routeAgentSemantically?: (input: {
+		workstream: string;
+		candidates: readonly AutoDelegateAgentHint[];
+	}) => Promise<string | undefined>;
 	/** Returns currently known runtime tool names (built-ins + extensions) for subagent tool normalization. */
 	getAvailableToolNames?: () => readonly string[];
 	/** Returns pending live meta updates entered during an active run. */
@@ -256,7 +278,7 @@ const systemPromptByProfile: Record<string, string> = {
 		"You are an IOSM verifier. Validate checks and update only required IOSM artifacts with deterministic reasoning.",
 	cycle_planner:
 		"You are an IOSM cycle planner. Propose and align cycle goals with measurable outcomes and concrete risks.",
-	full: "You are a software engineering agent. Execute the task end-to-end.",
+	full: "You are a software engineering agent with full tool access. Execute the assigned task end-to-end. Do NOT call task() for greetings, general questions, or anything that does not require code changes — handle those directly. For actionable engineering work that involves a distinct domain, delegate to a specialist via task(agent=NAME) instead of implementing inline. Run independent workstreams in parallel. Prefer task(agent=NAME) over task(profile=) when a specialist exists.",
 };
 
 const writeCapableTools = new Set(["bash", "edit", "write", "apply_patch", "git_write", "fs_ops"]);
@@ -841,7 +863,7 @@ export type AutoDelegateAgentHint = {
 export function pickAutoDelegateAgent(
 	workstream: string,
 	availableCustomNames: readonly string[],
-	_candidateHints?: readonly AutoDelegateAgentHint[],
+	candidateHints?: readonly AutoDelegateAgentHint[],
 ): string | undefined {
 	if (availableCustomNames.length === 0) return undefined;
 	const normalizedWorkstream = workstream.toLowerCase();
@@ -856,12 +878,65 @@ export function pickAutoDelegateAgent(
 		return undefined;
 	};
 
-	if (/\b(?:performance|latency|throughput|benchmark|profil|load test|stress test|p95|p99)\b/.test(normalizedWorkstream)) {
+	// Semantic description matching: check if any available agent's description
+	// contains significant keywords from the workstream. This enables routing to
+	// custom agents whose names don't match any hardcoded pattern below.
+	if (candidateHints && candidateHints.length > 0) {
+		const workstreamWords = normalizedWorkstream
+			.split(/\W+/)
+			.filter((w) => w.length > 4)
+			.slice(0, 20);
+		let bestMatch: string | undefined;
+		let bestScore = 0;
+		for (const hint of candidateHints) {
+			if (!hint.description) continue;
+			const hintText = `${hint.name} ${hint.description}`.toLowerCase();
+			const score = workstreamWords.reduce((acc, word) => acc + (hintText.includes(word) ? 1 : 0), 0);
+			if (score > bestScore && score >= 2) {
+				bestScore = score;
+				bestMatch = hint.name;
+			}
+		}
+		// Only apply semantic match if it wins clearly; fall through to regex patterns otherwise
+		if (bestMatch && bestScore >= 3) {
+			const resolved = findByHint([bestMatch]);
+			if (resolved) return resolved;
+		}
+	}
+
+	// Test-writing intent must come before security to avoid "auth API tests" → security_auditor
+	if (/\b(?:(?:write|add|create|generate)\s+\w*\s*tests?|unit tests?|integration tests?|e2e tests?|specs?|testing)\b/.test(normalizedWorkstream)) {
+		return findByHint(["qa_test_engineer", "api_test_engineer", "tester", "qa"]);
+	}
+
+	// Security must come before generic catch-all which also contains security/auth keywords.
+	// Use authentication/authorization full forms to avoid matching "auth" in unrelated contexts.
+	if (
+		/\b(?:security|vuln(?:erabilit(?:y|ies))?|pentest|penetration|xss|injection|sqli|csrf|owasp|secrets?|credential|leak|exploit|attack|auth(?:entication|orization)|rbac)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["security_auditor", "code_reviewer", "codebase_auditor", "security"]);
+	}
+
+	if (/\b(?:performance|latency|throughput|benchmark|profil(?:e|ing)|load tests?|stress tests?|p95|p99|speed)\b/.test(normalizedWorkstream)) {
 		return findByHint(["performance_benchmarker", "performance", "benchmark"]);
 	}
-	if (/\b(?:code review|review pr|pr review|pull request|merge readiness|diff review)\b/.test(normalizedWorkstream)) {
+	if (/\b(?:code review|review pr|pr review|pull request|merge readiness|diff review|review\s+\w+\.(?:ts|js|py|go|rs|java))\b/.test(normalizedWorkstream)) {
 		return findByHint(["code_reviewer", "code reviewer", "reviewer"]);
 	}
+	// Generic audit/review must come early — before domain catch-alls that also mention codebase/api/etc.
+	if (/\b(?:audit|inspect|analys[ei]s|assess)\b/.test(normalizedWorkstream)) {
+		return findByHint([
+			"codebase_auditor",
+			"code_reviewer",
+			"security_auditor",
+			"test_results_analyzer",
+			"auditor",
+			"reviewer",
+		]);
+	}
+
 	if (
 		/\b(?:workflow optimization|process optimization|workflow bottleneck|cycle time|handoff|process handoff|process automation|streamline workflow)\b/.test(
 			normalizedWorkstream,
@@ -886,6 +961,10 @@ export function pickAutoDelegateAgent(
 	if (/\b(?:incident|outage|sev[0-9]?|postmortem|post-mortem|rca|root cause|rollback|mitigation)\b/.test(normalizedWorkstream)) {
 		return findByHint(["incident_response_commander", "incident", "commander", "system_error_analyst"]);
 	}
+	// docs/readme before api to avoid "api documentation" → api_test_engineer
+	if (/\b(?:docs?|documentation|readme|guide|changelog|api reference|migration guide|getting started)\b/.test(normalizedWorkstream)) {
+		return findByHint(["technical_writer", "technical writer", "writer", "docs"]);
+	}
 	if (/\b(?:api|endpoint|contract|openapi|swagger|http|rest|graphql|webhook)\b/.test(normalizedWorkstream)) {
 		return findByHint(["api_test_engineer", "backend_architect", "api_tester", "api tester", "api"]);
 	}
@@ -896,11 +975,22 @@ export function pickAutoDelegateAgent(
 	) {
 		return findByHint(["data_engineer", "database_optimizer", "backend_architect", "data"]);
 	}
-	if (/\b(?:database|db |sql|query plan|explain|index|migration|postgres|mysql|sqlite)\b/.test(normalizedWorkstream)) {
+	if (/\b(?:database|db |sql|query plan|explain|index(?:ing)?|postgres|mysql|sqlite|mongo)\b/.test(normalizedWorkstream)) {
 		return findByHint(["database_optimizer", "database", "db", "sql", "backend"]);
 	}
+	// devops/CI/CD must come before microservice/backend to avoid false-positive on "microservice pipeline"
+	if (/\b(?:devops|ci(?:\/cd)?|pipeline|deploy(?:ment)?|release|kubernetes|terraform|helm|infra(?:structure)?|dockerfile|github actions|gitlab ci)\b/.test(normalizedWorkstream)) {
+		return findByHint(["devops_automator", "sre_engineer", "devops", "sre"]);
+	}
 	if (
-		/\b(?:backend|back-end|service layer|microservice|grpc|repository pattern|domain model|bounded context|event-driven)\b/.test(
+		/\b(?:sre|reliability|availability|error budget|slo|sli|burn rate|observability|golden signals|on-call|oncall|runbook)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["sre_engineer", "incident_response_commander", "devops_automator", "sre"]);
+	}
+	if (
+		/\b(?:backend|back-end|service layer|microservice|grpc|repository pattern|domain model|bounded context|event-driven|service mesh)\b/.test(
 			normalizedWorkstream,
 		)
 	) {
@@ -925,17 +1015,8 @@ export function pickAutoDelegateAgent(
 			"verification",
 		]);
 	}
-	if (/\b(?:devops|ci|cd|pipeline|deploy|release|kubernetes|terraform|helm|infra|infrastructure)\b/.test(normalizedWorkstream)) {
-		return findByHint(["devops_automator", "sre_engineer", "devops", "sre"]);
-	}
-	if (
-		/\b(?:sre|reliability|availability|error budget|slo|sli|burn rate|observability|golden signals|on-call|oncall|runbook)\b/.test(
-			normalizedWorkstream,
-		)
-	) {
-		return findByHint(["sre_engineer", "incident_response_commander", "devops_automator", "sre"]);
-	}
-	if (/\b(?:docs?|documentation|readme|guide|migration|changelog|api reference)\b/.test(normalizedWorkstream)) {
+	// docs/readme must come before generic api pattern to avoid "api documentation" → api_test_engineer
+	if (/\b(?:docs?|documentation|readme|guide|changelog|api reference|migration guide|getting started)\b/.test(normalizedWorkstream)) {
 		return findByHint(["technical_writer", "technical writer", "writer", "docs"]);
 	}
 	if (
@@ -988,19 +1069,64 @@ export function pickAutoDelegateAgent(
 			"design",
 		]);
 	}
-	if (/\b(?:architecture|codebase|refactor|security|rbac|auth|database|api)\b/.test(normalizedWorkstream)) {
+	// Generic architecture / codebase catch-all (security/auth already handled above)
+	if (/\b(?:architecture|codebase|refactor|database|api)\b/.test(normalizedWorkstream)) {
 		return findByHint([
 			"software_architect",
 			"backend_architect",
 			"code_reviewer",
 			"data_engineer",
 			"database_optimizer",
-			"security_auditor",
 			"codebase_auditor",
 			"architect",
-			"security",
 			"backend",
 		]);
+	}
+
+	// Error / crash / exception analysis
+	if (
+		/\b(?:error|exception|crash|stack trace|traceback|bug|failure|broken|fix|debug|diagnos)\b/.test(
+			normalizedWorkstream,
+		)
+	) {
+		return findByHint(["system_error_analyst", "code_reviewer", "test_failure_triager", "error"]);
+	}
+
+	// Accessibility before generic audit — "a11y audit" should route to accessibility specialist, not codebase_auditor
+	if (/\b(?:a11y|wcag|aria|screen reader|keyboard nav(?:igation)?|contrast ratio|accessible)\b/.test(normalizedWorkstream)) {
+		return findByHint(["accessibility_auditor", "ux_architect", "ui_designer", "accessibility"]);
+	}
+
+	// Audit / review (generic)
+	if (/\b(?:audit|inspect|review|check|analys[ei]s|assess|evaluat)\b/.test(normalizedWorkstream)) {
+		return findByHint([
+			"codebase_auditor",
+			"code_reviewer",
+			"security_auditor",
+			"test_results_analyzer",
+			"auditor",
+			"reviewer",
+		]);
+	}
+
+	// Write / add tests (generic)
+	if (/\b(?:(?:write|add|create|generate)\s+\w*\s*tests?|unit tests?|integration tests?|e2e tests?|spec(?:s)?|testing)\b/.test(normalizedWorkstream)) {
+		return findByHint(["qa_test_engineer", "api_test_engineer", "tester", "qa"]);
+	}
+
+	// Documentation (generic)
+	if (/\b(?:document|write docs?|update readme|add comments?|explain|annotate|changelog)\b/.test(normalizedWorkstream)) {
+		return findByHint(["technical_writer", "writer", "docs"]);
+	}
+
+	// Monitoring / alerting / observability
+	if (/\b(?:monitor|alert(?:ing)?|metrics?|dashboard|prometheus|grafana|datadog|pagerduty|logging|tracing)\b/.test(normalizedWorkstream)) {
+		return findByHint(["sre_engineer", "devops_automator", "sre", "devops"]);
+	}
+
+	// System design / architecture planning
+	if (/\b(?:design|blueprint|system design|architect(?:ure)?|adr|adl|trade.?off|service mesh|hexagonal|clean arch)\b/.test(normalizedWorkstream)) {
+		return findByHint(["software_architect", "backend_architect", "architect"]);
 	}
 
 	return undefined;
@@ -1718,24 +1844,47 @@ export function createTaskTool(
 	runner: SubagentRunner,
 	options?: TaskToolOptions,
 ): AgentTool<typeof taskSchema> {
-	const customAgentsSnippet =
-		options?.availableCustomSubagentHints && options.availableCustomSubagentHints.length > 0
-			? ` Available custom agents: ${options.availableCustomSubagentHints
-					.map((item) => `${item.name} (${item.description})`)
-					.join(", ")}.`
-			: options?.availableCustomSubagents && options.availableCustomSubagents.length > 0
-				? ` Available custom agents: ${options.availableCustomSubagents.join(", ")}.`
-			: "";
+	const buildAgentCatalogSnippet = (): string => {
+		const hints = options?.availableCustomSubagentHints;
+		const names = options?.availableCustomSubagents;
+		if (hints && hints.length > 0) {
+			// Group agents by profile category for clear LLM guidance
+			const readOnly = hints.filter((h) => h.profile === "explore" || h.profile === "iosm_analyst");
+			const analysts = hints.filter((h) => h.profile === "plan");
+			const engineers = hints.filter(
+				(h) => !h.profile || h.profile === "full" || h.profile === "iosm",
+			);
+			const iosmSpecific = hints.filter(
+				(h) => h.profile === "iosm_verifier" || h.profile === "cycle_planner",
+			);
+			const ungrouped = hints.filter(
+				(h) =>
+					!readOnly.includes(h) && !analysts.includes(h) && !engineers.includes(h) && !iosmSpecific.includes(h),
+			);
+			const parts: string[] = [];
+			if (readOnly.length > 0) parts.push(`Read-only: ${readOnly.map((h) => h.name).join(", ")}`);
+			if (analysts.length > 0) parts.push(`Analysts: ${analysts.map((h) => h.name).join(", ")}`);
+			if (engineers.length > 0) parts.push(`Engineers: ${engineers.map((h) => h.name).join(", ")}`);
+			if (iosmSpecific.length > 0) parts.push(`IOSM: ${iosmSpecific.map((h) => h.name).join(", ")}`);
+			if (ungrouped.length > 0) parts.push(`Other: ${ungrouped.map((h) => h.name).join(", ")}`);
+			return parts.length > 0 ? ` Specialists (agent=NAME): ${parts.join(" | ")}.` : "";
+		}
+		if (names && names.length > 0) {
+			return ` Available agents (agent=NAME): ${names.join(", ")}.`;
+		}
+		return "";
+	};
+	const customAgentsSnippet = buildAgentCatalogSnippet();
 	return {
 		name: "task",
 		label: "task",
 		description:
 			"Launch a specialized subagent to handle a subtask in isolation. " +
-			"Use for: codebase exploration (profile=explore), architectural planning (profile=plan), " +
-			"IOSM artifact analysis (profile=iosm_analyst/iosm_verifier/cycle_planner), orchestration-first execution (profile=meta), or end-to-end implementation (profile=full). " +
-			"Set cwd to isolate subagents into different project areas when orchestrating parallel work. " +
+			"ROUTING: use agent=NAME for a domain specialist (preferred); use profile= for generic capability routing. " +
+			"Profiles: explore=read-only exploration, plan=analysis/no-writes, iosm=IOSM implementation, meta=orchestration fan-out, full=end-to-end (default). " +
+			"Set cwd to scope subagents to different project areas when running in parallel. " +
 			"The subagent runs to completion and returns its full text output. " +
-			"It may request bounded follow-up delegation via <delegate_task> blocks that are executed by the parent task tool." +
+			"It may emit <delegate_task> blocks for bounded follow-up delegation." +
 			customAgentsSnippet,
 		parameters: taskSchema,
 		execute: async (
@@ -1810,25 +1959,49 @@ export function createTaskTool(
 					requestedProfileRaw?.toLowerCase() ||
 					customSubagent?.profile?.trim().toLowerCase() ||
 					hostProfileFallback;
-				const autoRoutingEligibleProfiles = new Set<AgentProfileName>(["full", "plan", "explore"]);
+				const autoRoutingEligibleProfiles = new Set<AgentProfileName>(["full", "plan", "explore", "iosm", "meta"]);
 
-				const canAutoSelectSpecializedAgent =
-					!normalizedAgentName &&
-					!customSubagent &&
-					availableCustomNames.length > 0 &&
-					autoRoutingEligibleProfiles.has((normalizedProfile as AgentProfileName) ?? "full") &&
-					(!!(orchestrationRunId?.trim() || orchestrationTaskId?.trim()) ||
-						hostProfileFallback === "meta" ||
-						(delegateParallelHint ?? 1) >= 2);
-				if (canAutoSelectSpecializedAgent) {
-					const inferredAgentName = pickAutoDelegateAgent(
-						`${description}\n${prompt}`,
-						availableCustomNames,
-						options?.availableCustomSubagentHints,
-					);
-					if (inferredAgentName) {
-						const inferredSubagent = resolveCustom(inferredAgentName);
-						if (inferredSubagent) {
+				// Auto-route to a specialist whenever no explicit agent was requested and the
+				// profile is eligible. The orchestration/meta/parallel guard is removed:
+				// even simple single-agent calls benefit from specialist routing when
+				// the workstream description matches a known domain pattern.
+					const canAutoSelectSpecializedAgent =
+						!normalizedAgentName &&
+						!customSubagent &&
+						availableCustomNames.length > 0 &&
+						autoRoutingEligibleProfiles.has((normalizedProfile as AgentProfileName) ?? "full");
+					if (canAutoSelectSpecializedAgent) {
+						const routingWorkstream = `${description}\n${prompt}`;
+						const routingHints: AutoDelegateAgentHint[] =
+							options?.availableCustomSubagentHints && options.availableCustomSubagentHints.length > 0
+								? options.availableCustomSubagentHints.map((hint) => ({
+									name: hint.name,
+									description: hint.description,
+									profile: hint.profile,
+									instructions: hint.instructions,
+								}))
+								: availableCustomNames.map((name) => ({ name }));
+						let inferredAgentName = pickAutoDelegateAgent(
+							routingWorkstream,
+							availableCustomNames,
+							routingHints,
+						);
+						if (!inferredAgentName && options?.routeAgentSemantically) {
+							try {
+								const semanticCandidate = await options.routeAgentSemantically({
+									workstream: routingWorkstream,
+									candidates: routingHints,
+								});
+								if (semanticCandidate?.trim()) {
+									inferredAgentName = semanticCandidate.trim();
+								}
+							} catch {
+								// Semantic fallback is best-effort.
+							}
+						}
+						if (inferredAgentName) {
+							const inferredSubagent = resolveCustom(inferredAgentName);
+							if (inferredSubagent) {
 							customSubagent = inferredSubagent;
 							normalizedAgentName = inferredSubagent.name;
 							const inferredProfile = inferredSubagent.profile?.trim().toLowerCase();

@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Api, AssistantMessage, ImageContent, Message, Model, OAuthProviderId } from "@mariozechner/pi-ai";
+import { completeSimple, type Api, type AssistantMessage, type ImageContent, type Message, type Model, type OAuthProviderId } from "@mariozechner/pi-ai";
 import type {
 	AutocompleteItem,
 	AutocompleteProvider,
@@ -84,6 +84,7 @@ import {
 	createCompactionSummaryMessage,
 	INTERNAL_UI_META_CUSTOM_TYPE,
 	isInternalUiMetaDetails,
+	type RuntimeAgentRoutingSource,
 } from "../../core/messages.js";
 import {
 	loadModelsDevProviderCatalog,
@@ -139,7 +140,6 @@ import {
 	type SingularStageFit,
 } from "../../core/singular.js";
 import {
-	createSemanticEmbeddingProvider,
 	getDefaultSemanticSearchConfig,
 	getSemanticConfigPath,
 	getSemanticIndexDir,
@@ -208,7 +208,6 @@ import { type SessionContext, SessionManager } from "../../core/session-manager.
 import { SettingsManager, type PackageSource } from "../../core/settings-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import { getToolPermissionSignature, type ToolPermissionRequest } from "../../core/tools/index.js";
-import { pickAutoDelegateAgent, type AutoDelegateAgentHint } from "../../core/tools/task.js";
 import {
 	coerceTaskPlanSnapshot,
 	TASK_PLAN_CUSTOM_TYPE,
@@ -545,7 +544,14 @@ async function promptWithRawToolProtocolRepair(input: {
 	promptOptions?: PromptOptions;
 	onRepairApplied?: (reason: RawToolRepairReason) => void;
 	onRepairExhausted?: (reason: RawToolRepairReason) => Promise<void> | void;
+	beforeEachPrompt?: (context: {
+		attempt: number;
+		isRepair: boolean;
+		promptText: string;
+		promptOptions: PromptOptions;
+	}) => Promise<void> | void;
 }): Promise<void> {
+	const preservedAdditiveSystemPrompt = input.promptOptions?.additiveSystemPrompt;
 	let currentPrompt = input.promptText;
 	let currentOptions: PromptOptions = {
 		...(input.promptOptions ?? {}),
@@ -553,6 +559,12 @@ async function promptWithRawToolProtocolRepair(input: {
 	};
 
 	for (let repairAttempt = 0; repairAttempt <= MAX_TOOL_PROTOCOL_REPAIR_ATTEMPTS; repairAttempt += 1) {
+		await input.beforeEachPrompt?.({
+			attempt: repairAttempt,
+			isRepair: repairAttempt > 0,
+			promptText: currentPrompt,
+			promptOptions: currentOptions,
+		});
 		let toolCallsStarted = 0;
 		let latestAssistantProtocolText = "";
 		let latestAssistantStopReason: string | undefined;
@@ -618,6 +630,7 @@ async function promptWithRawToolProtocolRepair(input: {
 			skipOrchestrationDirective: true,
 			skipProtocolAutoRepair: true,
 			source: "interactive",
+			...(preservedAdditiveSystemPrompt ? { additiveSystemPrompt: preservedAdditiveSystemPrompt } : {}),
 		};
 	}
 }
@@ -1509,79 +1522,34 @@ function formatElapsedClock(ms: number): string {
 	return `${pad2(minutes)}:${pad2(seconds)}`;
 }
 
-const DEFAULT_ORCHESTRATION_EXPECTED_TASK_DURATION_MS = 90_000;
-const MIN_ORCHESTRATION_EXPECTED_TASK_DURATION_MS = 5_000;
-const MAX_ORCHESTRATION_EXPECTED_TASK_DURATION_MS = 30 * 60_000;
-const MIN_ORCHESTRATION_RUNNING_TAIL_MS = 5_000;
-
-function clampNumber(value: number, min: number, max: number): number {
-	return Math.max(min, Math.min(max, value));
-}
-
-function medianNumber(values: number[]): number | undefined {
-	const finite = values
-		.filter((value) => Number.isFinite(value) && value >= 0)
-		.sort((left, right) => left - right);
-	if (finite.length === 0) return undefined;
-	const midpoint = Math.floor(finite.length / 2);
-	if (finite.length % 2 === 1) return finite[midpoint];
-	return (finite[midpoint - 1] + finite[midpoint]) / 2;
-}
-
-function deriveOrchestrationExpectedTaskDurationMs(input: {
-	now: number;
-	runningStates: RunningSubagentState[];
-	completedStates: CompletedSubagentState[];
-}): number {
-	const completedDurations = input.completedStates.map((state) => state.durationMs);
-	const completedMedian = medianNumber(completedDurations);
-	if (typeof completedMedian === "number") {
-		return clampNumber(
-			Math.floor(completedMedian),
-			MIN_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
-			MAX_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
-		);
-	}
-
-	const runningElapsed = input.runningStates
-		.filter((state) => state.phaseState !== "queued")
-		.map((state) => Math.max(0, input.now - state.startTime));
-	const runningMedian = medianNumber(runningElapsed);
-	if (typeof runningMedian === "number") {
-		return clampNumber(
-			Math.floor(runningMedian * 1.2),
-			MIN_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
-			MAX_ORCHESTRATION_EXPECTED_TASK_DURATION_MS,
-		);
-	}
-
-	return DEFAULT_ORCHESTRATION_EXPECTED_TASK_DURATION_MS;
-}
-
-function computeOrchestrationEtaMs(input: {
+function computeOrchestrationElapsedMs(input: {
 	now: number;
 	runningStates: RunningSubagentState[];
 	completedStates: CompletedSubagentState[];
 }): number | undefined {
-	const runningTasks = input.runningStates.filter((state) => state.phaseState !== "queued");
-	const queuedCount = input.runningStates.length - runningTasks.length;
-	if (runningTasks.length === 0 && queuedCount === 0) {
-		return undefined;
+	const startCandidates: number[] = [];
+	for (const state of input.runningStates) {
+		if (Number.isFinite(state.startTime)) {
+			startCandidates.push(state.startTime);
+		}
 	}
+	for (const state of input.completedStates) {
+		if (Number.isFinite(state.finishedAt) && Number.isFinite(state.durationMs)) {
+			startCandidates.push(state.finishedAt - state.durationMs);
+		}
+	}
+	if (startCandidates.length === 0) return undefined;
 
-	const expectedTaskDurationMs = deriveOrchestrationExpectedTaskDurationMs(input);
-	const runningRemaining = runningTasks.map((state) => {
-		const elapsed = Math.max(0, input.now - state.startTime);
-		return Math.max(MIN_ORCHESTRATION_RUNNING_TAIL_MS, expectedTaskDurationMs - elapsed);
-	});
-
-	const queuedWorkMs = queuedCount * expectedTaskDurationMs;
-	const totalWorkMs = runningRemaining.reduce((sum, value) => sum + value, 0) + queuedWorkMs;
-	const workerCount = Math.max(1, runningTasks.length);
-	const longestRunningMs = runningRemaining.length > 0 ? Math.max(...runningRemaining) : 0;
-	const queuedLowerBoundMs = queuedCount > 0 ? expectedTaskDurationMs : 0;
-	const lowerBoundMs = Math.max(longestRunningMs, queuedLowerBoundMs);
-	return Math.max(lowerBoundMs, Math.ceil(totalWorkMs / workerCount));
+	const startedAt = Math.min(...startCandidates);
+	const hasActiveWork = input.runningStates.length > 0;
+	if (hasActiveWork) {
+		return Math.max(0, input.now - startedAt);
+	}
+	const finishedAtCandidates = input.completedStates
+		.map((state) => state.finishedAt)
+		.filter((value) => Number.isFinite(value));
+	const finishedAt = finishedAtCandidates.length > 0 ? Math.max(...finishedAtCandidates) : input.now;
+	return Math.max(0, finishedAt - startedAt);
 }
 
 function hasDependencyCycle(
@@ -1650,6 +1618,7 @@ type RunningSubagentState = {
 	description: string;
 	cwd?: string;
 	agent?: string;
+	routingSource?: OrchestrationRoutingSource;
 	lockKey?: string;
 	isolation?: "none" | "worktree";
 	phase?: string;
@@ -1677,6 +1646,7 @@ type CompletedSubagentState = {
 	durationMs: number;
 	cwd?: string;
 	agent?: string;
+	routingSource?: OrchestrationRoutingSource;
 	lockKey?: string;
 	isolation?: "none" | "worktree";
 	phase?: string;
@@ -1724,9 +1694,31 @@ function getKnownSubagentToolNamesFromSession(session: unknown): string[] | unde
 }
 
 type OrchestrationAgentCatalog = {
-	names: string[];
+	entries: CustomSubagentEntry[];
+	hints: SemanticRoutingHint[];
 	entriesByLowerName: Map<string, CustomSubagentEntry>;
 };
+
+type SemanticRoutingHint = {
+	name: string;
+	description?: string;
+	instructions?: string;
+	profile?: string;
+};
+
+type OrchestrationRoutingSource =
+	| RuntimeAgentRoutingSource
+	| "explicit_profile"
+	| "fallback_profile";
+
+function shouldExcludeOrchestrationRoutingAgent(agent: CustomSubagentEntry): boolean {
+	const normalizedName = agent.name.trim().toLowerCase();
+	const normalizedProfile = (agent.profile ?? "").trim().toLowerCase();
+	if (!normalizedName) return true;
+	if (normalizedProfile === "meta") return true;
+	if (normalizedName.includes("orchestrator")) return true;
+	return false;
+}
 
 function buildOrchestrationAgentCatalog(input: {
 	cwd: string;
@@ -1738,12 +1730,18 @@ function buildOrchestrationAgentCatalog(input: {
 		agentDir: input.agentDir,
 		knownToolNames: input.knownToolNames,
 	});
-	const names = loaded.agents.map((agent) => agent.name);
+	const entries = loaded.agents.filter((agent) => !shouldExcludeOrchestrationRoutingAgent(agent));
+	const hints = entries.map((agent) => ({
+		name: agent.name,
+		description: agent.description,
+		profile: agent.profile,
+		instructions: agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS),
+	}));
 	const entriesByLowerName = new Map<string, CustomSubagentEntry>();
-	for (const agent of loaded.agents) {
+	for (const agent of entries) {
 		entriesByLowerName.set(agent.name.toLowerCase(), agent);
 	}
-	return { names, entriesByLowerName };
+	return { entries, hints, entriesByLowerName };
 }
 
 function coerceAgentProfileName(value: string | undefined, fallback: AgentProfileName): AgentProfileName {
@@ -1752,19 +1750,111 @@ function coerceAgentProfileName(value: string | undefined, fallback: AgentProfil
 	return normalized as AgentProfileName;
 }
 
-function resolveOrchestrationAgentSelection(input: {
+function tokenizeSemanticRoutingText(value: string): string[] {
+	return (value.normalize("NFKC").toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []).filter(
+		(token) => token.length >= 2 && !/^\d+$/u.test(token),
+	);
+}
+
+type RankedSemanticRoutingHint = {
+	hint: SemanticRoutingHint;
+	score: number;
+};
+
+function rankSemanticRoutingHints(input: {
+	query: string;
+	hints: readonly SemanticRoutingHint[];
+	preferImplementationRole?: boolean;
+}): { ranked: RankedSemanticRoutingHint[]; minScore: number } {
+	const queryTokens = Array.from(new Set(tokenizeSemanticRoutingText(input.query)));
+	if (queryTokens.length === 0 || input.hints.length === 0) return { ranked: [], minScore: 0 };
+	const queryTokenSet = new Set(queryTokens);
+	const normalizedQuery = input.query.toLowerCase();
+	const hasTechnicalSignal =
+		/[`{}()[\]<>]/u.test(input.query) ||
+		/(?:=>|->|::|===|!==|==|!=|<=|>=)/u.test(input.query) ||
+		/[A-Za-z]{2,}/u.test(input.query);
+
+	const ranked = input.hints
+		.map((hint) => {
+			const hintText = [
+				hint.name,
+				hint.profile ?? "",
+				hint.description ?? "",
+				(hint.instructions ?? "").slice(0, 420),
+			].join("\n");
+			const hintTokenSet = new Set(tokenizeSemanticRoutingText(hintText));
+			if (hintTokenSet.size === 0) return undefined;
+			let overlap = 0;
+			for (const token of queryTokenSet) {
+				if (hintTokenSet.has(token)) overlap += 1;
+			}
+			let score = overlap / Math.sqrt(queryTokenSet.size * hintTokenSet.size);
+			if (!Number.isFinite(score)) score = 0;
+			const normalizedHintName = hint.name.toLowerCase().replace(/[_-]+/g, " ");
+			const hasDirectNameMatch = normalizedHintName.length > 0 && normalizedQuery.includes(normalizedHintName);
+			if (hasDirectNameMatch) {
+				score += 0.12;
+			}
+			if (hasTechnicalSignal && input.preferImplementationRole && (overlap > 0 || hasDirectNameMatch)) {
+				if (/(?:developer|engineer|architect|tester|qa|devops|sre)/iu.test(hint.name)) {
+					score += 0.02;
+				}
+			}
+			return { hint, score };
+		})
+		.filter((value): value is RankedSemanticRoutingHint => !!value)
+		.sort((left, right) => right.score - left.score);
+
+	const minScore = queryTokenSet.size <= 4 ? 0.12 : 0.06;
+	return { ranked, minScore };
+}
+
+function getSemanticRoutingTopCandidates(input: {
+	query: string;
+	hints: readonly SemanticRoutingHint[];
+	preferImplementationRole?: boolean;
+}): RankedSemanticRoutingHint[] {
+	const { ranked, minScore } = rankSemanticRoutingHints(input);
+	if (ranked.length === 0) return [];
+	const bestScore = ranked[0]?.score ?? 0;
+	return ranked
+		.filter((entry) => entry.score >= minScore && bestScore - entry.score <= 0.03)
+		.slice(0, 3);
+}
+
+function pickSemanticRoutingHintName(input: {
+	query: string;
+	hints: readonly SemanticRoutingHint[];
+	preferImplementationRole?: boolean;
+}): string | undefined {
+	const { ranked: scored, minScore } = rankSemanticRoutingHints(input);
+	const best = scored[0];
+	if (!best) return undefined;
+	const second = scored[1];
+	if (best.score < minScore) return undefined;
+	if (second && best.score < minScore + 0.08 && best.score - second.score < 0.015) return undefined;
+	return best.hint.name;
+}
+
+function resolveOrchestrationAgentSelectionByHeuristics(input: {
 	workstream: string;
 	fallbackProfile: AgentProfileName;
 	catalog: OrchestrationAgentCatalog;
-}): { agentName?: string; profile: AgentProfileName } {
-	const selectedAgentName = pickAutoDelegateAgent(input.workstream, input.catalog.names);
+}): { agentName?: string; profile: AgentProfileName; routingSource: OrchestrationRoutingSource } {
+	const selectedAgentName = pickSemanticRoutingHintName({
+		query: input.workstream,
+		hints: input.catalog.hints,
+		preferImplementationRole: true,
+	});
 	if (!selectedAgentName) {
-		return { profile: input.fallbackProfile };
+		return { profile: input.fallbackProfile, routingSource: "fallback_profile" };
 	}
 	const selectedAgentEntry = input.catalog.entriesByLowerName.get(selectedAgentName.toLowerCase());
 	return {
 		agentName: selectedAgentEntry?.name ?? selectedAgentName,
 		profile: coerceAgentProfileName(selectedAgentEntry?.profile, input.fallbackProfile),
+		routingSource: "heuristic",
 	};
 }
 
@@ -1785,19 +1875,103 @@ function buildOrchestrateAssignmentWorkstreamHint(input: {
 	return `agent ${ordinal}/${input.total}: ${roleHint}\n${input.task}`;
 }
 
-function formatOrchestrationWorkerLabel(profile: string, agent?: string): string {
+function formatOrchestrationRoutingSourceLabel(source: OrchestrationRoutingSource): string {
+	switch (source) {
+		case "model_semantic":
+			return "model-semantic";
+		case "explicit_profile":
+			return "explicit-profile";
+		case "fallback_profile":
+			return "profile-fallback";
+		default:
+			return source;
+	}
+}
+
+function parseOrchestrationRoutingSource(value: unknown): OrchestrationRoutingSource | undefined {
+	if (value === "embedding" || value === "model_semantic" || value === "heuristic") return value;
+	if (value === "explicit_profile" || value === "fallback_profile") return value;
+	return undefined;
+}
+
+function formatOrchestrationWorkerLabel(
+	profile: string,
+	agent?: string,
+	routingSource?: OrchestrationRoutingSource,
+): string {
 	const normalizedProfile = profile.trim();
 	const normalizedAgent = agent?.trim();
-	if (!normalizedAgent) return normalizedProfile;
-	if (normalizedAgent.toLowerCase() === normalizedProfile.toLowerCase()) return normalizedAgent;
-	return `${normalizedAgent}@${normalizedProfile}`;
+	const base =
+		!normalizedAgent
+			? normalizedProfile
+			: normalizedAgent.toLowerCase() === normalizedProfile.toLowerCase()
+				? normalizedAgent
+				: `${normalizedAgent}@${normalizedProfile}`;
+	if (!routingSource) return base;
+	return `${base} [${formatOrchestrationRoutingSourceLabel(routingSource)}]`;
 }
 
 const DEFAULT_ASSISTANT_LABEL = "IOSM Agent";
-const RUNTIME_AGENT_EMBEDDING_MIN_SCORE = 0.12;
-const RUNTIME_AGENT_EMBEDDING_MIN_MARGIN = 0.015;
 const RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS = 2200;
 const RUNTIME_AGENT_ROUTING_MODE = (process.env.IOSM_RUNTIME_AGENT_ROUTING ?? "auto").trim().toLowerCase();
+const RUNTIME_AGENT_MODEL_ROUTING_MODE = (process.env.IOSM_RUNTIME_AGENT_MODEL_ROUTING ?? "auto").trim().toLowerCase();
+const RUNTIME_AGENT_MODEL_ROUTING_CONFIDENCE_MIN = 0.32;
+const RUNTIME_AGENT_ROUTING_BUDGET_MS = parsePositiveIntegerEnv("IOSM_RUNTIME_AGENT_ROUTING_BUDGET_MS", 260);
+const RUNTIME_AGENT_MODEL_ROUTING_TIMEOUT_MS = parsePositiveIntegerEnv("IOSM_RUNTIME_AGENT_MODEL_ROUTING_TIMEOUT_MS", 180);
+const RUNTIME_AGENT_MODEL_ROUTING_MAX_CANDIDATES = 24;
+const RUNTIME_AGENT_HEURISTIC_FALLBACK_ENABLED = !/^(?:0|false|no|off)$/i.test(
+	(process.env.IOSM_RUNTIME_AGENT_HEURISTIC_FALLBACK ?? "on").trim(),
+);
+const RUNTIME_AGENT_SHORT_CONVERSATIONAL_MAX_TOKENS = 1;
+const RUNTIME_AGENT_SHORT_CONVERSATIONAL_MAX_CHARS = 10;
+const RUNTIME_AGENT_SHORT_CONVERSATIONAL_QUESTION_MAX_TOKENS = 4;
+const RUNTIME_AGENT_SHORT_CONVERSATIONAL_QUESTION_MAX_CHARS = 18;
+
+function parsePositiveIntegerEnv(name: string, fallback: number): number {
+	const raw = process.env[name];
+	if (!raw) return fallback;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed)) return fallback;
+	if (parsed <= 0) return fallback;
+	return Math.max(1, Math.round(parsed));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return undefined;
+	return await new Promise<T | undefined>((resolve) => {
+		const timer = setTimeout(() => resolve(undefined), timeoutMs);
+		void promise
+			.then((value) => resolve(value))
+			.catch(() => resolve(undefined))
+			.finally(() => clearTimeout(timer));
+	});
+}
+
+function parseRuntimeAgentRouterJson(raw: string): Record<string, unknown> | undefined {
+	const parseObject = (value: string): Record<string, unknown> | undefined => {
+		try {
+			const parsed = JSON.parse(value);
+			return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+		} catch {
+			return undefined;
+		}
+	};
+	const trimmed = raw.trim();
+	if (!trimmed) return undefined;
+	const direct = parseObject(trimmed);
+	if (direct) return direct;
+	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
+	if (fenced) {
+		const parsedFence = parseObject(fenced.trim());
+		if (parsedFence) return parsedFence;
+	}
+	const objectStart = trimmed.indexOf("{");
+	const objectEnd = trimmed.lastIndexOf("}");
+	if (objectStart !== -1 && objectEnd > objectStart) {
+		return parseObject(trimmed.slice(objectStart, objectEnd + 1));
+	}
+	return undefined;
+}
 
 function shouldExcludeRuntimeOverlayAgent(agent: CustomSubagentEntry): boolean {
 	const normalizedName = agent.name.trim().toLowerCase();
@@ -1806,30 +1980,6 @@ function shouldExcludeRuntimeOverlayAgent(agent: CustomSubagentEntry): boolean {
 	if (normalizedProfile === "meta") return true;
 	if (normalizedName.includes("orchestrator")) return true;
 	return false;
-}
-
-function computeVectorNorm(vector: readonly number[]): number {
-	let sum = 0;
-	for (const value of vector) {
-		sum += value * value;
-	}
-	return Math.sqrt(sum);
-}
-
-function cosineSimilarity(input: {
-	left: readonly number[];
-	leftNorm: number;
-	right: readonly number[];
-	rightNorm: number;
-}): number {
-	if (input.left.length === 0 || input.right.length === 0) return 0;
-	if (input.left.length !== input.right.length) return 0;
-	if (input.leftNorm <= 0 || input.rightNorm <= 0) return 0;
-	let dot = 0;
-	for (let index = 0; index < input.left.length; index += 1) {
-		dot += input.left[index]! * input.right[index]!;
-	}
-	return dot / (input.leftNorm * input.rightNorm);
 }
 
 function buildRuntimeAgentOverlayPrompt(input: {
@@ -1915,8 +2065,8 @@ export class InteractiveMode {
 	private pendingAssistantRuntimeAgentLabels: string[] = [];
 	private activeAssistantOrchestrationContext = false;
 	private activeAssistantRuntimeAgentLabel: string | undefined = undefined;
-	private runtimeOverlayEmbeddingCacheKey: string | undefined = undefined;
-	private runtimeOverlayEmbeddingByAgent = new Map<string, { vector: number[]; norm: number }>();
+	private currentTurnPinnedRuntimeAgentLabel: string | undefined = undefined;
+	private runtimeEmbeddingRoutingDeprecationWarned = false;
 	private runtimeOverlayLastRoutingQuery: string | undefined = undefined;
 	private runtimeOverlayLastAgentName: string | undefined = undefined;
 
@@ -5092,7 +5242,7 @@ export class InteractiveMode {
 			const toolProgress = formatOrchestrationToolProgress(state.toolCallsStarted, state.toolCallsCompleted);
 			const msgCount = Math.max(0, state.assistantMessages ?? 0);
 			const isQueuedTask = state.phaseState === "queued";
-			const workerLabel = formatOrchestrationWorkerLabel(state.profile, state.agent);
+			const workerLabel = formatOrchestrationWorkerLabel(state.profile, state.agent, state.routingSource);
 			const delegateRows: string[] = [];
 			appendDelegateTreeRows(delegateRows, state, { indent: "   " });
 			if (isQueuedTask) {
@@ -5123,7 +5273,7 @@ export class InteractiveMode {
 			const elapsed = formatElapsedClock(state.durationMs);
 			const toolProgress = formatOrchestrationToolProgress(state.toolCallsStarted, state.toolCallsCompleted);
 			const msgCount = Math.max(0, state.assistantMessages ?? 0);
-			const workerLabel = formatOrchestrationWorkerLabel(state.profile, state.agent);
+			const workerLabel = formatOrchestrationWorkerLabel(state.profile, state.agent, state.routingSource);
 			const delegateRows: string[] = [];
 			appendDelegateTreeRows(delegateRows, state, { indent: "   " });
 			if (state.status === "error") {
@@ -5165,8 +5315,8 @@ export class InteractiveMode {
 			return;
 		}
 
-		const etaMs = computeOrchestrationEtaMs({ now, runningStates, completedStates });
-		const etaText = typeof etaMs === "number" ? formatElapsedClock(etaMs) : "done";
+		const elapsedMs = computeOrchestrationElapsedMs({ now, runningStates, completedStates });
+		const elapsedText = typeof elapsedMs === "number" ? formatElapsedClock(elapsedMs) : "00:00";
 		const header =
 			theme.fg("warning", "ORCH") +
 			theme.fg("customMessageText", ` ${doneCount}/${totalCount} done`) +
@@ -5179,7 +5329,7 @@ export class InteractiveMode {
 				? theme.fg("warning", `${failedCount} failed`)
 				: theme.fg("customMessageText", `${failedCount} failed`)) +
 			theme.fg("dim", " | ") +
-			theme.fg("muted", `ETA ${etaText}`);
+			theme.fg("muted", `TIME ${elapsedText}`);
 
 		const panelContent = new Container();
 		panelContent.addChild(new Text(header, 0, 0));
@@ -5188,12 +5338,9 @@ export class InteractiveMode {
 		}
 
 		const renderSection = (title: string, rows: string[], color: ThemeColor = "customMessageText"): void => {
+			if (rows.length === 0) return;
 			panelContent.addChild(new Spacer(1));
 			panelContent.addChild(new Text(theme.fg("warning", title), 0, 0));
-			if (rows.length === 0) {
-				panelContent.addChild(new Text(theme.fg("muted", "• none"), 0, 0));
-				return;
-			}
 			for (const row of rows) {
 				panelContent.addChild(new Text(theme.fg(color, row), 0, 0));
 			}
@@ -5270,14 +5417,28 @@ export class InteractiveMode {
 				cwd?: string;
 				lock_key?: string;
 				agent?: string;
+				run_id?: string;
+				task_id?: string;
+				routing_source?: string;
 				isolation?: "none" | "worktree";
 			};
+			const resolveAssignment = (
+				this as unknown as {
+					resolveOrchestrateTaskAssignmentFromArgs?: (value: {
+						run_id?: unknown;
+						task_id?: unknown;
+					}) => { profile?: string; agent?: string; routingSource?: OrchestrationRoutingSource } | undefined;
+				}
+			).resolveOrchestrateTaskAssignmentFromArgs;
+			const assignment =
+				typeof resolveAssignment === "function" ? resolveAssignment.call(this, args) : undefined;
 			this.subagentComponents.set(toolCallId, {
 				startTime: Date.now(),
-				profile: args.profile ?? "explore",
+				profile: assignment?.profile ?? args.profile ?? "explore",
 				description: args.description ?? "Running subtask",
 				cwd: args.cwd,
-				agent: args.agent,
+				agent: assignment?.agent ?? args.agent,
+				routingSource: assignment?.routingSource ?? parseOrchestrationRoutingSource(args.routing_source),
 				lockKey: args.lock_key,
 				isolation: args.isolation,
 				phase: "queued for execution",
@@ -5293,6 +5454,24 @@ export class InteractiveMode {
 		this.refreshOrchestrationSummaryDisplay();
 	}
 
+	private resolveOrchestrateTaskAssignmentFromArgs(args: {
+		run_id?: unknown;
+		task_id?: unknown;
+	}): { profile?: string; agent?: string; routingSource?: OrchestrationRoutingSource } | undefined {
+		const runId = typeof args.run_id === "string" ? args.run_id.trim() : "";
+		const taskId = typeof args.task_id === "string" ? args.task_id.trim() : "";
+		if (!runId || !taskId) return undefined;
+		const run = getTeamRun(this.sessionManager.getCwd(), runId);
+		if (!run) return undefined;
+		const task = run.tasks.find((entry) => entry.id === taskId);
+		if (!task) return undefined;
+		return {
+			profile: typeof task.profile === "string" && task.profile.trim().length > 0 ? task.profile.trim() : undefined,
+			agent: typeof task.agent === "string" && task.agent.trim().length > 0 ? task.agent.trim() : undefined,
+			routingSource: parseOrchestrationRoutingSource(task.routingSource),
+		};
+	}
+
 	private getSwarmSubagentKey(runId: string, taskId: string): string {
 		return `swarm:${runId}:${taskId}`;
 	}
@@ -5303,10 +5482,14 @@ export class InteractiveMode {
 		task: SwarmTaskPlan;
 		profile?: string;
 		agent?: string;
+		routingSource?: OrchestrationRoutingSource;
 	}): RunningSubagentState {
 		const key = this.getSwarmSubagentKey(input.runId, input.taskId);
 		const existing = this.subagentComponents.get(key);
 		if (existing) {
+			if (input.routingSource) {
+				existing.routingSource = input.routingSource;
+			}
 			return existing;
 		}
 		const state: RunningSubagentState = {
@@ -5315,6 +5498,7 @@ export class InteractiveMode {
 			description: input.task.brief || input.task.id,
 			cwd: this.sessionManager.getCwd(),
 			agent: input.agent?.trim() || undefined,
+			routingSource: input.routingSource,
 			phase: "starting subagent",
 			phaseState: "starting",
 			toolCallsStarted: 0,
@@ -5337,6 +5521,7 @@ export class InteractiveMode {
 		task: SwarmTaskPlan;
 		profile?: string;
 		agent?: string;
+		routingSource?: OrchestrationRoutingSource;
 		progress: SwarmSubagentProgress;
 	}): void {
 		const state = this.ensureSwarmSubagentDisplay({
@@ -5345,6 +5530,7 @@ export class InteractiveMode {
 			task: input.task,
 			profile: input.profile,
 			agent: input.agent,
+			routingSource: input.routingSource,
 		});
 		const progress = input.progress;
 		if (typeof progress.phase === "string" && progress.phase.trim()) {
@@ -5361,6 +5547,9 @@ export class InteractiveMode {
 		}
 		if (typeof progress.agent === "string" && progress.agent.trim()) {
 			state.agent = progress.agent.trim();
+		}
+		if (input.routingSource) {
+			state.routingSource = input.routingSource;
 		}
 		if ("activeTool" in progress) {
 			state.activeTool =
@@ -5439,6 +5628,7 @@ export class InteractiveMode {
 			durationMs,
 			cwd: state.cwd,
 			agent: state.agent,
+			routingSource: state.routingSource,
 			lockKey: state.lockKey,
 			isolation: state.isolation,
 			phase: state.phase,
@@ -5459,6 +5649,7 @@ export class InteractiveMode {
 		this.subagentComponents.delete(key);
 		this.stopSubagentElapsedTimerIfIdle();
 		this.refreshOrchestrationSummaryDisplay();
+		this.archiveOrchestrationPanelToChatIfComplete();
 		this.ui.requestRender();
 	}
 
@@ -5522,6 +5713,7 @@ export class InteractiveMode {
 					this.currentTurnSawTaskToolCall = false;
 					this.turnAllowedToolSignatures.clear();
 					this.activeAssistantRuntimeAgentLabel = undefined;
+					this.currentTurnPinnedRuntimeAgentLabel = undefined;
 					this.orchestrationArchivedForTurn = false;
 				if (typeof (this as any).resetOrchestrationSummary === "function") {
 					(this as any).resetOrchestrationSummary();
@@ -5580,8 +5772,8 @@ export class InteractiveMode {
 					}
 					const consumeRuntimeLabel = (this as unknown as { consumePendingAssistantRuntimeAgentLabel?: () => string | undefined })
 						.consumePendingAssistantRuntimeAgentLabel;
-					this.activeAssistantRuntimeAgentLabel =
-						typeof consumeRuntimeLabel === "function" ? consumeRuntimeLabel.call(this) : undefined;
+					const consumedRuntimeLabel = typeof consumeRuntimeLabel === "function" ? consumeRuntimeLabel.call(this) : undefined;
+					this.activeAssistantRuntimeAgentLabel = consumedRuntimeLabel ?? this.currentTurnPinnedRuntimeAgentLabel;
 					const formatAssistantLabel = (this as unknown as { formatAssistantLabel?: (label?: string) => string }).formatAssistantLabel;
 					const assistantLabel =
 						typeof formatAssistantLabel === "function"
@@ -5690,7 +5882,6 @@ export class InteractiveMode {
 						this.streamingComponent = undefined;
 						this.streamingMessage = undefined;
 						this.activeAssistantOrchestrationContext = false;
-						this.activeAssistantRuntimeAgentLabel = undefined;
 						this.footer.invalidate();
 					}
 				this.ui.requestRender();
@@ -5713,14 +5904,31 @@ export class InteractiveMode {
 						cwd?: string;
 						lock_key?: string;
 						agent?: string;
+						run_id?: string;
+						task_id?: string;
+						routing_source?: string;
 						isolation?: "none" | "worktree";
 					};
+					const resolveAssignment = (
+						this as unknown as {
+							resolveOrchestrateTaskAssignmentFromArgs?: (value: {
+								run_id?: unknown;
+								task_id?: unknown;
+							}) => { profile?: string; agent?: string; routingSource?: OrchestrationRoutingSource } | undefined;
+						}
+					).resolveOrchestrateTaskAssignmentFromArgs;
+					const assignment =
+						typeof resolveAssignment === "function" ? resolveAssignment.call(this, args) : undefined;
 					const existing = this.subagentComponents.get(event.toolCallId);
 					if (existing) {
-						existing.profile = args.profile ?? existing.profile;
+						existing.profile = assignment?.profile ?? args.profile ?? existing.profile;
 						existing.description = args.description ?? existing.description;
 						existing.cwd = args.cwd ?? existing.cwd;
-						existing.agent = args.agent ?? existing.agent;
+						existing.agent = assignment?.agent ?? args.agent ?? existing.agent;
+						existing.routingSource =
+							assignment?.routingSource ??
+							parseOrchestrationRoutingSource(args.routing_source) ??
+							existing.routingSource;
 						existing.lockKey = args.lock_key ?? existing.lockKey;
 						existing.isolation = args.isolation ?? existing.isolation;
 						existing.phase = "starting subagent";
@@ -5728,10 +5936,11 @@ export class InteractiveMode {
 					} else {
 						this.subagentComponents.set(event.toolCallId, {
 							startTime: Date.now(),
-							profile: args.profile ?? "explore",
+							profile: assignment?.profile ?? args.profile ?? "explore",
 							description: args.description ?? "Running subtask",
 							cwd: args.cwd,
-							agent: args.agent,
+							agent: assignment?.agent ?? args.agent,
+							routingSource: assignment?.routingSource ?? parseOrchestrationRoutingSource(args.routing_source),
 							lockKey: args.lock_key,
 							isolation: args.isolation,
 							phase: "starting subagent",
@@ -5871,12 +6080,14 @@ export class InteractiveMode {
 			case "tool_execution_end": {
 				// Handle subagent (task tool) completion
 				const subagent = this.subagentComponents.get(event.toolCallId);
-				if (subagent) {
-					const durationMs = Date.now() - subagent.startTime;
-					const details = event.result?.details as Record<string, unknown> | undefined;
-					const resolvedAgent =
-						typeof details?.agent === "string" && details.agent.trim().length > 0 ? details.agent.trim() : subagent.agent;
-					const outputLength = typeof details?.outputLength === "number" ? details.outputLength : undefined;
+					if (subagent) {
+						const durationMs = Date.now() - subagent.startTime;
+						const details = event.result?.details as Record<string, unknown> | undefined;
+						const resolvedAgent =
+							typeof details?.agent === "string" && details.agent.trim().length > 0 ? details.agent.trim() : subagent.agent;
+						const resolvedRoutingSource =
+							parseOrchestrationRoutingSource(details?.routingSource) ?? subagent.routingSource;
+						const outputLength = typeof details?.outputLength === "number" ? details.outputLength : undefined;
 					const waitMs = typeof details?.waitMs === "number" ? details.waitMs : undefined;
 					const toolCallsStarted =
 						typeof details?.toolCallsStarted === "number"
@@ -5906,11 +6117,12 @@ export class InteractiveMode {
 							finishedAt: Date.now(),
 						status: event.isError ? "error" : "done",
 						profile: subagent.profile,
-						description: subagent.description,
-						durationMs,
-						cwd: subagent.cwd,
-						agent: resolvedAgent,
-						lockKey: subagent.lockKey,
+							description: subagent.description,
+							durationMs,
+							cwd: subagent.cwd,
+							agent: resolvedAgent,
+							routingSource: resolvedRoutingSource,
+							lockKey: subagent.lockKey,
 						isolation: subagent.isolation,
 						phase: subagent.phase,
 						phaseState: subagent.phaseState,
@@ -5939,6 +6151,7 @@ export class InteractiveMode {
 					this.subagentComponents.delete(event.toolCallId);
 					this.stopSubagentElapsedTimerIfIdle();
 					this.refreshOrchestrationSummaryDisplay();
+					this.archiveOrchestrationPanelToChatIfComplete();
 					this.ui.requestRender();
 					break;
 				}
@@ -5968,6 +6181,8 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 				this.subagentComponents.clear();
 				this.clearSubagentElapsedTimer();
+				this.activeAssistantRuntimeAgentLabel = undefined;
+				this.currentTurnPinnedRuntimeAgentLabel = undefined;
 				if (typeof (this as any).refreshOrchestrationSummaryDisplay === "function") {
 					(this as any).refreshOrchestrationSummaryDisplay();
 					if (typeof (this as any).archiveOrchestrationPanelToChatIfComplete === "function") {
@@ -6108,7 +6323,7 @@ export class InteractiveMode {
 		return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_ASSISTANT_LABEL;
 	}
 
-	private buildRuntimeOverlaySemanticHints(agents: readonly CustomSubagentEntry[]): AutoDelegateAgentHint[] {
+	private buildRuntimeOverlaySemanticHints(agents: readonly CustomSubagentEntry[]): SemanticRoutingHint[] {
 		return agents.map((agent) => ({
 			name: agent.name,
 			description: agent.description,
@@ -6117,164 +6332,174 @@ export class InteractiveMode {
 		}));
 	}
 
-	private getRuntimeOverlaySemanticProviderConfig(): SemanticProviderConfig | undefined {
-		const cwd = this.sessionManager.getCwd();
-		const merged = loadMergedSemanticConfig(cwd, getAgentDir());
-		const config = merged.config;
-		if (config?.enabled) return config.provider;
-		// Allow runtime specialist routing to use semantic embeddings even when /semantic
-		// indexing is not explicitly enabled, so agent instruction routing stays dynamic.
-		return getDefaultSemanticSearchConfig().provider;
+	private async chooseRuntimeOverlayAgentInteractively(input: {
+		userInput: string;
+		candidates: readonly RankedSemanticRoutingHint[];
+		runtimeCandidates: readonly CustomSubagentEntry[];
+	}): Promise<CustomSubagentEntry | undefined> {
+		const showExtensionSelector = (
+			this as unknown as {
+				showExtensionSelector?: (title: string, options: string[]) => Promise<string | undefined>;
+			}
+		).showExtensionSelector;
+		if (typeof showExtensionSelector !== "function") return undefined;
+		if (input.candidates.length < 2) return undefined;
+
+		const byLowerName = new Map(input.runtimeCandidates.map((agent) => [agent.name.toLowerCase(), agent]));
+		const title = [
+			"Routing: found multiple suitable agents. Choose the one for this request:",
+			input.userInput.length > 160 ? `${input.userInput.slice(0, 157)}...` : input.userInput,
+		].join("\n");
+		const options = input.candidates.map((candidate) => {
+			const profile = candidate.hint.profile?.trim() || "full";
+			const description = candidate.hint.description?.replace(/\s+/g, " ").trim() ?? "";
+			const descriptionPart = description.length > 72 ? `${description.slice(0, 69)}...` : description;
+			return `${candidate.hint.name} (${profile})${descriptionPart ? ` — ${descriptionPart}` : ""}`;
+		});
+		options.push("Use root agent");
+		const selected = await showExtensionSelector.call(this, title, options);
+		if (!selected) return undefined;
+		if (selected === "Use root agent") return undefined;
+		const selectedAgentName = selected.split(" (")[0]?.trim().toLowerCase();
+		if (!selectedAgentName) return undefined;
+		return byLowerName.get(selectedAgentName);
 	}
 
 	private shouldReusePreviousRuntimeRoutingContext(userInput: string): boolean {
 		const normalized = userInput.trim();
 		if (!normalized) return false;
-		if (normalized.length <= 42) return true;
-		const tokenCount = (normalized.match(/[\p{L}\p{N}_-]+/gu) ?? []).length;
-		if (tokenCount <= 7) return true;
 		if (/^[\p{P}\p{S}\s]+$/u.test(normalized)) return true;
-		return false;
+		const tokenCount = (normalized.match(/[\p{L}\p{N}_]+/gu) ?? []).length;
+		if (tokenCount === 0) return true;
+		return tokenCount <= 1 && normalized.length <= 8;
 	}
 
-	private buildRuntimeOverlayEmbeddingCacheKey(input: {
-		provider: SemanticProviderConfig;
-		agents: readonly CustomSubagentEntry[];
-	}): string {
-		const signature = input.agents
-			.map((agent) =>
-				[
-					agent.name.trim().toLowerCase(),
-					(agent.profile ?? "").trim().toLowerCase(),
-					agent.description.trim(),
-					agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS).trim(),
-				].join("\n"),
-			)
-			.join("\n\n");
-		const hash = crypto.createHash("sha1");
-		hash.update(input.provider.type);
-		hash.update("\n");
-		hash.update(input.provider.model);
-		hash.update("\n");
-		hash.update(input.provider.baseUrl ?? "");
-		hash.update("\n");
-		hash.update(signature);
-		return hash.digest("hex");
-	}
-
-	private async pickRuntimeOverlayAgentByEmbedding(
+	private async pickRuntimeOverlayAgentByModel(
 		userInput: string,
 		agents: readonly CustomSubagentEntry[],
+		options?: { totalTimeoutMs?: number },
 	): Promise<CustomSubagentEntry | undefined> {
+		if (RUNTIME_AGENT_MODEL_ROUTING_MODE === "off" || RUNTIME_AGENT_MODEL_ROUTING_MODE === "disabled") {
+			return undefined;
+		}
+		const timeoutMs = Math.max(
+			20,
+			Math.min(
+				RUNTIME_AGENT_MODEL_ROUTING_TIMEOUT_MS,
+				Math.floor(options?.totalTimeoutMs ?? RUNTIME_AGENT_MODEL_ROUTING_TIMEOUT_MS),
+			),
+		);
 		if (agents.length === 0) return undefined;
-		if (!(this.runtimeOverlayEmbeddingByAgent instanceof Map)) {
-			this.runtimeOverlayEmbeddingByAgent = new Map<string, { vector: number[]; norm: number }>();
-		}
-		const providerConfig = this.getRuntimeOverlaySemanticProviderConfig();
-		if (!providerConfig) return undefined;
-
-		let provider: Awaited<ReturnType<typeof createSemanticEmbeddingProvider>>;
+		const routingModel = this.session.model;
+		if (!routingModel) return undefined;
+		let apiKey: string | undefined;
 		try {
-			provider = await createSemanticEmbeddingProvider(providerConfig, {
-				authStorage: (
-					this.session as unknown as { modelRegistry?: { authStorage?: AuthStorage } }
-				).modelRegistry?.authStorage,
-			});
+			apiKey = await this.session.modelRegistry.getApiKey(routingModel);
 		} catch {
-			return undefined;
+			apiKey = undefined;
 		}
-
-		const cacheKey = this.buildRuntimeOverlayEmbeddingCacheKey({
-			provider: providerConfig,
-			agents,
-		});
-		if (this.runtimeOverlayEmbeddingCacheKey !== cacheKey) {
-			this.runtimeOverlayEmbeddingCacheKey = cacheKey;
-			this.runtimeOverlayEmbeddingByAgent.clear();
-		}
-
-		const byLowerName = new Map<string, CustomSubagentEntry>();
-		for (const agent of agents) {
-			byLowerName.set(agent.name.trim().toLowerCase(), agent);
-		}
-
-		const missingAgents = agents.filter((agent) => !this.runtimeOverlayEmbeddingByAgent.has(agent.name.trim().toLowerCase()));
-		if (missingAgents.length > 0) {
-			let vectors: number[][];
-			try {
-				vectors = await provider.embed(
-					missingAgents.map((agent) =>
-						[
-							`agent: ${agent.name}`,
-							`profile: ${agent.profile ?? "full"}`,
-							`description: ${agent.description}`,
-							"instructions:",
-							agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS),
-						].join("\n"),
-					),
-				);
-			} catch {
-				return undefined;
-			}
-			if (vectors.length !== missingAgents.length) return undefined;
-			for (let index = 0; index < missingAgents.length; index += 1) {
-				const agent = missingAgents[index];
-				const vector = vectors[index];
-				if (!agent || !vector) continue;
-				this.runtimeOverlayEmbeddingByAgent.set(agent.name.trim().toLowerCase(), {
-					vector,
-					norm: computeVectorNorm(vector),
-				});
-			}
-		}
-
-		let queryVector: number[] | undefined;
-		try {
-			const embedded = await provider.embed([userInput]);
-			queryVector = embedded[0];
-		} catch {
-			queryVector = undefined;
-		}
-		if (!queryVector || queryVector.length === 0) return undefined;
-		const queryNorm = computeVectorNorm(queryVector);
-		if (queryNorm <= 0) return undefined;
-
-		const scored = agents
-			.map((agent) => {
-				const vector = this.runtimeOverlayEmbeddingByAgent.get(agent.name.trim().toLowerCase());
-				if (!vector) return undefined;
-				let score = cosineSimilarity({
-					left: queryVector!,
-					leftNorm: queryNorm,
-					right: vector.vector,
-					rightNorm: vector.norm,
-				});
-				if (!Number.isFinite(score)) return undefined;
-				const normalizedProfile = (agent.profile ?? "").trim().toLowerCase();
-				if (normalizedProfile === "full" || normalizedProfile === "iosm") {
-					score += 0.005;
-				}
-				return { agent, score };
+		if (!apiKey) return undefined;
+		const candidates = agents.slice(0, RUNTIME_AGENT_MODEL_ROUTING_MAX_CANDIDATES);
+		const catalogText = candidates
+			.map((agent, index) => {
+				const descriptionSnippet = agent.description.replace(/\s+/g, " ").trim().slice(0, 180);
+				const instructionsSnippet = agent.instructions.replace(/\s+/g, " ").trim().slice(0, 220);
+				return [
+					`${index + 1}. name=${agent.name}`,
+					`profile=${agent.profile ?? "full"}`,
+					`description=${descriptionSnippet}`,
+					`instructions=${instructionsSnippet}`,
+				].join(" | ");
 			})
-			.filter((item): item is { agent: CustomSubagentEntry; score: number } => !!item)
-			.sort((left, right) => right.score - left.score);
-
-		const best = scored[0];
-		if (!best) return undefined;
-		if (best.score < RUNTIME_AGENT_EMBEDDING_MIN_SCORE) return undefined;
-		const second = scored[1];
-		if (second && best.score < RUNTIME_AGENT_EMBEDDING_MIN_SCORE + 0.06 && best.score - second.score < RUNTIME_AGENT_EMBEDDING_MIN_MARGIN) {
+			.join("\n");
+		const routingPrompt = [
+			"Task request:",
+			userInput,
+			"",
+			"Candidate specialists:",
+			catalogText,
+			"",
+			"Return strict JSON only:",
+			'{ "agent": "<exact name or none>", "confidence": 0.0 }',
+			"Rules:",
+			"- Route by semantic intent, not keyword overlap.",
+			"- Input language can be anything.",
+			"- For greetings, small-talk, or generic conversation, return none.",
+			"- If uncertain, return agent as none.",
+		].join("\n");
+		try {
+			const requestPromise = completeSimple(
+				routingModel,
+				{
+					systemPrompt:
+						"You are a specialist routing classifier. Output JSON only with no markdown and no extra prose.",
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "text", text: routingPrompt }],
+							timestamp: Date.now(),
+						},
+					],
+				},
+				routingModel.reasoning
+					? { apiKey, maxTokens: 120, reasoning: "low" as const }
+					: { apiKey, maxTokens: 120 },
+			);
+			const response = await withTimeout(requestPromise, timeoutMs);
+			if (!response) return undefined;
+			if (response.stopReason === "error" || response.stopReason === "aborted") return undefined;
+			const text = response.content
+				.filter((part): part is { type: "text"; text: string } => part.type === "text")
+				.map((part) => part.text)
+				.join("\n")
+				.trim();
+			if (!text) return undefined;
+			const parsed = parseRuntimeAgentRouterJson(text);
+			if (!parsed) return undefined;
+			const confidence = typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence) ? parsed.confidence : undefined;
+			if (confidence !== undefined && confidence < RUNTIME_AGENT_MODEL_ROUTING_CONFIDENCE_MIN) return undefined;
+			const rawAgent =
+				typeof parsed.agent === "string"
+					? parsed.agent.trim()
+					: typeof parsed.agentName === "string"
+						? parsed.agentName.trim()
+						: "";
+			if (!rawAgent || rawAgent.toLowerCase() === "none") return undefined;
+			const byLower = new Map(candidates.map((agent) => [agent.name.trim().toLowerCase(), agent]));
+			return byLower.get(rawAgent.toLowerCase());
+		} catch {
 			return undefined;
 		}
-		return byLowerName.get(best.agent.name.trim().toLowerCase());
 	}
 
 	private async resolveRuntimeSpecialistOverlay(
 		userInput: string,
-	): Promise<{ agent: CustomSubagentEntry; prompt: string } | undefined> {
+	): Promise<{ agent: CustomSubagentEntry; prompt: string; routingSource: RuntimeAgentRoutingSource } | undefined> {
 		if (this.activeProfileName !== "full") return undefined;
 		const trimmedInput = userInput.trim();
 		if (!trimmedInput) return undefined;
+		const tokenCount = (trimmedInput.match(/[\p{L}\p{N}_]+/gu) ?? []).length;
+		const hasCodeLikeSignal =
+			/[`{}()[\]<>]/u.test(trimmedInput) ||
+			/(?:^|\s)(?:\.{0,2}\/|~\/|\/\S+|[A-Za-z]:\\)/u.test(trimmedInput) ||
+			/(?:=>|->|::|===|!==|==|!=|<=|>=)/u.test(trimmedInput);
+		const endsWithQuestion = /[?？]$/u.test(trimmedInput);
+		// Language-agnostic guardrail: avoid specialist overlays for very short chit-chat turns.
+		if (
+			!hasCodeLikeSignal &&
+			tokenCount <= RUNTIME_AGENT_SHORT_CONVERSATIONAL_MAX_TOKENS &&
+			trimmedInput.length <= RUNTIME_AGENT_SHORT_CONVERSATIONAL_MAX_CHARS
+		) {
+			return undefined;
+		}
+		if (
+			!hasCodeLikeSignal &&
+			endsWithQuestion &&
+			tokenCount <= RUNTIME_AGENT_SHORT_CONVERSATIONAL_QUESTION_MAX_TOKENS &&
+			trimmedInput.length <= RUNTIME_AGENT_SHORT_CONVERSATIONAL_QUESTION_MAX_CHARS
+		) {
+			return undefined;
+		}
 		const cwd = this.sessionManager.getCwd();
 		const loaded = loadCustomSubagents({
 			cwd,
@@ -6289,25 +6514,33 @@ export class InteractiveMode {
 			this.shouldReusePreviousRuntimeRoutingContext(trimmedInput)
 				? `${this.runtimeOverlayLastRoutingQuery}\nfollow_up: ${trimmedInput}`
 				: trimmedInput;
-
-		const pickByEmbedding = (
+		const pickByModel = (
 			this as unknown as {
-				pickRuntimeOverlayAgentByEmbedding?: (
+				pickRuntimeOverlayAgentByModel?: (
 					input: string,
 					agents: readonly CustomSubagentEntry[],
+					options?: { totalTimeoutMs?: number },
 				) => Promise<CustomSubagentEntry | undefined>;
 			}
-		).pickRuntimeOverlayAgentByEmbedding;
-		let selectedAgent =
-			typeof pickByEmbedding === "function"
-				? await pickByEmbedding.call(this, routingInput, runtimeCandidates)
-				: undefined;
-		const semanticOnlyRouting =
-			RUNTIME_AGENT_ROUTING_MODE === "semantic-only" || RUNTIME_AGENT_ROUTING_MODE === "embedding-only";
-		if (!selectedAgent && !semanticOnlyRouting) {
+		).pickRuntimeOverlayAgentByModel;
+		const routingDeadlineAt = Date.now() + RUNTIME_AGENT_ROUTING_BUDGET_MS;
+		const getRemainingRoutingBudgetMs = (): number => routingDeadlineAt - Date.now();
+		let selectedAgent: CustomSubagentEntry | undefined;
+		let routingSource: RuntimeAgentRoutingSource | undefined;
+		const showWarning = (this as unknown as { showWarning?: (message: string) => void }).showWarning;
+		if (!this.runtimeEmbeddingRoutingDeprecationWarned && RUNTIME_AGENT_ROUTING_MODE === "embedding-only") {
+			this.runtimeEmbeddingRoutingDeprecationWarned = true;
+			if (typeof showWarning === "function") {
+				showWarning.call(
+					this,
+					"Embedding-based runtime routing is disabled in this version. Falling back to heuristic + model-semantic routing.",
+				);
+			}
+		}
+		if (!selectedAgent && RUNTIME_AGENT_HEURISTIC_FALLBACK_ENABLED) {
 			const buildHints = (
 				this as unknown as {
-					buildRuntimeOverlaySemanticHints?: (agents: readonly CustomSubagentEntry[]) => AutoDelegateAgentHint[];
+					buildRuntimeOverlaySemanticHints?: (agents: readonly CustomSubagentEntry[]) => SemanticRoutingHint[];
 				}
 			).buildRuntimeOverlaySemanticHints;
 			const runtimeHints =
@@ -6319,15 +6552,66 @@ export class InteractiveMode {
 						profile: agent.profile,
 						instructions: agent.instructions.slice(0, RUNTIME_AGENT_INSTRUCTIONS_MAX_CHARS),
 					}));
-			const selectedAgentName = pickAutoDelegateAgent(
-				routingInput,
-				runtimeCandidates.map((agent) => agent.name),
-				runtimeHints,
-			);
-			if (selectedAgentName) {
-				selectedAgent = runtimeCandidates.find((agent) => agent.name.toLowerCase() === selectedAgentName.toLowerCase());
+			const topSemanticCandidates = getSemanticRoutingTopCandidates({
+				query: routingInput,
+				hints: runtimeHints,
+				preferImplementationRole: true,
+			});
+			const chooseRuntimeAgentInteractively = (
+				this as unknown as {
+					chooseRuntimeOverlayAgentInteractively?: (input: {
+						userInput: string;
+						candidates: readonly RankedSemanticRoutingHint[];
+						runtimeCandidates: readonly CustomSubagentEntry[];
+					}) => Promise<CustomSubagentEntry | undefined>;
+				}
+			).chooseRuntimeOverlayAgentInteractively;
+			const promptedUserForChoice =
+				typeof chooseRuntimeAgentInteractively === "function" && topSemanticCandidates.length >= 2;
+			const selectedByUser =
+				promptedUserForChoice
+					? await chooseRuntimeAgentInteractively.call(this, {
+						userInput: trimmedInput,
+						candidates: topSemanticCandidates,
+						runtimeCandidates,
+					})
+					: undefined;
+			if (selectedByUser) {
+				selectedAgent = selectedByUser;
+				routingSource = "heuristic";
+			}
+			if (promptedUserForChoice && !selectedAgent) {
+				// User explicitly declined ambiguous specialists -> keep root for this run.
+				return undefined;
+			}
+			if (!selectedAgent) {
+				const selectedAgentName = pickSemanticRoutingHintName({
+					query: routingInput,
+					hints: runtimeHints,
+					preferImplementationRole: true,
+				});
+				if (selectedAgentName) {
+					selectedAgent = runtimeCandidates.find((agent) => agent.name.toLowerCase() === selectedAgentName.toLowerCase());
+				}
+			}
+			if (selectedAgent) {
+				routingSource = "heuristic";
 			}
 		}
+		const tryModelRoute = async (): Promise<void> => {
+			if (selectedAgent) return;
+			if (typeof pickByModel !== "function") return;
+			if (getRemainingRoutingBudgetMs() <= 0) return;
+			const routed = await pickByModel.call(this, routingInput, runtimeCandidates, {
+				totalTimeoutMs: getRemainingRoutingBudgetMs(),
+			});
+			if (routed) {
+				selectedAgent = routed;
+				routingSource = "model_semantic";
+			}
+		};
+		// Semantic model routing is only attempted after local heuristic routing.
+		await tryModelRoute();
 		if (!selectedAgent) return undefined;
 		this.runtimeOverlayLastRoutingQuery = routingInput;
 		this.runtimeOverlayLastAgentName = selectedAgent.name;
@@ -6335,7 +6619,64 @@ export class InteractiveMode {
 			userInput: trimmedInput,
 			agent: selectedAgent,
 		});
-		return { agent: selectedAgent, prompt };
+		return { agent: selectedAgent, prompt, routingSource: routingSource ?? "heuristic" };
+	}
+
+	private async resolveOrchestrationAgentSelectionAsync(input: {
+		workstream: string;
+		fallbackProfile: AgentProfileName;
+		catalog: OrchestrationAgentCatalog;
+	}): Promise<{ agentName?: string; profile: AgentProfileName; routingSource: OrchestrationRoutingSource }> {
+		const candidates = input.catalog.entries;
+		if (candidates.length > 0) {
+			const showWarning = (this as unknown as { showWarning?: (message: string) => void }).showWarning;
+			if (!this.runtimeEmbeddingRoutingDeprecationWarned && RUNTIME_AGENT_ROUTING_MODE === "embedding-only") {
+				this.runtimeEmbeddingRoutingDeprecationWarned = true;
+				if (typeof showWarning === "function") {
+					showWarning.call(
+						this,
+						"Embedding-based runtime routing is disabled in this version. Falling back to heuristic + model-semantic routing.",
+					);
+				}
+			}
+			if (RUNTIME_AGENT_HEURISTIC_FALLBACK_ENABLED) {
+				const heuristic = resolveOrchestrationAgentSelectionByHeuristics(input);
+				if (heuristic.agentName) {
+					return heuristic;
+				}
+			}
+			const routingDeadlineAt = Date.now() + RUNTIME_AGENT_ROUTING_BUDGET_MS;
+			const getRemainingRoutingBudgetMs = (): number => routingDeadlineAt - Date.now();
+			const pickByModel = (
+				this as unknown as {
+					pickRuntimeOverlayAgentByModel?: (
+						value: string,
+						agents: readonly CustomSubagentEntry[],
+						options?: { totalTimeoutMs?: number },
+					) => Promise<CustomSubagentEntry | undefined>;
+				}
+			).pickRuntimeOverlayAgentByModel;
+			if (
+				typeof pickByModel === "function" &&
+				getRemainingRoutingBudgetMs() > 0
+			) {
+				try {
+					const routed = await pickByModel.call(this, input.workstream, candidates, {
+						totalTimeoutMs: getRemainingRoutingBudgetMs(),
+					});
+					if (routed) {
+						return {
+							agentName: routed.name,
+							profile: coerceAgentProfileName(routed.profile, input.fallbackProfile),
+							routingSource: "model_semantic",
+						};
+					}
+				} catch {
+					// best-effort
+				}
+			}
+		}
+		return resolveOrchestrationAgentSelectionByHeuristics(input);
 	}
 
 	/** Extract text content from a user message */
@@ -6378,6 +6719,7 @@ export class InteractiveMode {
 			const agentLabel = message.details.agentName.trim();
 			if (agentLabel.length > 0) {
 				this.pendingAssistantRuntimeAgentLabels.push(agentLabel);
+				this.currentTurnPinnedRuntimeAgentLabel = agentLabel;
 			}
 			if (message.details.rawPrompt && message.details.displayText) {
 				this.pendingInternalUserDisplayAliases.push({
@@ -6589,6 +6931,7 @@ export class InteractiveMode {
 		this.pendingAssistantRuntimeAgentLabels = [];
 		this.activeAssistantOrchestrationContext = false;
 		this.activeAssistantRuntimeAgentLabel = undefined;
+		this.currentTurnPinnedRuntimeAgentLabel = undefined;
 		const pendingSubagentHistory = new Map<
 			string,
 			{
@@ -12840,21 +13183,32 @@ export class InteractiveMode {
 					showWarning.call(this, message);
 			}
 		};
-		const runPromptWithProtocolRecovery = async (promptText: string, promptOptions?: PromptOptions): Promise<void> => {
+		const runPromptWithProtocolRecovery = async (
+			promptText: string,
+			promptOptions?: PromptOptions,
+			repeatOriginalOverride?: { promptText: string; promptOptions?: PromptOptions },
+			beforeEachPrompt?: (context: {
+				attempt: number;
+				isRepair: boolean;
+				promptText: string;
+				promptOptions: PromptOptions;
+			}) => Promise<void> | void,
+		): Promise<void> => {
 			let nextPrompt = promptText;
 			let nextOptions = promptOptions;
 
 			for (let recoveryAttempt = 0; recoveryAttempt < 3; recoveryAttempt += 1) {
 				let exhaustedReason: RawToolRepairReason | undefined;
-				await promptWithRawToolProtocolRepair({
-					session: this.session,
-					promptText: nextPrompt,
-					promptOptions: nextOptions,
-					onRepairApplied: handleProtocolRepairApplied,
-					onRepairExhausted: async (reason) => {
-						exhaustedReason = reason;
-					},
-				});
+					await promptWithRawToolProtocolRepair({
+						session: this.session,
+						promptText: nextPrompt,
+						promptOptions: nextOptions,
+						onRepairApplied: handleProtocolRepairApplied,
+						onRepairExhausted: async (reason) => {
+							exhaustedReason = reason;
+						},
+						beforeEachPrompt,
+					});
 
 				if (!exhaustedReason) {
 					return;
@@ -12865,8 +13219,8 @@ export class InteractiveMode {
 					return;
 				}
 				if (selectedAction === "repeat_original") {
-					nextPrompt = userInput;
-					nextOptions = undefined;
+					nextPrompt = repeatOriginalOverride?.promptText ?? userInput;
+					nextOptions = repeatOriginalOverride?.promptOptions;
 					continue;
 				}
 				if (selectedAction === "switch_model_retry") {
@@ -12984,13 +13338,23 @@ export class InteractiveMode {
 				this as unknown as {
 					resolveRuntimeSpecialistOverlay?: (
 						input: string,
-					) => Promise<{ agent: CustomSubagentEntry; prompt: string } | undefined>;
+					) => Promise<
+						{ agent: CustomSubagentEntry; prompt: string; routingSource: RuntimeAgentRoutingSource } | undefined
+					>;
 				}
 			).resolveRuntimeSpecialistOverlay;
+			const showStatus = (this as unknown as { showStatus?: (message: string) => void }).showStatus;
+			if (typeof showStatus === "function") {
+				showStatus.call(this, "Analyzing request intent...");
+			}
 			const runtimeOverlay = typeof resolveRuntimeOverlay === "function"
 				? await resolveRuntimeOverlay.call(this, userInput)
 				: undefined;
 			if (runtimeOverlay) {
+				// Pin chosen runtime agent label before the run starts so assistant badge is stable
+				// even if internal custom metadata events arrive slightly later.
+				this.currentTurnPinnedRuntimeAgentLabel = runtimeOverlay.agent.name;
+				this.activeAssistantRuntimeAgentLabel = runtimeOverlay.agent.name;
 				const sendCustomMessage = (
 					this.session as unknown as {
 						sendCustomMessage?: (
@@ -12999,10 +13363,10 @@ export class InteractiveMode {
 								content: string;
 								display: boolean;
 								details: Record<string, unknown>;
-							},
-							options?: { deliverAs?: "steer" | "followUp" | "meta" | "nextTurn"; triggerTurn?: boolean },
-						) => Promise<void>;
-					}
+						},
+						options?: { deliverAs?: "steer" | "followUp" | "meta" | "nextTurn"; triggerTurn?: boolean },
+					) => Promise<void>;
+				}
 				).sendCustomMessage;
 				if (typeof sendCustomMessage === "function") {
 					await sendCustomMessage.call(this.session, {
@@ -13013,22 +13377,35 @@ export class InteractiveMode {
 							kind: "runtime_agent_context",
 							agentName: runtimeOverlay.agent.name,
 							agentProfile: runtimeOverlay.agent.profile ?? "full",
+							routingSource: runtimeOverlay.routingSource,
 							rawPrompt: runtimeOverlay.prompt,
 							displayText: userInput,
 						},
 					});
 				}
-				const showStatus = (this as unknown as { showStatus?: (message: string) => void }).showStatus;
 				if (typeof showStatus === "function") {
+					const routingSourceLabel =
+						runtimeOverlay.routingSource === "model_semantic"
+							? "model-semantic"
+							: runtimeOverlay.routingSource;
 					showStatus.call(
 						this,
-						`Runtime specialist overlay: ${runtimeOverlay.agent.name} (${runtimeOverlay.agent.profile ?? "full"})`,
+						`Runtime specialist overlay: ${runtimeOverlay.agent.name} (${runtimeOverlay.agent.profile ?? "full"}, via ${routingSourceLabel})`,
 					);
 				}
-				await runPromptWithProtocolRecovery(runtimeOverlay.prompt, {
+				const runtimeOverlayPromptOptions: PromptOptions = {
 					expandPromptTemplates: false,
 					source: "interactive",
-				});
+					additiveSystemPrompt: runtimeOverlay.prompt,
+				};
+				await runPromptWithProtocolRecovery(
+					userInput,
+					runtimeOverlayPromptOptions,
+					{
+						promptText: userInput,
+						promptOptions: runtimeOverlayPromptOptions,
+					},
+				);
 				return;
 			}
 			await runPromptWithProtocolRecovery(userInput);
@@ -13881,7 +14258,7 @@ export class InteractiveMode {
 		task: SwarmTaskPlan;
 		runtime: SwarmTaskRuntimeState;
 		contract: EngineeringContract;
-		resolvedWorker?: { agentName?: string; profile: AgentProfileName };
+		resolvedWorker?: { agentName?: string; profile: AgentProfileName; routingSource: OrchestrationRoutingSource };
 		routingCatalog?: OrchestrationAgentCatalog;
 		onProgress?: (progress: SwarmSubagentProgress) => void;
 		stopSignal?: AbortSignal;
@@ -13897,19 +14274,35 @@ export class InteractiveMode {
 		}
 
 		const fallbackProfile = this.resolveSwarmTaskProfile(input.task);
+		const routingCatalog =
+			input.routingCatalog ??
+			buildOrchestrationAgentCatalog({
+				cwd: this.sessionManager.getCwd(),
+				agentDir: getAgentDir(),
+				knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
+			});
+		const resolveOrchestrationSelection = (
+			this as unknown as {
+				resolveOrchestrationAgentSelectionAsync?: (value: {
+					workstream: string;
+					fallbackProfile: AgentProfileName;
+					catalog: OrchestrationAgentCatalog;
+				}) => Promise<{ agentName?: string; profile: AgentProfileName; routingSource: OrchestrationRoutingSource }>;
+			}
+		).resolveOrchestrationAgentSelectionAsync;
 		const routedAgent =
 			input.resolvedWorker ??
-			resolveOrchestrationAgentSelection({
-				workstream: `${input.task.brief}\n${input.meta.request}`,
-				fallbackProfile,
-				catalog:
-					input.routingCatalog ??
-					buildOrchestrationAgentCatalog({
-						cwd: this.sessionManager.getCwd(),
-						agentDir: getAgentDir(),
-						knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
-					}),
-			});
+			(typeof resolveOrchestrationSelection === "function"
+				? await resolveOrchestrationSelection.call(this, {
+					workstream: `${input.task.brief}\n${input.meta.request}`,
+					fallbackProfile,
+					catalog: routingCatalog,
+				})
+				: resolveOrchestrationAgentSelectionByHeuristics({
+					workstream: `${input.task.brief}\n${input.meta.request}`,
+					fallbackProfile,
+					catalog: routingCatalog,
+				}));
 		const profile = routedAgent.profile;
 		const selectedAgentName = routedAgent.agentName;
 		const delegateParallelHint = this.deriveSwarmTaskDelegateParallelHint(input.task);
@@ -13930,13 +14323,14 @@ export class InteractiveMode {
 			`request: ${input.meta.request}`,
 			`task_brief: ${input.task.brief}`,
 			`selected_agent: ${selectedAgentName ?? "(fallback profile)"}`,
+			`routing_source: ${routedAgent.routingSource}`,
 			`touches: ${input.runtime.touches.join(", ") || "(none)"}`,
 			`scopes: ${input.runtime.scopes.join(", ") || "(none)"}`,
 			`constraints: ${(input.contract.constraints ?? []).join("; ") || "(none)"}`,
 			`quality_gates: ${(input.contract.quality_gates ?? []).join("; ") || "(none)"}`,
 			"",
 			"Execution requirements:",
-			`- Use the task tool exactly once with description="${safeDescription || input.task.id}", profile="${profile}"${selectedAgentName ? `, agent="${selectedAgentName}"` : ""}, delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
+			`- Use the task tool exactly once with description="${safeDescription || input.task.id}", profile="${profile}"${selectedAgentName ? `, agent="${selectedAgentName}"` : ""}, routing_source="${routedAgent.routingSource}", delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
 			minDelegatesRequired > 0
 				? `- Inside this single task call, emit at least ${minDelegatesRequired} independent <delegate_task> subtasks (target parallel fan-out up to ${delegateParallelHint}).`
 				: "- Delegation is optional for this task; keep execution focused.",
@@ -14149,7 +14543,7 @@ export class InteractiveMode {
 			"[SWARM_PROTOCOL_CORRECTION]",
 			`Previous response for run_id="${input.meta.runId}" task_id="${input.task.id}" executed zero task tool calls.`,
 			"Execute the required task tool call now. Do not return prose-only output.",
-			`Required task call args: description="${safeDescription || input.task.id}", profile="${profile}"${selectedAgentName ? `, agent="${selectedAgentName}"` : ""}, delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
+			`Required task call args: description="${safeDescription || input.task.id}", profile="${profile}"${selectedAgentName ? `, agent="${selectedAgentName}"` : ""}, routing_source="${routedAgent.routingSource}", delegate_parallel_hint=${delegateParallelHint}, run_id="${input.meta.runId}", task_id="${input.task.id}".`,
 			minDelegatesRequired > 0
 				? `Inside this single task call, emit at least ${minDelegatesRequired} independent <delegate_task> subtasks (target parallel fan-out up to ${delegateParallelHint}).`
 				: "Keep execution focused in a single task call unless decomposition is clearly beneficial.",
@@ -14346,7 +14740,10 @@ export class InteractiveMode {
 			agentDir: getAgentDir(),
 			knownToolNames: getKnownSubagentToolNamesFromSession(this.session),
 		});
-		const taskWorkerById = new Map<string, { profile: AgentProfileName; agentName?: string }>();
+		const taskWorkerById = new Map<
+			string,
+			{ profile: AgentProfileName; agentName?: string; routingSource: OrchestrationRoutingSource }
+		>();
 		let rollingIndex = input.projectIndex;
 		let localStopRequested = false;
 		const refreshIncrementalIndex = (): void => {
@@ -14378,15 +14775,32 @@ export class InteractiveMode {
 					budgetUsd: input.budgetUsd,
 					existingState: initialState,
 					dispatchTask: async ({ task, runtime }) => {
-						const resolvedWorker = resolveOrchestrationAgentSelection({
-							workstream: `${task.brief}\n${input.meta.request}`,
-							fallbackProfile: this.resolveSwarmTaskProfile(task),
-							catalog: routingCatalog,
-						});
-						taskWorkerById.set(task.id, {
-							profile: resolvedWorker.profile,
-							agentName: resolvedWorker.agentName,
-						});
+							const resolveOrchestrationSelection = (
+								this as unknown as {
+									resolveOrchestrationAgentSelectionAsync?: (value: {
+										workstream: string;
+										fallbackProfile: AgentProfileName;
+										catalog: OrchestrationAgentCatalog;
+									}) => Promise<{ agentName?: string; profile: AgentProfileName; routingSource: OrchestrationRoutingSource }>;
+								}
+							).resolveOrchestrationAgentSelectionAsync;
+						const resolvedWorker =
+							typeof resolveOrchestrationSelection === "function"
+								? await resolveOrchestrationSelection.call(this, {
+									workstream: `${task.brief}\n${input.meta.request}`,
+									fallbackProfile: this.resolveSwarmTaskProfile(task),
+									catalog: routingCatalog,
+								})
+								: resolveOrchestrationAgentSelectionByHeuristics({
+									workstream: `${task.brief}\n${input.meta.request}`,
+									fallbackProfile: this.resolveSwarmTaskProfile(task),
+									catalog: routingCatalog,
+								});
+							taskWorkerById.set(task.id, {
+								profile: resolvedWorker.profile,
+								agentName: resolvedWorker.agentName,
+								routingSource: resolvedWorker.routingSource,
+							});
 						return this.dispatchSwarmTaskWithAgent({
 							meta: input.meta,
 							task,
@@ -14397,15 +14811,16 @@ export class InteractiveMode {
 							stopSignal: this.swarmAbortController?.signal,
 							onProgress: (progress) => {
 								const routed = taskWorkerById.get(task.id);
-								this.updateSwarmSubagentProgress({
-									runId: input.runId,
-									taskId: task.id,
-									task,
-									profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
-									agent: progress.agent ?? routed?.agentName,
-									progress,
-								});
-							},
+									this.updateSwarmSubagentProgress({
+										runId: input.runId,
+										taskId: task.id,
+										task,
+										profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
+										agent: progress.agent ?? routed?.agentName,
+										routingSource: routed?.routingSource,
+										progress,
+									});
+								},
 						});
 					},
 					confirmSpawn: async ({ candidate, parentTask }) => {
@@ -14444,6 +14859,7 @@ export class InteractiveMode {
 									task,
 									profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
 									agent: routed?.agentName,
+									routingSource: routed?.routingSource,
 									progress: {
 										phase: "starting subagent",
 										phaseState: "starting",
@@ -14470,6 +14886,7 @@ export class InteractiveMode {
 									task,
 									profile: routed?.profile ?? this.resolveSwarmTaskProfile(task),
 									agent: routed?.agentName,
+									routingSource: routed?.routingSource,
 									progress: {
 										phase: event.message,
 										phaseState: "running",
@@ -15298,6 +15715,7 @@ export class InteractiveMode {
 		const assignmentRecords: Array<{
 			profile: AgentProfileName;
 			agent?: string;
+			routingSource: OrchestrationRoutingSource;
 			cwd: string;
 			lockKey?: string;
 			dependsOn: number[];
@@ -15306,27 +15724,49 @@ export class InteractiveMode {
 		const defaultAssignmentProfile = this.resolveOrchestrateDefaultAssignmentProfile(parsed);
 		const delegateParallelHints: number[] = [];
 		let specializedAgentSelections = 0;
-		for (let index = 0; index < parsed.agents; index++) {
-			const explicitProfile = parsed.profiles?.[index] ?? parsed.profile;
-			let assignmentProfile = explicitProfile ?? defaultAssignmentProfile;
-			let assignmentAgent: string | undefined;
-			if (!explicitProfile) {
-				const workstreamHint = buildOrchestrateAssignmentWorkstreamHint({
-					task: parsed.task,
-					index,
-					total: parsed.agents,
-				});
-				const routed = resolveOrchestrationAgentSelection({
-					workstream: workstreamHint,
-					fallbackProfile: defaultAssignmentProfile,
-					catalog: routingCatalog,
-				});
-				if (routed.agentName) {
-					assignmentAgent = routed.agentName;
-					assignmentProfile = routed.profile;
-					specializedAgentSelections += 1;
-				}
-			}
+			for (let index = 0; index < parsed.agents; index++) {
+				const explicitProfile = parsed.profiles?.[index] ?? parsed.profile;
+				let assignmentProfile = explicitProfile ?? defaultAssignmentProfile;
+				let assignmentAgent: string | undefined;
+				let assignmentRoutingSource: OrchestrationRoutingSource = explicitProfile
+					? "explicit_profile"
+					: "fallback_profile";
+				if (!explicitProfile) {
+					const workstreamHint = buildOrchestrateAssignmentWorkstreamHint({
+						task: parsed.task,
+						index,
+						total: parsed.agents,
+					});
+						const resolveOrchestrationSelection = (
+							this as unknown as {
+								resolveOrchestrationAgentSelectionAsync?: (value: {
+									workstream: string;
+									fallbackProfile: AgentProfileName;
+									catalog: OrchestrationAgentCatalog;
+								}) => Promise<
+									{ agentName?: string; profile: AgentProfileName; routingSource: OrchestrationRoutingSource }
+								>;
+							}
+						).resolveOrchestrationAgentSelectionAsync;
+					const routed =
+						typeof resolveOrchestrationSelection === "function"
+							? await resolveOrchestrationSelection.call(this, {
+								workstream: workstreamHint,
+								fallbackProfile: defaultAssignmentProfile,
+								catalog: routingCatalog,
+							})
+							: resolveOrchestrationAgentSelectionByHeuristics({
+								workstream: workstreamHint,
+								fallbackProfile: defaultAssignmentProfile,
+								catalog: routingCatalog,
+							});
+						if (routed.agentName) {
+							assignmentAgent = routed.agentName;
+							assignmentProfile = routed.profile;
+							specializedAgentSelections += 1;
+						}
+						assignmentRoutingSource = routed.routingSource;
+					}
 			const assignmentCwd = parsed.cwds?.[index] ?? ".";
 			const assignmentLock = parsed.locks?.[index];
 			const dependsOn = parsed.dependencies?.find((entry) => entry.agent === index + 1)?.dependsOn ?? [];
@@ -15344,6 +15784,7 @@ export class InteractiveMode {
 			assignmentRecords.push({
 				profile: assignmentProfile,
 				agent: assignmentAgent,
+				routingSource: assignmentRoutingSource,
 				cwd: resolvedCwd,
 				lockKey: assignmentLock,
 				dependsOn,
@@ -15351,6 +15792,7 @@ export class InteractiveMode {
 			assignments.push(
 				`- agent ${index + 1}: profile=${assignmentProfile} cwd=${resolvedCwd}${assignmentLock ? ` lock_key=${assignmentLock}` : ""
 				}${assignmentAgent ? ` agent=${assignmentAgent}` : ""
+				} routing_source=${assignmentRoutingSource
 				}${parsed.isolation === "worktree" ? " isolation=worktree" : ""}${dependsOn.length > 0 ? ` depends_on=${dependsOn.join("|")}` : ""
 				} delegate_parallel_hint=${delegateParallelHint}
 				}`,
@@ -15371,7 +15813,7 @@ export class InteractiveMode {
 			const assignment = assignmentRecords[index];
 			const hint = delegateParallelHints[index] ?? 1;
 			return `- task_call_${index + 1}: description="agent ${index + 1} execution" profile="${assignment.profile}" cwd="${assignment.cwd}" run_id="${teamRun.runId}" task_id="${task.id}"${assignment.lockKey ? ` lock_key="${assignment.lockKey}"` : ""
-				}${assignment.agent ? ` agent="${assignment.agent}"` : ""}${parsed.isolation === "worktree" ? ' isolation="worktree"' : ""} delegate_parallel_hint=${hint}`;
+				}${assignment.agent ? ` agent="${assignment.agent}"` : ""} routing_source="${assignment.routingSource}"${parsed.isolation === "worktree" ? ' isolation="worktree"' : ""} delegate_parallel_hint=${hint}`;
 		});
 
 		if (
@@ -15416,6 +15858,7 @@ export class InteractiveMode {
 				"- in parallel mode, use parallel tool-call style (<use_parallel_tool_calls>)",
 				"- when assignment lines include depends_on, still emit one task call per assignment; runtime enforces dependency gating",
 				"- when assignment lines include agent=<name>, propagate the same agent argument in corresponding task calls",
+				"- when assignment lines include routing_source=<value>, propagate the same routing_source argument in corresponding task calls",
 				"- include delegate_parallel_hint from each assignment/task_call hint in every corresponding task tool call",
 				"- for delegate_parallel_hint >= 2, split child work into nested <delegate_task> streams unless impossible",
 				"- treat delegates strictly as child task calls; do not count plain tool invocations as delegated agents",

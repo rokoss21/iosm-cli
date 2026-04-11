@@ -137,6 +137,20 @@ If a model returns a silent `stop` (no visible text and no tool call), interacti
 After `/compact`, compaction summaries carry a continuation hint to proceed from current state without repeating a full recap unless user explicitly asks.
 `/blast` and `/shadow` are removed from active interactive workflow.
 
+### Dynamic Specialist Overlay (`full` profile)
+
+When you run in `full`, the root agent can dynamically attach specialist instructions for the active request:
+
+- routing is semantic and language-agnostic (model-semantic + deterministic heuristic fallback)
+- selected specialist instructions are injected as a one-turn additive system layer
+- the specialist layer persists across protocol recovery retries
+- non-actionable conversational turns are filtered to avoid unnecessary specialist activation
+
+UI behavior:
+
+- assistant label switches from default `IOSM Agent` to the selected specialist name for the active turn
+- internal metadata stores specialist profile + routing source for traceability
+
 ### `/contract` Detailed Guide
 
 `/contract` is a layered contract editor with two sources and one merged output:
