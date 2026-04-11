@@ -43,6 +43,26 @@ Complete reference for `iosm-cli` settings, environment variables, profiles, and
 .mcp.json                  # Project MCP servers (repository root)
 ```
 
+### Keybindings File
+
+`~/.iosm/agent/keybindings.json` supports keyboard shortcut overrides.
+
+Preferred format:
+
+```json
+{
+  "cycleModelForward": ["ctrl+p", "alt+p"],
+  "cycleModelBackward": ["shift+ctrl+p", "alt+shift+p"],
+  "selectModel": ["ctrl+l", "alt+l"],
+  "expandTools": ["ctrl+o", "alt+o"]
+}
+```
+
+Backward compatibility:
+
+- legacy `key -> action` entries are also accepted (from older examples)
+- action aliases such as `nextModel`, `previousModel`, and `openModelSelector` are normalized automatically
+
 ---
 
 ## Settings Hierarchy

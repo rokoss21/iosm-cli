@@ -5881,4 +5881,29 @@ describe("InteractiveMode.requestToolPermission", () => {
 		expect(allowed).toBe(true);
 		expect(fakeThis.showExtensionSelector).not.toHaveBeenCalled();
 	});
+
+	test("handleCtrlZ restores TUI and warns when suspend signal is unsupported", () => {
+		const ui = {
+			stop: vi.fn(),
+			start: vi.fn(),
+			requestRender: vi.fn(),
+		};
+		const showWarning = vi.fn();
+		const fakeThis: any = { ui, showWarning };
+
+		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+			throw new Error("unsupported");
+		});
+
+		try {
+			(InteractiveMode as any).prototype.handleCtrlZ.call(fakeThis);
+		} finally {
+			killSpy.mockRestore();
+		}
+
+		expect(ui.stop).toHaveBeenCalledTimes(1);
+		expect(ui.start).toHaveBeenCalledTimes(1);
+		expect(ui.requestRender).toHaveBeenCalledWith(true);
+		expect(showWarning).toHaveBeenCalledWith("Suspend is not supported in this terminal/session.");
+	});
 });

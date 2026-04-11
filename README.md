@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1>IOSM CLI 0.3.12</h1>
+<h1>IOSM CLI 0.3.13</h1>
 
 <p><strong>Terminal-native AI runtime for controlled, measurable engineering work on real codebases.</strong></p>
 
@@ -32,24 +32,22 @@ It is not a chat interface. It is a runtime.
 
 ---
 
-## ✦ What's New in 0.3.12
+## ✦ What's New in 0.3.13
 
-- Runtime specialist overlays are now applied as a true per-turn system layer in `full` profile:
-  - selected specialist instructions are injected for the whole root run
-  - the overlay is preserved across protocol auto-repair retries
-  - overlay instructions are not leaked into the next user turn
-- Specialist routing was hardened for multilingual prompts:
-  - routing now uses semantic model classification plus deterministic heuristic fallback
-  - embedding-only dependency was removed from the runtime path
-  - conversational/small-talk turns are filtered to avoid accidental specialist activation
-- Orchestration UI/UX updates:
-  - worker labels show explicit `agent@profile` identity with routing source
-  - header now shows total orchestration `TIME` stopwatch instead of speculative ETA
-  - empty `QUEUED`/`COMPLETED`/`FAILED` sections are hidden
-  - completed orchestration panel is archived into chat before root response continues
-- Delegation guidance improved:
-  - `full` profile and `task` tool prompts now prefer `task(agent=NAME)` for domain work
-  - specialist catalog and routing metadata were expanded for stronger auto-selection
+- Hotkeys are now more reliable across terminals and OSes:
+  - added fallback bindings for unstable control combos (`Ctrl+O/T/P/L` now have `Alt+...` alternatives)
+  - model cycling and selector shortcuts are more robust in Windows terminal environments
+  - reverse model cycling is explicitly surfaced in `/hotkeys`
+- `Ctrl+Z`/suspend behavior was hardened:
+  - suspend is disabled on Windows by default (no broken signal path)
+  - unsupported suspend environments now recover TUI safely and show a warning instead of breaking the session
+- Keybinding configuration compatibility was improved:
+  - supports both `action -> key(s)` (preferred) and legacy `key -> action` formats
+  - normalizes common variants (`Control+...`, case/spacing differences)
+  - includes action aliases like `nextModel`, `previousModel`, `openModelSelector`
+- Keyboard docs and runtime hints were aligned:
+  - updated interactive/docs/configuration examples to the real supported format
+  - `/hotkeys` now displays active bind values (including platform-specific image-paste key)
 
 ## ✦ Major Additions in 0.2.16
 

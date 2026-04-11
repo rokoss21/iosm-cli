@@ -56,14 +56,14 @@ export const DEFAULT_APP_KEYBINDINGS: Record<AppAction, KeyId | KeyId[]> = {
 	interrupt: "escape",
 	clear: "ctrl+c",
 	exit: "ctrl+d",
-	suspend: "ctrl+z",
+	suspend: process.platform === "win32" ? [] : (["ctrl+z", "alt+z"] as KeyId[]),
 	cycleProfile: "shift+tab",
 	cycleThinkingLevel: "shift+ctrl+t",
-	cycleModelForward: "ctrl+p",
-	cycleModelBackward: "shift+ctrl+p",
-	selectModel: "ctrl+l",
-	expandTools: "ctrl+o",
-	toggleThinking: "ctrl+t",
+	cycleModelForward: ["ctrl+p", "alt+p"] as KeyId[],
+	cycleModelBackward: ["shift+ctrl+p", "alt+shift+p"] as KeyId[],
+	selectModel: ["ctrl+l", "alt+l"] as KeyId[],
+	expandTools: ["ctrl+o", "alt+o"] as KeyId[],
+	toggleThinking: ["ctrl+t", "alt+t"] as KeyId[],
 	toggleSessionNamedFilter: "ctrl+n",
 	externalEditor: "ctrl+g",
 	// ctrl+enter depends on terminal extended key reporting.
@@ -76,6 +76,17 @@ export const DEFAULT_APP_KEYBINDINGS: Record<AppAction, KeyId | KeyId[]> = {
 	tree: [],
 	fork: [],
 	resume: [],
+};
+
+const ACTION_ALIASES: Record<string, KeyAction> = {
+	nextmodel: "cycleModelForward",
+	previousmodel: "cycleModelBackward",
+	openmodelselector: "selectModel",
+	toggletooloutput: "expandTools",
+	toggletools: "expandTools",
+	togglethinkingpanel: "toggleThinking",
+	stop: "interrupt",
+	cancel: "interrupt",
 };
 
 /**
@@ -113,6 +124,65 @@ const APP_ACTIONS: AppAction[] = [
 
 function isAppAction(action: string): action is AppAction {
 	return APP_ACTIONS.includes(action as AppAction);
+}
+
+function normalizeActionToken(value: string): string {
+	return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function normalizeKeyId(value: string): KeyId | undefined {
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	const normalized = trimmed
+		.toLowerCase()
+		.replace(/\s+/g, "")
+		.replace(/^control\+/, "ctrl+")
+		.replace(/\+control\+/g, "+ctrl+")
+		.replace(/^option\+/, "alt+")
+		.replace(/\+option\+/g, "+alt+")
+		.replace(/^return$/, "enter");
+	return normalized.length > 0 ? (normalized as KeyId) : undefined;
+}
+
+function normalizeKeyValue(value: unknown): KeyId | KeyId[] | undefined {
+	if (typeof value === "string") {
+		return normalizeKeyId(value);
+	}
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const normalized = value
+		.filter((entry): entry is string => typeof entry === "string")
+		.map((entry) => normalizeKeyId(entry))
+		.filter((entry): entry is KeyId => !!entry);
+	return Array.from(new Set(normalized));
+}
+
+function appendKeyValue(
+	current: KeyId | KeyId[] | undefined,
+	next: KeyId | KeyId[] | undefined,
+): KeyId | KeyId[] | undefined {
+	if (next === undefined) return current;
+	if (current === undefined) return next;
+	const currentList = Array.isArray(current) ? current : [current];
+	const nextList = Array.isArray(next) ? next : [next];
+	return Array.from(new Set([...currentList, ...nextList]));
+}
+
+function resolveActionName(candidate: string): KeyAction | undefined {
+	const normalized = normalizeActionToken(candidate);
+	if (!normalized) return undefined;
+
+	const alias = ACTION_ALIASES[normalized];
+	if (alias) return alias;
+
+	const defaultActions = Object.keys(DEFAULT_KEYBINDINGS) as KeyAction[];
+	for (const action of defaultActions) {
+		if (normalizeActionToken(action) === normalized) {
+			return action;
+		}
+	}
+	return undefined;
 }
 
 /**
@@ -159,7 +229,28 @@ export class KeybindingsManager {
 	private static loadFromFile(path: string): KeybindingsConfig {
 		if (!existsSync(path)) return {};
 		try {
-			return JSON.parse(readFileSync(path, "utf-8"));
+			const parsed = JSON.parse(readFileSync(path, "utf-8"));
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				return {};
+			}
+			const result: KeybindingsConfig = {};
+			for (const [rawKey, rawValue] of Object.entries(parsed as Record<string, unknown>)) {
+				const directAction = resolveActionName(rawKey);
+				if (directAction) {
+					result[directAction] = appendKeyValue(result[directAction], normalizeKeyValue(rawValue));
+					continue;
+				}
+
+				// Backward-compatible support for legacy "key -> action" format
+				// from older docs/examples.
+				if (typeof rawValue === "string") {
+					const reversedAction = resolveActionName(rawValue);
+					if (reversedAction) {
+						result[reversedAction] = appendKeyValue(result[reversedAction], normalizeKeyValue(rawKey));
+					}
+				}
+			}
+			return result;
 		} catch {
 			return {};
 		}

@@ -7200,23 +7200,36 @@ export class InteractiveMode {
 	}
 
 	private handleCtrlZ(): void {
+		if (process.platform === "win32") {
+			this.showWarning("Suspend is not supported on Windows terminals.");
+			return;
+		}
+
 		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
 		// kill the backgrounded process. The handler is removed on resume.
 		const ignoreSigint = () => { };
 		process.on("SIGINT", ignoreSigint);
 
-		// Set up handler to restore TUI when resumed
-		process.once("SIGCONT", () => {
+		const onResume = () => {
 			process.removeListener("SIGINT", ignoreSigint);
 			this.ui.start();
 			this.ui.requestRender(true);
-		});
+		};
+		process.once("SIGCONT", onResume);
 
 		// Stop the TUI (restore terminal to normal mode)
 		this.ui.stop();
 
-		// Send SIGTSTP to process group (pid=0 means all processes in group)
-		process.kill(0, "SIGTSTP");
+		try {
+			// Send SIGTSTP to process group (pid=0 means all processes in group)
+			process.kill(0, "SIGTSTP");
+		} catch {
+			process.removeListener("SIGINT", ignoreSigint);
+			process.removeListener("SIGCONT", onResume);
+			this.ui.start();
+			this.ui.requestRender(true);
+			this.showWarning("Suspend is not supported in this terminal/session.");
+		}
 	}
 
 	private async handleSteer(): Promise<void> {
@@ -19093,6 +19106,7 @@ The agent will automatically receive IOSM context on every turn.`;
 		const cycleProfile = this.getAppKeyDisplay("cycleProfile");
 		const cycleThinkingLevel = this.getAppKeyDisplay("cycleThinkingLevel");
 		const cycleModelForward = this.getAppKeyDisplay("cycleModelForward");
+		const cycleModelBackward = this.getAppKeyDisplay("cycleModelBackward");
 		const selectModel = this.getAppKeyDisplay("selectModel");
 		const expandTools = this.getAppKeyDisplay("expandTools");
 		const toggleThinking = this.getAppKeyDisplay("toggleThinking");
@@ -19100,6 +19114,7 @@ The agent will automatically receive IOSM context on every turn.`;
 		const steer = this.getAppKeyDisplay("steer");
 		const followUp = this.getAppKeyDisplay("followUp");
 		const dequeue = this.getAppKeyDisplay("dequeue");
+		const pasteImage = this.getAppKeyDisplay("pasteImage");
 
 		let hotkeys = `
 **Navigation**
@@ -19133,10 +19148,10 @@ The agent will automatically receive IOSM context on every turn.`;
 | \`${interrupt}\` | Cancel autocomplete / abort streaming |
 | \`${clear}\` | Clear editor (first) / exit (second) |
 | \`${exit}\` | Exit (when editor is empty) |
-| \`${suspend}\` | Suspend to background |
 | \`${cycleProfile}\` | Cycle agent profile |
 | \`${cycleThinkingLevel}\` | Cycle thinking level |
 | \`${cycleModelForward}\` | Cycle models |
+| \`${cycleModelBackward}\` | Cycle models (reverse) |
 | \`${selectModel}\` | Open model selector |
 | \`${expandTools}\` | Toggle tool/reasoning output expansion |
 | \`${toggleThinking}\` | Toggle thinking block visibility |
@@ -19144,11 +19159,18 @@ The agent will automatically receive IOSM context on every turn.`;
 | \`${steer}\` | Queue steer message |
 | \`${followUp}\` | Queue follow-up message |
 | \`${dequeue}\` | Restore queued messages |
-| \`Ctrl+V\` | Paste image from clipboard |
+| \`${pasteImage}\` | Paste image from clipboard |
 | \`/\` | Slash commands |
 | \`!\` | Run bash command |
 | \`!!\` | Run bash command (excluded from context) |
 `;
+
+		if (suspend && suspend.length > 0) {
+			hotkeys = hotkeys.replace(
+				`| \`${exit}\` | Exit (when editor is empty) |\n`,
+				`| \`${exit}\` | Exit (when editor is empty) |\n| \`${suspend}\` | Suspend to background |\n`,
+			);
+		}
 
 		// Add extension-registered shortcuts
 		const extensionRunner = this.session.extensionRunner;

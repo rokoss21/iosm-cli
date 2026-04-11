@@ -322,7 +322,7 @@ Runtime artifacts:
 | `Esc` | Interrupt current agent run |
 | `Ctrl+C` | Clear input or app-level clear |
 | `Ctrl+D` | Exit the application |
-| `Ctrl+Z` | Suspend process |
+| `Ctrl+Z` / `Alt+Z` | Suspend process (Unix terminals) |
 
 ### Model & Profile
 
@@ -330,16 +330,16 @@ Runtime artifacts:
 |-----|--------|
 | `Shift+Tab` | Cycle profile (full → plan → iosm → meta) |
 | `Shift+Ctrl+T` | Cycle thinking level |
-| `Ctrl+P` | Next model in rotation |
-| `Shift+Ctrl+P` | Previous model in rotation |
-| `Ctrl+L` | Open model selector |
+| `Ctrl+P` / `Alt+P` | Next model in rotation |
+| `Shift+Ctrl+P` / `Alt+Shift+P` | Previous model in rotation |
+| `Ctrl+L` / `Alt+L` | Open model selector |
 
 ### UI Controls
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+O` | Expand/collapse tool output details |
-| `Ctrl+T` | Toggle thinking panel |
+| `Ctrl+O` / `Alt+O` | Expand/collapse tool output details |
+| `Ctrl+T` / `Alt+T` | Toggle thinking panel |
 | `Ctrl+G` | Open external editor for input |
 
 ### Input & Queue
@@ -357,11 +357,16 @@ Override keybindings by creating `~/.iosm/agent/keybindings.json`:
 
 ```json
 {
-  "Ctrl+P": "nextModel",
-  "Ctrl+Shift+P": "previousModel",
-  "Ctrl+L": "openModelSelector"
+  "cycleModelForward": ["ctrl+p", "alt+p"],
+  "cycleModelBackward": ["shift+ctrl+p", "alt+shift+p"],
+  "selectModel": ["ctrl+l", "alt+l"],
+  "expandTools": ["ctrl+o", "alt+o"]
 }
 ```
+
+Supported formats:
+- preferred: `action -> key(s)` (shown above)
+- backward-compatible legacy: `key -> action` (old docs/examples)
 
 ---
 

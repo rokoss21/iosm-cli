@@ -194,8 +194,8 @@ iosm --models "sonnet,gpt-5.3,gemini-2.5-pro"
 
 # During interactive session
 /model                                 # Opens model selector
-Ctrl+P                                 # Next model in rotation
-Shift+Ctrl+P                           # Previous model
+Ctrl+P / Alt+P                         # Next model in rotation
+Shift+Ctrl+P / Alt+Shift+P             # Previous model
 ```
 
 ## Troubleshooting

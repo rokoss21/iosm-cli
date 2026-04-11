@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.13] - 2026-04-11
+
+### Added
+
+- **Cross-terminal keybinding fallbacks** — added `Alt+...` fallback bindings for frequently unreliable terminal control combinations (`expandTools`, `toggleThinking`, model cycling, model selector).
+- **Keybindings parser compatibility layer** — `keybindings.json` now accepts both preferred `action -> key(s)` and legacy `key -> action` formats, with action aliases (`nextModel`, `previousModel`, `openModelSelector`, etc.).
+- **Keybinding normalization** — loader now normalizes common key spelling/casing variants (`Control+`, spacing, case differences) for consistent runtime matching.
+
+### Changed
+
+- **Platform-aware suspend defaults** — `suspend` hotkey is now disabled by default on Windows and remains enabled on Unix (`Ctrl+Z` + `Alt+Z`).
+- **Hotkeys command output** — `/hotkeys` now shows reverse model-cycle shortcut and renders active configured key for image paste instead of hardcoded value.
+- **Keyboard documentation alignment** — interactive/configuration/getting-started docs now document real keybinding format and cross-platform fallback shortcuts.
+
+### Fixed
+
+- **Suspend runtime resilience** — unsupported suspend environments now safely restore TUI state and show a warning instead of leaving UI in a broken state.
+- **User keybinding migration regressions** — legacy keybinding files from older docs/examples now resolve to expected actions instead of silently failing.
+
 ## [0.3.12] - 2026-04-11
 
 ### Added
